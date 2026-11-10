@@ -21,7 +21,7 @@
     },
     "tuxeshadow": {
       "model": "ollama:qwen2.5-coder:7b",
-      "variant": "low"
+      "variant": "high"
     },
     "clowder": {
       "model": "ollama:qwen2.5-coder:7b"

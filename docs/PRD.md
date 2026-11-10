@@ -86,7 +86,7 @@ Fungsional:
   | Sphinx | Oracle: penasihat strategis, review arsitektur, debugging sulit | model kuat |
   | Calico | Designer: kerja UI/TUI, layout, tema | model utama |
   | Tinker | Fixer: implementasi tugas ber-scope jelas, perbaikan kecil | model cepat |
-  | Tuxeshadow | Shadow Auditor: pengawas independen Meowstro — memvalidasi plan sebelum eksekusi & aksi berisiko (advisory default, override tercatat). Tool read-only, tanpa delegasi task. | model cepat/murah |
+  | Tuxeshadow | Shadow Auditor: pengawas independen Meowstro — memvalidasi plan sebelum eksekusi & aksi berisiko (advisory default, override tercatat). Tool read-only, tanpa delegasi task. | model kuat/penalaran tinggi (setara/lebih tinggi dari Meowstro, ala Sphinx) |
   | Clowder | Council: panel 2–3 seat (model berbeda) untuk keputusan berisiko/ambigu | fallback chain per seat |
 
   Agen didefinisikan sebagai **file Markdown + frontmatter**
@@ -362,4 +362,4 @@ sesi tidak mengulang pekerjaan child yang sedang berjalan.
 | 12 | Sistem preset model (free default, local, premium, custom; binding per sesi ala slim v2) | ✅ Diputuskan user (2026-11-11 00:52 WIB) |
 | 13 | Model ID contoh di preset `free`/`premium` (perlu verifikasi ketersediaan saat setup) | ⏳ Terbuka — contoh di file, bukan janji |
 | 14 | Skill bawaan v0.1 (8): `plan`, `review`, `git`, `debug`, `scaffold`, `frontend-design`, `webapp-testing`, `doctor`; kandidat v0.2: `create-skill`, `create-plugin`, `migrate`, skill dokumen dari nol | ✅ Diputuskan user (2026-11-11 01:03 WIB) |
-| 15 | Agen ke-7 The Clowder: **Tuxeshadow** (The Shadow Auditor) — pengawas Meowstro independen, trigger sempit, non-binding default, model hemat | ✅ Diputuskan user (2026-11-11) |
+| 15 | Agen ke-7 The Clowder: **Tuxeshadow** (The Shadow Auditor) — pengawas Meowstro independen, trigger sempit, non-binding default, model penalaran kuat setara/di atas Meowstro | ✅ Diputuskan user (2026-11-11) |

@@ -78,3 +78,4 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
   4. Bekerja atas artefak mentah (plan JSON, brief, diff asli), bukan ringkasan kata-kata Meowstro (menghindari framing bias).
   5. Sifat putusan: Non-binding secara default. Meowstro dapat menerima keberatan atau meng-override dengan alasan tercatat di audit log (`⚠ [shadow overridden]`).
   6. Perilaku per mode: Carrier = memblokir (butuh approval user); Tabby = advisory; Oyen = silent audit log.
+  7. Kelas Model: Wajib menggunakan model penalaran kuat (*high reasoning effort*, setara atau di atas Meowstro, sekelas Sphinx). Auditor tidak dapat menemukan cacat logika jika modelnya lebih lemah dari perancang rencana. Biaya token terkendali lewat trigger sempit (hanya pada checkpoint krusial) dan output putusan ringkas.

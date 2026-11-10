@@ -20,8 +20,8 @@
       "temperature": 0.2
     },
     "tuxeshadow": {
-      "model": "anthropic:claude-3-5-haiku-latest",
-      "variant": "low"
+      "model": "anthropic:claude-3-5-sonnet-latest",
+      "variant": "high"
     },
     "clowder": {
       "model": [
