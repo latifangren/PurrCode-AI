@@ -1,0 +1,9 @@
+# PurrCode — jangan commit secret / data / referensi clone
+.env
+*.key
+*.pem
+purrcode.db*
+/bin/
+/dist/
+# references/ = clone read-only ~2 GB, bukan bagian repo. Lihat docs/00-analysis-references.md
+/references/
