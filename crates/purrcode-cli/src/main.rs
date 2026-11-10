@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 
     // 3. One-shot prompt mode (-p / --prompt)
     if let Some(prompt) = args.prompt {
-        run_one_shot(prompt, args.model, args.json, &config).await?;
+        run_one_shot(prompt, args.model, args.json, args.orchestrator, &config).await?;
         return Ok(());
     }
 
@@ -81,10 +81,13 @@ use purrcode_tools::mcp::McpManager;
 use purrcode_tools::ToolRegistry;
 use std::sync::Arc;
 
+use purrcode_orchestrator::MeowstroOrchestrator;
+
 async fn run_one_shot(
     prompt: String,
     model_override: Option<String>,
     as_json: bool,
+    use_orchestrator: bool,
     config: &Config,
 ) -> Result<()> {
     // Determine target model
@@ -145,14 +148,31 @@ async fn run_one_shot(
         is_dry_run: false,
     };
 
+    let session_dir = std::env::temp_dir().join("purrcode_session");
+    let meowstro = if use_orchestrator {
+        Some(MeowstroOrchestrator::new(provider.clone(), wire_model, &session_dir))
+    } else {
+        None
+    };
+
     let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry));
 
     let mut in_reasoning = false;
     let mut stdout = std::io::stdout();
 
-    let system_prompt = "You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.";
+    let system_prompt = if use_orchestrator {
+        MeowstroOrchestrator::system_prompt()
+    } else {
+        "You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools."
+    };
 
-    agent_loop
+    let loop_runner = if let Some(ref m) = meowstro {
+        m.agent_loop()
+    } else {
+        &agent_loop
+    };
+
+    loop_runner
         .run_turn(
             &prompt,
             Some(system_prompt),

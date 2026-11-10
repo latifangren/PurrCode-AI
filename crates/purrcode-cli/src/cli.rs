@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
+    /// Run with Meowstro orchestrator + Tinker subagents
+    #[arg(long)]
+    pub orchestrator: bool,
+
     /// Override model to use (e.g. "magpie/antigravity/gemini-3.8-flash" or "ollama:qwen2.5-coder:7b")
     #[arg(short = 'm', long)]
     pub model: Option<String>,

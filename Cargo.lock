@@ -1056,16 +1056,19 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "purrcode-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "purrcode-api",
  "purrcode-config",
  "purrcode-core",
+ "purrcode-provider",
  "purrcode-tools",
  "serde",
  "serde_json",
