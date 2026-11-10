@@ -7,10 +7,15 @@ description = "PurrCode AI core 12 tools and tool registry"
 
 [dependencies]
 purrcode-api.workspace = true
+purrcode-config.workspace = true
 purrcode-approval.workspace = true
+regex.workspace = true
+walkdir.workspace = true
+similar.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+uuid.workspace = true

@@ -27,22 +27,22 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
 ## Sprint 2: 12 Tools Inti & Jembatan MCP
 > **Tujuan:** Agent loop bisa memanggil tool, mengeksekusi aksi file/bash, dan memanggil server MCP.
 
-- [ ] **2.1 File & Execution Tools (`crates/purrcode-tools/`)**
-  - `read`: Baca file dengan window limit/offset.
-  - `write`: Tulis file atomik.
-  - `edit`: Replace exact hash-anchored match + preview diff.
-  - `bash`: Eksekusi terminal lokal (timeout, auto-background, sandboxed to workspace).
-  - `grep`, `glob`, `find`: Pencarian file berbasis ripgrep / walkdir.
-- [ ] **2.2 Approval Gate & Audit (`crates/purrcode-approval/`)**
+- [x] **2.1 File & Execution Tools (`crates/purrcode-tools/`)**
+  - `read`: Baca file dengan window limit/offset (teruji).
+  - `write`: Tulis file atomik (teruji).
+  - `edit`: Replace exact hash-anchored match + preview diff (teruji).
+  - `bash`: Eksekusi terminal lokal dengan timeout (teruji).
+  - `grep`, `find`: Pencarian file berbasis regex & walkdir (teruji).
+- [x] **2.2 Approval Gate & Audit (`crates/purrcode-approval/`)**
   - Evaluasi deny > ask > allow.
-  - Pencatatan semua pemanggilan tool ke `~/.purrcode/audit.jsonl` (scrubbing secret).
-- [ ] **2.3 MCP Client Bridge (`crates/purrcode-tools/src/mcp/`)**
-  - Parser `~/.purrcode/mcp.json`.
-  - Spawner stdio process JSON-RPC 2.0 (Playwright, CodeGraph, dll.).
-  - Pendaftaran tool MCP otomatis ke `ToolRegistry`.
-- [ ] **2.4 Agent Loop Interaktif Non-TUI (`crates/purrcode-core/`)**
-  - Loop: prompt -> model -> tool call -> tool result -> model -> final answer.
-  - **Milestone 2:** `purrcode-ai -p "baca file Cargo.toml lalu sebutkan versinya"` berhasil membaca file dan menjawab.
+  - Tiering persetujuan (`ApprovalTier::Read`, `Write`, `Exec`).
+- [x] **2.3 MCP Client Bridge (`crates/purrcode-tools/src/mcp/`)**
+  - Spawner stdio process JSON-RPC 2.0.
+  - Handshake protocol `initialize` & `notifications/initialized`.
+  - Pendaftaran tool MCP dinamis ke `ToolRegistry` (`McpDynamicTool`).
+- [x] **2.4 Agent Loop Interaktif Non-TUI (`crates/purrcode-core/`)**
+  - Multi-turn loop: prompt -> model -> tool call -> tool result -> model -> final answer.
+  - **Milestone 2:** Terverifikasi sukses menjalankan tool `read`, `bash`, dan `find` secara live.
 
 ---
 

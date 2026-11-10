@@ -42,11 +42,15 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+use purrcode_api::provider::ToolCallDelta;
+
 #[derive(Serialize)]
 struct ChatCompletionRequestBody<'a> {
     model: &'a str,
     messages: Vec<ApiMessage<'a>>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ApiTool<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +61,19 @@ struct ChatCompletionRequestBody<'a> {
 }
 
 #[derive(Serialize)]
+struct ApiTool<'a> {
+    r#type: &'static str,
+    function: ApiFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct ApiFunction<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
+#[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
 }
@@ -64,7 +81,25 @@ struct StreamOptions {
 #[derive(Serialize)]
 struct ApiMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ApiToolCall<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ApiToolCall<'a> {
+    id: &'a str,
+    r#type: &'static str,
+    function: ApiToolCallFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct ApiToolCallFunction<'a> {
+    name: &'a str,
+    arguments: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +122,20 @@ struct SseDelta {
     reasoning_content: Option<String>,
     reasoning: Option<String>,
     thought: Option<String>,
+    tool_calls: Option<Vec<SseToolCallDelta>>,
+}
+
+#[derive(Deserialize)]
+struct SseToolCallDelta {
+    index: usize,
+    id: Option<String>,
+    function: Option<SseFunctionDelta>,
+}
+
+#[derive(Deserialize)]
+struct SseFunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -121,14 +170,37 @@ impl ModelProvider for OpenAiCompatibleProvider {
                     MessageRole::Assistant => "assistant",
                     MessageRole::Tool => "tool",
                 },
-                content: &m.content,
+                content: if m.content.is_empty() { None } else { Some(&m.content) },
+                tool_calls: m.tool_calls.as_ref().map(|tcs| {
+                    tcs.iter().map(|tc| ApiToolCall {
+                        id: &tc.id,
+                        r#type: "function",
+                        function: ApiToolCallFunction {
+                            name: &tc.name,
+                            arguments: &tc.arguments,
+                        },
+                    }).collect()
+                }),
+                tool_call_id: m.tool_call_id.as_deref(),
             })
             .collect();
+
+        let tools: Option<Vec<ApiTool>> = request.tools.as_ref().map(|ts| {
+            ts.iter().map(|t| ApiTool {
+                r#type: "function",
+                function: ApiFunction {
+                    name: &t.name,
+                    description: &t.description,
+                    parameters: &t.parameters,
+                },
+            }).collect()
+        });
 
         let body = ChatCompletionRequestBody {
             model: &request.model,
             messages,
             stream: true,
+            tools,
             temperature: request.temperature,
             max_tokens: request.max_tokens,
             reasoning_effort: request.reasoning_effort.as_deref(),
@@ -229,6 +301,25 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                         .or(delta.thought.as_ref())
                                     {
                                         reasoning_delta = Some((*r).clone());
+                                    }
+                                    if let Some(ref tcs) = delta.tool_calls {
+                                        for tc in tcs {
+                                            let tool_call_delta = ToolCallDelta {
+                                                index: tc.index,
+                                                id: tc.id.clone(),
+                                                name: tc.function.as_ref().and_then(|f| f.name.clone()),
+                                                arguments_delta: tc.function.as_ref().and_then(|f| f.arguments.clone()),
+                                            };
+                                            let _ = tx
+                                                .send(StreamChunk {
+                                                    delta: String::new(),
+                                                    reasoning_delta: None,
+                                                    tool_call_delta: Some(tool_call_delta),
+                                                    is_finished: false,
+                                                    usage: None,
+                                                })
+                                                .await;
+                                        }
                                     }
                                 }
                                 if choice.finish_reason.is_some() {

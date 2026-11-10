@@ -1,3 +1,6 @@
+pub mod loop_engine;
+
+pub use loop_engine::AgentLoop;
 use purrcode_api::event::AgentEvent;
 use tokio::sync::broadcast;
 

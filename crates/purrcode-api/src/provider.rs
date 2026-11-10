@@ -30,6 +30,7 @@ pub struct ToolCallRequest {
 pub struct CompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    pub tools: Option<Vec<crate::tool::ToolDefinition>>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub reasoning_effort: Option<String>,
@@ -37,10 +38,18 @@ pub struct CompletionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    pub index: usize,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub arguments_delta: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
     pub reasoning_delta: Option<String>,
-    pub tool_call_delta: Option<ToolCallRequest>,
+    pub tool_call_delta: Option<ToolCallDelta>,
     pub is_finished: bool,
     pub usage: Option<TokenUsage>,
 }

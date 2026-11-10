@@ -52,6 +52,9 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
+regex = "1.10"
+walkdir = "2.5"
+similar = "2.6"
 
 [profile.release]
 opt-level = "z"

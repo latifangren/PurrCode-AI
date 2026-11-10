@@ -1,3 +1,11 @@
+pub mod execution;
+pub mod fs;
+pub mod mcp;
+pub mod search;
+
+use fs::{EditTool, ReadTool, WriteTool};
+use execution::BashTool;
+use search::{FindTool, GrepTool};
 use purrcode_api::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,6 +21,18 @@ impl ToolRegistry {
             tools: HashMap::new(),
             is_frozen: false,
         }
+    }
+
+    /// Creates and populates the default toolset for PurrCode
+    pub fn with_defaults() -> Self {
+        let mut registry = Self::new();
+        registry.register(Arc::new(ReadTool)).unwrap();
+        registry.register(Arc::new(WriteTool)).unwrap();
+        registry.register(Arc::new(EditTool)).unwrap();
+        registry.register(Arc::new(BashTool)).unwrap();
+        registry.register(Arc::new(GrepTool)).unwrap();
+        registry.register(Arc::new(FindTool)).unwrap();
+        registry
     }
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<(), &'static str> {
@@ -39,6 +59,6 @@ impl ToolRegistry {
 
 impl Default for ToolRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::with_defaults()
     }
 }

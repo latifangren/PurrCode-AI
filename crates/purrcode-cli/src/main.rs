@@ -3,7 +3,6 @@ mod cli;
 use clap::Parser;
 use cli::{Cli, Commands};
 use purrcode_api::error::Result;
-use purrcode_api::provider::{ChatMessage, CompletionRequest, MessageRole};
 use purrcode_config::{Config, ConfigLoader};
 use purrcode_provider::ProviderRegistry;
 use std::io::Write;
@@ -68,6 +67,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+use purrcode_api::tool::ToolContext;
+use purrcode_core::AgentLoop;
+use purrcode_tools::mcp::McpManager;
+use purrcode_tools::ToolRegistry;
+use std::sync::Arc;
+
 async fn run_one_shot(
     prompt: String,
     model_override: Option<String>,
@@ -78,7 +83,6 @@ async fn run_one_shot(
     let target_model = match model_override.or_else(|| config.model.clone()) {
         Some(m) => m,
         None => {
-            // Pick first configured model across all providers if any
             let mut found_model = None;
             for (p_name, p_cfg) in &config.providers {
                 if let Some(m_key) = p_cfg.models.keys().next() {
@@ -104,7 +108,7 @@ async fn run_one_shot(
     let registry = ProviderRegistry::from_config(config);
 
     // Resolve provider and model configuration
-    let (provider_name, wire_model, _provider_cfg, model_cfg) = match config.resolve_model(&target_model) {
+    let (provider_name, wire_model, _provider_cfg, _model_cfg) = match config.resolve_model(&target_model) {
         Some(resolved) => resolved,
         None => {
             eprintln!("Error: Model '{}' could not be resolved from configuration.", target_model);
@@ -121,56 +125,56 @@ async fn run_one_shot(
         }
     };
 
-    let request = CompletionRequest {
-        model: wire_model.to_string(),
-        messages: vec![ChatMessage {
-            role: MessageRole::User,
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        }],
-        temperature: Some(0.3),
-        max_tokens: model_cfg.max_tokens.map(|t| t as u32),
-        reasoning_effort: model_cfg.reasoning_effort.clone(),
-        stop: None,
+    // Initialize tools & MCP servers
+    let mut tool_registry = ToolRegistry::with_defaults();
+    let mut mcp_manager = McpManager::new();
+    let _ = mcp_manager.load_servers(&config.mcp_servers, &mut tool_registry).await;
+
+    let tool_context = ToolContext {
+        session_id: "one_shot".to_string(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        is_dry_run: false,
     };
 
-    let mut stream = provider.stream_completion(request).await?;
+    let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry));
 
-    let mut stdout = std::io::stdout();
     let mut in_reasoning = false;
+    let mut stdout = std::io::stdout();
 
-    while let Some(chunk) = stream.recv().await {
-        if as_json {
-            let json_str = serde_json::to_string(&chunk).unwrap_or_default();
-            println!("{}", json_str);
-            let _ = stdout.flush();
-        } else {
-            // Handle reasoning delta if present
-            if let Some(thought) = chunk.reasoning_delta {
-                if !in_reasoning {
-                    print!("\n[Thinking: ");
-                    in_reasoning = true;
+    let system_prompt = "You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.";
+
+    agent_loop
+        .run_turn(
+            &prompt,
+            Some(system_prompt),
+            &tool_context,
+            |chunk, is_reasoning| {
+                if as_json {
+                    let ev = serde_json::json!({
+                        "type": if is_reasoning { "reasoning" } else { "text" },
+                        "delta": chunk
+                    });
+                    println!("{}", ev);
+                } else {
+                    if is_reasoning {
+                        if !in_reasoning {
+                            print!("\n[Thinking: ");
+                            in_reasoning = true;
+                        }
+                        print!("{}", chunk);
+                    } else {
+                        if in_reasoning {
+                            print!("]\n\n");
+                            in_reasoning = false;
+                        }
+                        print!("{}", chunk);
+                    }
+                    let _ = stdout.flush();
                 }
-                print!("{}", thought);
-                let _ = stdout.flush();
-            }
-
-            // Handle main text delta
-            if !chunk.delta.is_empty() {
-                if in_reasoning {
-                    print!("]\n\n");
-                    in_reasoning = false;
-                }
-                print!("{}", chunk.delta);
-                let _ = stdout.flush();
-            }
-        }
-
-        if chunk.is_finished {
-            break;
-        }
-    }
+            },
+        )
+        .await?;
 
     if in_reasoning {
         print!("]\n");
