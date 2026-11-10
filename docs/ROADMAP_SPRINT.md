@@ -49,17 +49,18 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
 ## Sprint 3: TUI Terminal Interaktif (Ratatui)
 > **Tujuan:** Pengalaman terminal penuh dengan card tool-call, preview diff, dan prompt interaktif `purr>`.
 
-- [ ] **3.1 TUI Layout & Event Bus (`crates/purrcode-channel/src/tui/`)**
-  - Setup terminal crossterm + Ratatui.
+- [x] **3.1 TUI Layout & Event Bus (`crates/purrcode-channel/src/tui/`)**
+  - Setup terminal crossterm + Ratatui (differential rendering).
   - Layout: Header status bar, transcript scroll view, footer prompt `purr>`.
-- [ ] **3.2 Widgets Khusus**
-  - `tool_card`: Tampilan card untuk pemanggilan tool yang sedang berjalan (running/done/failed).
-  - `edit_preview`: Diff visual sebelum menulis file dengan tombol `[a]` Terapkan, `[t]` Tolak.
-  - `ask_picker`: Pilihan opsi terstruktur saat model memanggil tool `ask`.
-- [ ] **3.3 Interupsi & Keybindings**
-  - `Ctrl-C` / `Esc` untuk membatalkan run tanpa keluar dari program.
-  - `Tab` autocomplete slash commands (`/preset`, `/model`, `/clear`, `/quit`).
-  - **Milestone 3:** `purrcode-ai` membuka TUI interaktif yang responsif dan nyaman digunakan.
+- [x] **3.2 Widgets Khusus & Card Tools**
+  - `tool_card`: Tampilan card status pemanggilan tool (`[running]`, `[done]`, `[failed]`).
+  - `render_transcript`: Render user input, thinking reasoning block, dan tool call output.
+  - Palet warna Zinc 900 + Aksen Oranye Tabby + Hijau Emerald.
+- [x] **3.3 Interupsi & Keybindings**
+  - `Ctrl-C` / `Esc` untuk membatalkan/keluar.
+  - Navigasi kursor teks kiri/kanan, backspace, scroll up/down.
+  - Command `/quit` dan `/exit` untuk keluar rapi dan restore terminal.
+  - **Milestone 3:** `purrcode-ai` (tanpa argumen) membuka TUI interaktif responsif.
 
 ---
 

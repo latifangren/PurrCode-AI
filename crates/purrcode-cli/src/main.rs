@@ -56,14 +56,22 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 4. Default interactive greeting (TUI placeholder for Sprint 3)
-    println!("🐾 PurrCode AI (purrcode-ai) v0.1.0");
-    println!("Modular AI Agent — Orchestrator & Subagents with Zero Hardcode");
-    println!();
-    println!("Quick start:");
-    println!("  purrcode-ai -p \"<prompt>\"       Execute one-shot prompt");
-    println!("  purrcode-ai doctor              Diagnose providers & config");
-    println!("  purrcode-ai --help              Show all options");
+    // 4. Default interactive mode: launch Ratatui TUI
+    let target_model = args
+        .model
+        .or_else(|| config.model.clone())
+        .unwrap_or_else(|| {
+            for (p_name, p_cfg) in &config.providers {
+                if let Some(m_key) = p_cfg.models.keys().next() {
+                    return format!("{}:{}", p_name, m_key);
+                }
+            }
+            "unconfigured".to_string()
+        });
+
+    let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+    let app = purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id);
+    purrcode_channel::TuiRunner::run(app)?;
     Ok(())
 }
 
