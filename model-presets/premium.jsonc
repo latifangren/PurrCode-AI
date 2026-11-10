@@ -19,6 +19,10 @@
       "model": "anthropic:claude-3-5-sonnet-latest",
       "temperature": 0.2
     },
+    "tuxeshadow": {
+      "model": "anthropic:claude-3-5-haiku-latest",
+      "variant": "low"
+    },
     "clowder": {
       "model": [
         "anthropic:claude-3-5-sonnet-latest",

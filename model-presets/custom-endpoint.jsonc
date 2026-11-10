@@ -24,6 +24,10 @@
       "variant": "high",
       "temperature": 0.2
     },
+    "tuxeshadow": {
+      "model": "magpie/group/custom-coding-free",
+      "variant": "low"
+    },
     "clowder": {
       "model": [
         "magpie/group/custom-coding-free",

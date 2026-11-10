@@ -20,6 +20,7 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
 | ADR-009 | Preset Model Terpisah dari Mode: Free, Local, Premium, dan Custom User Files | 2026-11-11 | ✅ Diterima |
 | ADR-010 | Memori Default Markdown Minimal Tanpa Database Wajib | 2026-11-11 | ✅ Diterima |
 | ADR-011 | Standar File Kode: Hard Limit 800–1000 Baris Sebelum Split Submodul | 2026-11-11 | ✅ Diterima |
+| ADR-012 | Tuxeshadow: The Shadow Auditor (Pengawas Independen Meowstro) | 2026-11-11 | ✅ Diterima |
 
 ---
 
@@ -67,3 +68,13 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
 ### ADR-011: Standar File Kode 800–1000 Baris
 - **Konteks:** Memastikan arsitektur modular, rapi, dan mudah dibaca/di-maintain.
 - **Keputusan:** Setiap file source code memiliki batas keras (hard limit) 800–1000 baris. Modul yang mendekati batas ini wajib dipecah menjadi subdirektori dengan tanggung jawab terfokus.
+
+### ADR-012: Tuxeshadow (The Shadow Auditor)
+- **Konteks:** Meowstro adalah *single point of failure*. Jika rencananya salah, Tinker akan mengeksekusi kesalahan tersebut dan memperbaikinya post-facto jauh lebih mahal. Butuh pengawas independen (*Actor-Critic pattern* / *Independent Oracle*).
+- **Keputusan:**
+  1. Diadopsi sebagai agen ke-7 di The Clowder (`.purrcode/agents/tuxeshadow.md`).
+  2. Toolset read-only: `read`, `grep`, `glob`, `find`, `ask` — tanpa `write`, `edit`, `bash`, dan **tanpa `task`** (rantai komando delegasi tetap tunggal di Meowstro).
+  3. Trigger sempit (event-driven): Sebelum rencana disetujui, sebelum aksi destruktif (tulis di luar workspace, hapus file, eksekusi command bahaya), saat recovery plan setelah error, dan wajib pada cron job otomatis.
+  4. Bekerja atas artefak mentah (plan JSON, brief, diff asli), bukan ringkasan kata-kata Meowstro (menghindari framing bias).
+  5. Sifat putusan: Non-binding secara default. Meowstro dapat menerima keberatan atau meng-override dengan alasan tercatat di audit log (`⚠ [shadow overridden]`).
+  6. Perilaku per mode: Carrier = memblokir (butuh approval user); Tabby = advisory; Oyen = silent audit log.

@@ -52,8 +52,8 @@ impl Tool for TaskTool {
                 "properties": {
                     "role": {
                         "type": "string",
-                        "enum": ["tinker", "whisker", "sphinx", "calico"],
-                        "description": "Subagent role: 'tinker' (fixer/implementer with full write tools), 'whisker' (explorer/search read-only)"
+                        "enum": ["tinker", "whisker", "sphinx", "calico", "tuxeshadow"],
+                        "description": "Subagent role: 'tinker' (fixer), 'whisker' (explorer), 'tuxeshadow' (shadow auditor)"
                     },
                     "id": {
                         "type": "string",
@@ -106,7 +106,7 @@ impl Tool for TaskTool {
 
         // 3. Assemble child toolset according to role
         let child_tools = match args.role.as_str() {
-            "whisker" | "sphinx" => {
+            "whisker" | "sphinx" | "tuxeshadow" => {
                 // Read-only toolset
                 let mut reg = ToolRegistry::new();
                 reg.register(Arc::new(purrcode_tools::fs::ReadTool)).unwrap();

@@ -86,6 +86,7 @@ Fungsional:
   | Sphinx | Oracle: penasihat strategis, review arsitektur, debugging sulit | model kuat |
   | Calico | Designer: kerja UI/TUI, layout, tema | model utama |
   | Tinker | Fixer: implementasi tugas ber-scope jelas, perbaikan kecil | model cepat |
+  | Tuxeshadow | Shadow Auditor: pengawas independen Meowstro — memvalidasi plan sebelum eksekusi & aksi berisiko (advisory default, override tercatat). Tool read-only, tanpa delegasi task. | model cepat/murah |
   | Clowder | Council: panel 2–3 seat (model berbeda) untuk keputusan berisiko/ambigu | fallback chain per seat |
 
   Agen didefinisikan sebagai **file Markdown + frontmatter**
@@ -241,6 +242,13 @@ prompt ("amend the same child, never respawn") — rapuh. PurrCode menambahkan l
    - **`ask` tetap ada** (default; koreksi bila berbeda): sebagai perwakilan
      user, Meowstro harus bisa bertanya langsung saat keputusan butuh user —
      itu bagian dari tugasnya sebagai petinggi, bukan pekerjaan implementasi.
+7. **Tuxeshadow: The Shadow Auditor (pengawas independen Meowstro, keputusan user 2026-11-11).**
+   Meowstro adalah *single point of failure*: jika rencananya salah, eksekusi Tinker akan keliru.
+   Tuxeshadow bertindak sebagai critic/auditor independen yang mengevaluasi rencana dan aksi berisiko:
+   - **Trigger sempit (bukan tiap langkah):** Sebelum rencana disetujui, sebelum aksi destruktif (tulis di luar workspace, hapus, perintah bahaya), saat recovery plan setelah error, dan wajib pada cron job otomatis.
+   - **Berdasarkan artefak mentah:** Shadow menilai plan JSON, brief, dan diff asli — bukan ringkasan kata-kata Meowstro (menghindari framing bias).
+   - **Non-binding & Single Command Chain:** Shadow tidak memiliki tool `task` (tidak bisa mendelegasikan sendiri). Meowstro dapat menerima catatan Shadow atau meng-override dengan alasan tercatat di audit log (`⚠ [shadow overridden]`).
+   - **Kekuatan per mode:** Carrier = keberatan Shadow memblokir (butuh approval user); Tabby = advisory (override tercatat); Oyen = silent auditor (mencatat log saja).
 
 Kriteria penerimaan §4.5: delegasi 3 langkah berantai (Whisker → Sphinx → Tinker)
 dengan interupsi di tengah tetap bisa dilanjutkan dari ID yang sama tanpa
@@ -354,3 +362,4 @@ sesi tidak mengulang pekerjaan child yang sedang berjalan.
 | 12 | Sistem preset model (free default, local, premium, custom; binding per sesi ala slim v2) | ✅ Diputuskan user (2026-11-11 00:52 WIB) |
 | 13 | Model ID contoh di preset `free`/`premium` (perlu verifikasi ketersediaan saat setup) | ⏳ Terbuka — contoh di file, bukan janji |
 | 14 | Skill bawaan v0.1 (8): `plan`, `review`, `git`, `debug`, `scaffold`, `frontend-design`, `webapp-testing`, `doctor`; kandidat v0.2: `create-skill`, `create-plugin`, `migrate`, skill dokumen dari nol | ✅ Diputuskan user (2026-11-11 01:03 WIB) |
+| 15 | Agen ke-7 The Clowder: **Tuxeshadow** (The Shadow Auditor) — pengawas Meowstro independen, trigger sempit, non-binding default, model hemat | ✅ Diputuskan user (2026-11-11) |

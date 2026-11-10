@@ -80,6 +80,7 @@ bila user menekan Esc.
 .purrcode/agents/sphinx.md     # oracle
 .purrcode/agents/calico.md     # designer
 .purrcode/agents/tinker.md     # fixer
+.purrcode/agents/tuxeshadow.md # shadow auditor
 .purrcode/agents/clowder.md    # council
 ~/.purrcode/agents/*.md        # agen global user
 ```
@@ -145,6 +146,7 @@ keputusan.
 | Sphinx | `read`, `grep`, `glob`, `find`, `ask` |
 | Calico | `read`, `write`, `edit`, `grep`, `glob`, `find` |
 | Tinker | semua 12 tool v0.1 (satu-satunya agen implementasi penuh) |
+| Tuxeshadow | `read`, `grep`, `glob`, `find`, `ask` (read-only auditor independen; tanpa `task` dan tanpa `write`/`edit`/`bash`) |
 | Clowder | `read`, `grep`, `glob`, `find` (seat baca + menilai) |
 
 Penegakan: preset tool set didaftarkan per agen (ala preset Muse Code —
@@ -637,3 +639,9 @@ Tidak ada kode yang ditulis pada tahap ini** — keputusan user 2026-11-11.
     `variants: reasoningEffort`). Bila dijalankan tanpa model yang dikonfigurasi, sistem menolak
     jalan di mode non-TUI dengan pesan error jelas, atau membuka wizard onboarding di mode interaktif.
     → `PRD.md` §4.1 F12, §7 butir 8; `DESIGN.md` §7.
+16. **Tuxeshadow: The Shadow Auditor (keputusan user 2026-11-11).**
+    Agen ke-7 The Clowder (`.purrcode/agents/tuxeshadow.md`). Mengawasi Meowstro secara independen untuk memitigasi risiko single-point-of-failure.
+    Trigger sempit: evaluasi plan sebelum eksekusi, sebelum aksi destruktif/di luar workspace, saat replan setelah error, dan wajib pada cron job otomatis.
+    Bekerja atas artefak mentah (diff, plan JSON, tool args). Non-binding secara default: Meowstro bisa override dengan alasan tercatat di audit log (`⚠ [shadow overridden]`).
+    Tanpa tool `task` (rantai delegasi tetap tunggal di Meowstro).
+    → `PRD.md` §4.1 F4, §4.5 butir 7; `DESIGN.md` ADR-012.

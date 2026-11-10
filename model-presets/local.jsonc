@@ -19,6 +19,10 @@
       "model": "ollama:qwen2.5-coder:7b",
       "temperature": 0.2
     },
+    "tuxeshadow": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "low"
+    },
     "clowder": {
       "model": "ollama:qwen2.5-coder:7b"
     }
