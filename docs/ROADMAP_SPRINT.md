@@ -103,11 +103,11 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
 ## Sprint 6: Integrasi TUI Live Stream & Approval Card Interaktif
 > **Tujuan:** Menghubungkan AgentLoop langsung ke TUI Ratatui dengan card preview diff interaktif.
 
-- [ ] **6.1 TUI Live Event Stream**
-  - Sambungkan EventBus ke TUI thread-safe.
-  - Transkrip streaming langsung menampilkan teks delta dan token reasoning.
-- [ ] **6.2 Interactive Approval Card Widget**
-  - Card pop-up saat tool write/edit/bash dipanggil di mode supervised (Tabby).
-  - Tombol interaktif keyboard: `[a]` Terapkan, `[t]` Tolak, `[e]` Edit.
-- [ ] **6.3 Onboarding Wizard Interaktif (`purrcode-ai onboard`)**
-  - Setup interaktif provider, base_url, API key, model, dan preset langsung dari TUI.
+- [x] **6.1 TUI Live Event Stream**
+  - Antrian event async `TuiEvent` terhubung ke TUI thread-safe (teruji).
+  - Transkrip merender streaming delta, reasoning thinking, dan tool cards secara realtime.
+- [x] **6.2 Interactive Approval Card Widget**
+  - Widget Approval Card pop-up dengan diff preview dan border aksen oranye (teruji).
+  - Tombol interaktif: `[a]` Setuju/Apply, `[t]` Tolak/Deny, `[e]` Edit (teruji).
+- [x] **6.3 Onboarding Wizard Interaktif (`purrcode-ai onboard`)**
+  - Panduan interaktif setup endpoint (Local Proxy Magpie, Ollama, Cloud API), API key, model, dan preset yang langsung menulis `purrcode.jsonc` (teruji).

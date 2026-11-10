@@ -16,20 +16,79 @@ const SUCCESS_GREEN: Color = Color::Rgb(16, 185, 129);
 const RUNNING_YELLOW: Color = Color::Rgb(234, 179, 8);
 
 pub fn render(frame: &mut Frame, app: &TuiApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Top status bar
-            Constraint::Min(5),    // Transcript / Messages
-            Constraint::Length(1), // Subagent / Tool indicator bar
-            Constraint::Length(3), // Input area
-        ])
-        .split(frame.area());
+    if let Some(ref approval) = app.pending_approval {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Top status bar
+                Constraint::Min(4),    // Transcript / Messages
+                Constraint::Length(8), // Approval Card Popup
+                Constraint::Length(1), // Subagent / Tool indicator bar
+                Constraint::Length(3), // Input area
+            ])
+            .split(frame.area());
 
-    render_header(frame, chunks[0], app);
-    render_transcript(frame, chunks[1], app);
-    render_subagent_bar(frame, chunks[2], app);
-    render_input(frame, chunks[3], app);
+        render_header(frame, chunks[0], app);
+        render_transcript(frame, chunks[1], app);
+        render_approval_card(frame, chunks[2], approval);
+        render_subagent_bar(frame, chunks[3], app);
+        render_input(frame, chunks[4], app);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Top status bar
+                Constraint::Min(5),    // Transcript / Messages
+                Constraint::Length(1), // Subagent / Tool indicator bar
+                Constraint::Length(3), // Input area
+            ])
+            .split(frame.area());
+
+        render_header(frame, chunks[0], app);
+        render_transcript(frame, chunks[1], app);
+        render_subagent_bar(frame, chunks[2], app);
+        render_input(frame, chunks[3], app);
+    }
+}
+
+fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::ApprovalRequest) {
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("Tool: ", Style::default().fg(TEXT_MUTED)),
+        Span::styled(&approval.tool_name, Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
+        Span::styled(" ── ", Style::default().fg(BORDER_COLOR)),
+        Span::styled(&approval.description, Style::default().fg(TEXT_PRIMARY)),
+    ]));
+
+    if let Some(ref diff) = approval.diff_preview {
+        for line in diff.lines().take(4) {
+            let color = if line.starts_with('+') {
+                SUCCESS_GREEN
+            } else if line.starts_with('-') {
+                Color::Red
+            } else {
+                TEXT_MUTED
+            };
+            lines.push(Line::from(Span::styled(format!("  {}", line), Style::default().fg(color))));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Actions: ", Style::default().fg(TEXT_MUTED)),
+        Span::styled("[a] Approve & Apply  ", Style::default().fg(SUCCESS_GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled("[t] Reject / Deny    ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled("[e] Edit", Style::default().fg(ACCENT_ORANGE)),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_ORANGE))
+        .title(Span::styled(" ⚠️ Approval Required ", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, app: &TuiApp) {

@@ -1,4 +1,5 @@
 mod cli;
+mod onboard;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -21,11 +22,7 @@ async fn main() -> Result<()> {
     if let Some(cmd) = args.command {
         match cmd {
             Commands::Onboard => {
-                println!("🐾 PurrCode AI — Onboarding Wizard");
-                println!();
-                println!("PurrCode AI requires a configured provider/model before running.");
-                println!("Create your configuration at ~/.purrcode/purrcode.jsonc");
-                println!("See 'purrcode.jsonc.example' for templates (Magpie, OmniRoute, Ollama, OpenRouter).");
+                onboard::run_interactive_onboard()?;
                 return Ok(());
             }
             Commands::Doctor => {
@@ -71,7 +68,7 @@ async fn main() -> Result<()> {
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
     let app = purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id);
-    purrcode_channel::TuiRunner::run(app)?;
+    purrcode_channel::TuiRunner::run(app, None)?;
     Ok(())
 }
 

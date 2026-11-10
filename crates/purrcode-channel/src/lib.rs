@@ -1,6 +1,6 @@
 pub mod tui;
 
-pub use tui::{MessageItem, ToolStatus, TuiApp, TuiRunner};
+pub use tui::{ApprovalRequest, MessageItem, ToolStatus, TuiApp, TuiEvent, TuiRunner};
 
 use purrcode_api::channel::Channel;
 use std::sync::Arc;

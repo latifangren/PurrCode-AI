@@ -1,3 +1,5 @@
+use tokio::sync::oneshot;
+
 #[derive(Debug, Clone)]
 pub enum MessageItem {
     User(String),
@@ -13,6 +15,22 @@ pub enum ToolStatus {
     Failed,
 }
 
+pub struct ApprovalRequest {
+    pub tool_name: String,
+    pub description: String,
+    pub diff_preview: Option<String>,
+    pub tx: oneshot::Sender<bool>,
+}
+
+pub enum TuiEvent {
+    TextChunk(String),
+    ReasoningChunk(String),
+    ToolCallStarted { name: String, args: String },
+    ToolCallFinished { name: String, output: String, success: bool },
+    ApprovalRequested(ApprovalRequest),
+    TurnFinished,
+}
+
 pub struct TuiApp {
     pub input: String,
     pub cursor_pos: usize,
@@ -24,6 +42,7 @@ pub struct TuiApp {
     pub is_generating: bool,
     pub should_quit: bool,
     pub scroll_offset: usize,
+    pub pending_approval: Option<ApprovalRequest>,
 }
 
 impl TuiApp {
@@ -39,6 +58,7 @@ impl TuiApp {
             is_generating: false,
             should_quit: false,
             scroll_offset: 0,
+            pending_approval: None,
         }
     }
 
@@ -80,6 +100,60 @@ impl TuiApp {
             None
         } else {
             Some(trimmed)
+        }
+    }
+
+    pub fn handle_event(&mut self, event: TuiEvent) {
+        match event {
+            TuiEvent::TextChunk(delta) => {
+                if let Some(MessageItem::Assistant { text, .. }) = self.items.last_mut() {
+                    text.push_str(&delta);
+                } else {
+                    self.items.push(MessageItem::Assistant {
+                        text: delta,
+                        reasoning: None,
+                    });
+                }
+            }
+            TuiEvent::ReasoningChunk(delta) => {
+                if let Some(MessageItem::Assistant { reasoning, .. }) = self.items.last_mut() {
+                    if let Some(r) = reasoning {
+                        r.push_str(&delta);
+                    } else {
+                        *reasoning = Some(delta);
+                    }
+                } else {
+                    self.items.push(MessageItem::Assistant {
+                        text: String::new(),
+                        reasoning: Some(delta),
+                    });
+                }
+            }
+            TuiEvent::ToolCallStarted { name, args } => {
+                self.items.push(MessageItem::ToolCall {
+                    name,
+                    args,
+                    status: ToolStatus::Running,
+                });
+            }
+            TuiEvent::ToolCallFinished { name, output, success } => {
+                // Update status of matching tool call
+                for item in self.items.iter_mut().rev() {
+                    if let MessageItem::ToolCall { name: tname, status, .. } = item {
+                        if tname == &name && *status == ToolStatus::Running {
+                            *status = if success { ToolStatus::Done } else { ToolStatus::Failed };
+                            break;
+                        }
+                    }
+                }
+                self.items.push(MessageItem::ToolResult { output, success });
+            }
+            TuiEvent::ApprovalRequested(req) => {
+                self.pending_approval = Some(req);
+            }
+            TuiEvent::TurnFinished => {
+                self.is_generating = false;
+            }
         }
     }
 }
