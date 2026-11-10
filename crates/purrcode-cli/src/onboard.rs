@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use purrcode_api::error::{PurrError, Result};
@@ -7,73 +9,59 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub fn run_interactive_onboard() -> Result<()> {
-    println!("🐾 Selamat datang di PurrCode AI Onboarding.");
-    println!("(PurrCode AI tidak memiliki default model hardcode — mari konfigurasi provider Anda)");
+    println!("🐾 Welcome to PurrCode AI Onboarding.");
+    println!(
+        "(PurrCode AI has zero hardcoded endpoints or models — configure your provider below)"
+    );
     println!();
 
-    println!("Tipe provider yang ingin Anda hubungkan:");
-    println!("  [1] Custom Endpoint / Local Proxy (Magpie, OmniRoute, vLLM, OpenAI-compatible)");
-    println!("  [2] Ollama (Lokal, offline)");
-    println!("  [3] Cloud API (OpenRouter, DeepSeek, OpenAI-compatible)");
-    print!("Pilih [1/2/3] (default 1): ");
-    io::stdout().flush().unwrap();
+    print!("Provider name (e.g. custom, ollama, openrouter): ");
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let provider_name = read_line_trimmed();
+    if provider_name.is_empty() {
+        return Err(PurrError::Config(
+            "Provider name is required (no hardcoded default)".to_string(),
+        ));
+    }
 
-    let choice = read_line_trimmed();
-    let choice = if choice.is_empty() { "1" } else { &choice };
+    print!("Endpoint Base URL (required, no hardcoded default): ");
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let base_url = read_line_trimmed();
+    if base_url.is_empty() {
+        return Err(PurrError::Config(
+            "Endpoint base_url is required (no hardcoded default)".to_string(),
+        ));
+    }
 
-    let (provider_name, base_url, api_key, model_id) = match choice {
-        "2" => {
-            let p_name = "ollama".to_string();
-            let b_url = "http://127.0.0.1:11434/v1".to_string();
-            let key = String::new();
-            print!("Nama model Ollama [default: qwen2.5-coder:7b]: ");
-            io::stdout().flush().unwrap();
-            let m_id = read_line_trimmed();
-            let m_id = if m_id.is_empty() { "qwen2.5-coder:7b".to_string() } else { m_id };
-            (p_name, b_url, key, m_id)
-        }
-        "3" => {
-            let p_name = "openrouter".to_string();
-            let b_url = "https://openrouter.ai/api/v1".to_string();
-            let key = read_password_hidden("OpenRouter API Key: ");
-            print!("Model ID [default: meta-llama/llama-3.3-70b-instruct:free]: ");
-            io::stdout().flush().unwrap();
-            let m_id = read_line_trimmed();
-            let m_id = if m_id.is_empty() { "meta-llama/llama-3.3-70b-instruct:free".to_string() } else { m_id };
-            (p_name, b_url, key, m_id)
-        }
-        _ => {
-            let p_name = "local-proxy".to_string();
-            print!("Base URL endpoint [default: http://127.0.0.1:3425/v1]: ");
-            io::stdout().flush().unwrap();
-            let b_url = read_line_trimmed();
-            let b_url = if b_url.is_empty() { "http://127.0.0.1:3425/v1".to_string() } else { b_url };
+    let api_key = read_password_hidden("API Key (leave empty if local endpoint requires no key): ");
 
-            let key = read_password_hidden("API Key (kosongkan jika local proxy tanpa key): ");
+    print!("Primary Model ID (required, no hardcoded default): ");
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let model_id = read_line_trimmed();
+    if model_id.is_empty() {
+        return Err(PurrError::Config(
+            "Model ID is required (no hardcoded default)".to_string(),
+        ));
+    }
 
-            print!("Model ID [misal: antigravity/gemini-3.8-flash]: ");
-            io::stdout().flush().unwrap();
-            let m_id = read_line_trimmed();
-            let m_id = if m_id.is_empty() { "antigravity/gemini-3.8-flash".to_string() } else { m_id };
-            (p_name, b_url, key, m_id)
-        }
-    };
-
-    print!("Preset mode perilaku? [1] Tabby (default supervised)  [2] Carrier (strict) [default 1]: ");
-    io::stdout().flush().unwrap();
+    print!("Mode preset? [1] tabby (default supervised)  [2] carrier (strict) [default 1]: ");
+    io::stdout().flush().map_err(PurrError::Io)?;
     let preset_choice = read_line_trimmed();
-    let preset = if preset_choice == "2" { "carrier" } else { "tabby" };
+    let preset = if preset_choice == "2" {
+        "carrier"
+    } else {
+        "tabby"
+    };
 
     let purrcode_dir = get_purrcode_dir()?;
     std::fs::create_dir_all(&purrcode_dir).map_err(PurrError::Io)?;
 
-    // Store API key safely in credentials file
+    // Store API key safely in credentials file (0600 on Unix)
     let env_var_name = format!("{}_API_KEY", provider_name.to_uppercase().replace('-', "_"));
     if !api_key.is_empty() {
         save_credential_safe(&purrcode_dir, &env_var_name, &api_key)?;
     }
 
-    // Build structured Config object (properly serialized via serde, no raw string interpolation)
     let mut models_map = HashMap::new();
     models_map.insert(
         model_id.clone(),
@@ -112,11 +100,13 @@ pub fn run_interactive_onboard() -> Result<()> {
 
     let target_path = purrcode_dir.join("purrcode.jsonc");
 
-    // Backup existing configuration if present
     if target_path.exists() {
         let backup_path = purrcode_dir.join("purrcode.jsonc.bak");
         let _ = std::fs::copy(&target_path, &backup_path);
-        println!("ℹ️  Konfigurasi lama di-backup ke: {}", backup_path.display());
+        println!(
+            "ℹ️  Existing configuration backed up to: {}",
+            backup_path.display()
+        );
     }
 
     let serialized = serde_json::to_string_pretty(&config)
@@ -125,8 +115,8 @@ pub fn run_interactive_onboard() -> Result<()> {
     std::fs::write(&target_path, serialized.as_bytes()).map_err(PurrError::Io)?;
 
     println!();
-    println!("✓ Konfigurasi aman tersimpan di: {}", target_path.display());
-    println!("✓ Coba sekarang: purrcode-ai -p \"halo PurrCode\"");
+    println!("✓ Configuration saved to: {}", target_path.display());
+    println!("✓ Try now: purrcode-ai -p \"hello PurrCode\"");
     Ok(())
 }
 
@@ -134,7 +124,6 @@ fn save_credential_safe(dir: &Path, key_name: &str, key_val: &str) -> Result<()>
     let creds_file = dir.join("credentials");
     let mut content = std::fs::read_to_string(&creds_file).unwrap_or_default();
 
-    // Check if key already exists, replace or append
     let mut replaced = false;
     let mut new_lines = Vec::new();
 
@@ -154,7 +143,6 @@ fn save_credential_safe(dir: &Path, key_name: &str, key_val: &str) -> Result<()>
     content = new_lines.join("\n") + "\n";
     std::fs::write(&creds_file, content.as_bytes()).map_err(PurrError::Io)?;
 
-    // Set 0600 file permission on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -169,7 +157,6 @@ fn read_password_hidden(prompt: &str) -> String {
     print!("{}", prompt);
     let _ = io::stdout().flush();
 
-    // If terminal supports raw mode, read with hidden characters
     if enable_raw_mode().is_ok() {
         let mut pass = String::new();
         loop {
@@ -192,18 +179,17 @@ fn read_password_hidden(prompt: &str) -> String {
         println!();
         pass.trim().to_string()
     } else {
-        // Fallback for non-TTY / piped stdin
         read_line_trimmed()
     }
 }
 
-fn read_line_trimmed() -> String {
+pub fn read_line_trimmed() -> String {
     let mut buf = String::new();
     let _ = io::stdin().read_line(&mut buf);
     buf.trim().to_string()
 }
 
-fn get_purrcode_dir() -> Result<PathBuf> {
+pub fn get_purrcode_dir() -> Result<PathBuf> {
     if let Some(home) = dirs_home() {
         Ok(home.join(".purrcode"))
     } else {
@@ -228,18 +214,18 @@ mod tests {
 
     #[test]
     fn test_save_credential_safe() {
-        let temp_dir = std::env::temp_dir().join(format!("purr_test_cred_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("purr_test_cred_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_dir);
 
-        save_credential_safe(&temp_dir, "TEST_API_KEY", "sk-secret-12345").unwrap();
+        save_credential_safe(&temp_dir, "TEST_API_KEY", "val_one").unwrap();
         let creds = std::fs::read_to_string(temp_dir.join("credentials")).unwrap();
-        assert!(creds.contains("TEST_API_KEY=sk-secret-12345"));
+        assert!(creds.contains("TEST_API_KEY=val_one"));
 
-        // Overwrite check
-        save_credential_safe(&temp_dir, "TEST_API_KEY", "sk-secret-updated").unwrap();
+        save_credential_safe(&temp_dir, "TEST_API_KEY", "val_two").unwrap();
         let creds2 = std::fs::read_to_string(temp_dir.join("credentials")).unwrap();
-        assert!(creds2.contains("TEST_API_KEY=sk-secret-updated"));
-        assert!(!creds2.contains("sk-secret-12345"));
+        assert!(creds2.contains("TEST_API_KEY=val_two"));
+        assert!(!creds2.contains("val_one"));
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -251,7 +237,7 @@ mod tests {
             "custom-provider".to_string(),
             ProviderConfig {
                 api: "openai-completions".to_string(),
-                base_url: Some("http://example.com/v1?token=\"quoted\"\\escaped".to_string()),
+                base_url: Some("https://endpoint.invalid/v1?param=\"quoted\"\\escaped".to_string()),
                 api_key: Some("${CUSTOM_API_KEY}".to_string()),
                 headers: HashMap::new(),
                 models: HashMap::new(),
@@ -270,8 +256,10 @@ mod tests {
         assert!(json_str.contains(r#"\"quoted\""#));
         let deserialized: Config = serde_json::from_str(&json_str).unwrap();
         assert_eq!(
-            deserialized.providers["custom-provider"].base_url.as_deref(),
-            Some("http://example.com/v1?token=\"quoted\"\\escaped")
+            deserialized.providers["custom-provider"]
+                .base_url
+                .as_deref(),
+            Some("https://endpoint.invalid/v1?param=\"quoted\"\\escaped")
         );
     }
 }

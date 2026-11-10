@@ -1,4 +1,6 @@
-use super::app::{MessageItem, ToolStatus, TuiApp};
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use super::app::{AskPromptRequest, MessageItem, ToolStatus, TuiApp};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -33,6 +35,23 @@ pub fn render(frame: &mut Frame, app: &TuiApp) {
         render_approval_card(frame, chunks[2], approval);
         render_subagent_bar(frame, chunks[3], app);
         render_input(frame, chunks[4], app);
+    } else if let Some(ref ask_req) = app.pending_ask {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Top status bar
+                Constraint::Min(4),    // Transcript / Messages
+                Constraint::Length(8), // Ask Picker Popup
+                Constraint::Length(1), // Subagent / Tool indicator bar
+                Constraint::Length(3), // Input area
+            ])
+            .split(frame.area());
+
+        render_header(frame, chunks[0], app);
+        render_transcript(frame, chunks[1], app);
+        render_ask_card(frame, chunks[2], ask_req);
+        render_subagent_bar(frame, chunks[3], app);
+        render_input(frame, chunks[4], app);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -55,7 +74,12 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
         Span::styled("Tool: ", Style::default().fg(TEXT_MUTED)),
-        Span::styled(&approval.tool_name, Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &approval.tool_name,
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" ── ", Style::default().fg(BORDER_COLOR)),
         Span::styled(&approval.description, Style::default().fg(TEXT_PRIMARY)),
     ]));
@@ -69,15 +93,26 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
             } else {
                 TEXT_MUTED
             };
-            lines.push(Line::from(Span::styled(format!("  {}", line), Style::default().fg(color))));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(color),
+            )));
         }
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("Actions: ", Style::default().fg(TEXT_MUTED)),
-        Span::styled("[a] Approve & Apply  ", Style::default().fg(SUCCESS_GREEN).add_modifier(Modifier::BOLD)),
-        Span::styled("[t] Reject / Deny    ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[a] Approve & Apply  ",
+            Style::default()
+                .fg(SUCCESS_GREEN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "[t] Reject / Deny    ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
         Span::styled("[e] Edit", Style::default().fg(ACCENT_ORANGE)),
     ]));
 
@@ -85,7 +120,61 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT_ORANGE))
-        .title(Span::styled(" ⚠️ Approval Required ", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            " ⚠️ Approval Required ",
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn render_ask_card(frame: &mut Frame, area: Rect, ask: &AskPromptRequest) {
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("Question: ", Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            &ask.question,
+            Style::default()
+                .fg(TEXT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    for (idx, opt) in ask.options.iter().enumerate() {
+        let is_selected = idx == ask.selected_idx;
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let style = if is_selected {
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_PRIMARY)
+        };
+        let desc = opt.description.as_deref().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}[{}] {} ", prefix, idx + 1, opt.label), style),
+            Span::styled(desc, Style::default().fg(TEXT_MUTED)),
+        ]));
+    }
+
+    lines.push(Line::from(vec![Span::styled(
+        "Use ↑/↓ or 1-9 to select, Enter to confirm, Esc to cancel",
+        Style::default().fg(TEXT_MUTED),
+    )]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_ORANGE))
+        .title(Span::styled(
+            " ❓ Decision Required ",
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
@@ -93,13 +182,27 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
 
 fn render_header(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let header_line = Line::from(vec![
-        Span::styled("🐾 PurrCode AI ", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "🐾 PurrCode AI ",
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("── ", Style::default().fg(BORDER_COLOR)),
-        Span::styled(format!("model: {} ", app.model_name), Style::default().fg(TEXT_PRIMARY)),
+        Span::styled(
+            format!("{} ", app.model_name),
+            Style::default().fg(TEXT_PRIMARY),
+        ),
         Span::styled("── ", Style::default().fg(BORDER_COLOR)),
-        Span::styled(format!("preset: {} ", app.preset_name), Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            format!("{} · {} ", app.preset_name, app.model_preset_name),
+            Style::default().fg(TEXT_MUTED),
+        ),
         Span::styled("── ", Style::default().fg(BORDER_COLOR)),
-        Span::styled(format!("session: {} ", app.session_id), Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            format!("session: {} ", app.session_id),
+            Style::default().fg(TEXT_MUTED),
+        ),
     ]);
 
     let paragraph = Paragraph::new(header_line);
@@ -111,12 +214,20 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
 
     if app.items.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("  Type a prompt below and press ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Enter", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Type a prompt below and press ",
+                Style::default().fg(TEXT_MUTED),
+            ),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(ACCENT_ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" to begin. Type ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("/help", Style::default().fg(ACCENT_ORANGE)),
+            Span::styled(" or ", Style::default().fg(TEXT_MUTED)),
             Span::styled("/quit", Style::default().fg(ACCENT_ORANGE)),
-            Span::styled(" or press ", Style::default().fg(TEXT_MUTED)),
-            Span::styled("Ctrl-C", Style::default().fg(ACCENT_ORANGE)),
             Span::styled(" to exit.", Style::default().fg(TEXT_MUTED)),
         ]));
         lines.push(Line::from(""));
@@ -126,16 +237,36 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
         match item {
             MessageItem::User(text) => {
                 lines.push(Line::from(vec![
-                    Span::styled("> ", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
-                    Span::styled(text, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "> ",
+                        Style::default()
+                            .fg(ACCENT_ORANGE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        text,
+                        Style::default()
+                            .fg(TEXT_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
                 lines.push(Line::from(""));
             }
             MessageItem::Assistant { text, reasoning } => {
                 if let Some(r) = reasoning {
                     lines.push(Line::from(vec![
-                        Span::styled("  ◈ Thinking: ", Style::default().fg(TEXT_MUTED).add_modifier(Modifier::ITALIC)),
-                        Span::styled(r, Style::default().fg(TEXT_MUTED).add_modifier(Modifier::ITALIC)),
+                        Span::styled(
+                            "  ◈ Thinking: ",
+                            Style::default()
+                                .fg(TEXT_MUTED)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                        Span::styled(
+                            r,
+                            Style::default()
+                                .fg(TEXT_MUTED)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
                     ]));
                 }
                 for line in text.lines() {
@@ -148,14 +279,23 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
             MessageItem::ToolCall { name, args, status } => {
                 let status_badge = match status {
-                    ToolStatus::Running => Span::styled(" [running]", Style::default().fg(RUNNING_YELLOW)),
+                    ToolStatus::Running => {
+                        Span::styled(" [running]", Style::default().fg(RUNNING_YELLOW))
+                    }
                     ToolStatus::Done => Span::styled(" [done]", Style::default().fg(SUCCESS_GREEN)),
-                    ToolStatus::Failed => Span::styled(" [failed]", Style::default().fg(Color::Red)),
+                    ToolStatus::Failed => {
+                        Span::styled(" [failed]", Style::default().fg(Color::Red))
+                    }
                 };
 
                 lines.push(Line::from(vec![
                     Span::styled("  ◈ Tool Call: ", Style::default().fg(ACCENT_ORANGE)),
-                    Span::styled(name, Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        name,
+                        Style::default()
+                            .fg(TEXT_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     status_badge,
                 ]));
                 lines.push(Line::from(vec![
@@ -179,7 +319,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(BORDER_COLOR))
-        .title(Span::styled(" Transcript ", Style::default().fg(TEXT_MUTED)));
+        .title(Span::styled(
+            " Transcript ",
+            Style::default().fg(TEXT_MUTED),
+        ));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -190,19 +333,34 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
 }
 
 fn render_subagent_bar(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let bar_line = Line::from(vec![
+    let mut spans = vec![
         Span::styled("subagents: ", Style::default().fg(TEXT_MUTED)),
         Span::styled("● whisker ", Style::default().fg(SUCCESS_GREEN)),
         Span::styled("● sphinx ", Style::default().fg(SUCCESS_GREEN)),
         Span::styled("● tinker ", Style::default().fg(SUCCESS_GREEN)),
+        Span::styled("● tuxeshadow ", Style::default().fg(SUCCESS_GREEN)),
         Span::styled("── ", Style::default().fg(BORDER_COLOR)),
         Span::styled(
-            if app.is_generating { "status: thinking... " } else { "status: ready " },
-            Style::default().fg(if app.is_generating { RUNNING_YELLOW } else { TEXT_MUTED }),
+            format!("{} tool ", app.tool_call_count),
+            Style::default().fg(TEXT_MUTED),
         ),
-    ]);
+        Span::styled("── ", Style::default().fg(BORDER_COLOR)),
+    ];
 
-    let paragraph = Paragraph::new(bar_line);
+    spans.push(Span::styled(
+        if app.is_generating {
+            "status: thinking... "
+        } else {
+            "status: ready "
+        },
+        Style::default().fg(if app.is_generating {
+            RUNNING_YELLOW
+        } else {
+            TEXT_MUTED
+        }),
+    ));
+
+    let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
 }
 
@@ -210,20 +368,28 @@ fn render_input(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if app.is_generating { RUNNING_YELLOW } else { ACCENT_ORANGE }))
-        .title(Span::styled(" Input (purr>) ", Style::default().fg(ACCENT_ORANGE)));
+        .border_style(Style::default().fg(if app.is_generating {
+            RUNNING_YELLOW
+        } else {
+            ACCENT_ORANGE
+        }))
+        .title(Span::styled(
+            " Input (purr>) ",
+            Style::default().fg(ACCENT_ORANGE),
+        ));
 
     let input_line = Line::from(vec![
-        Span::styled("purr> ", Style::default().fg(ACCENT_ORANGE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "purr> ",
+            Style::default()
+                .fg(ACCENT_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(&app.input, Style::default().fg(TEXT_PRIMARY)),
     ]);
 
     let paragraph = Paragraph::new(input_line).block(block);
     frame.render_widget(paragraph, area);
 
-    // Set terminal cursor position
-    frame.set_cursor_position((
-        area.x + 6 + (app.cursor_pos as u16) + 1,
-        area.y + 1,
-    ));
+    frame.set_cursor_position((area.x + 6 + (app.cursor_pos as u16) + 1, area.y + 1));
 }

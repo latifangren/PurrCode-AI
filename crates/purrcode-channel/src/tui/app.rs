@@ -1,11 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
 pub enum MessageItem {
     User(String),
-    Assistant { text: String, reasoning: Option<String> },
-    ToolCall { name: String, args: String, status: ToolStatus },
-    ToolResult { output: String, success: bool },
+    Assistant {
+        text: String,
+        reasoning: Option<String>,
+    },
+    ToolCall {
+        name: String,
+        args: String,
+        status: ToolStatus,
+    },
+    ToolResult {
+        output: String,
+        success: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,12 +34,39 @@ pub struct ApprovalRequest {
     pub tx: oneshot::Sender<bool>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AskOptionItem {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+pub struct AskPromptRequest {
+    pub question: String,
+    pub options: Vec<AskOptionItem>,
+    pub selected_idx: usize,
+    pub tx: oneshot::Sender<Option<String>>,
+}
+
 pub enum TuiEvent {
     TextChunk(String),
     ReasoningChunk(String),
-    ToolCallStarted { name: String, args: String },
-    ToolCallFinished { name: String, output: String, success: bool },
+    ToolCallStarted {
+        name: String,
+        args: String,
+    },
+    ToolCallFinished {
+        name: String,
+        output: String,
+        success: bool,
+    },
     ApprovalRequested(ApprovalRequest),
+    AskRequested(AskPromptRequest),
+    SubagentStatus {
+        id: String,
+        role: String,
+        status: String,
+    },
     TurnFinished,
 }
 
@@ -37,40 +76,61 @@ pub struct TuiApp {
     pub items: Vec<MessageItem>,
     pub model_name: String,
     pub preset_name: String,
+    pub model_preset_name: String,
     pub session_id: String,
     pub token_usage: u64,
+    pub tool_call_count: usize,
     pub is_generating: bool,
     pub should_quit: bool,
     pub scroll_offset: usize,
     pub pending_approval: Option<ApprovalRequest>,
+    pub pending_ask: Option<AskPromptRequest>,
+    pub active_subagents: Vec<(String, String, String)>,
 }
 
 impl TuiApp {
-    pub fn new(model_name: impl Into<String>, preset_name: impl Into<String>, session_id: impl Into<String>) -> Self {
+    pub fn new(
+        model_name: impl Into<String>,
+        preset_name: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
         Self {
             input: String::new(),
             cursor_pos: 0,
             items: Vec::new(),
             model_name: model_name.into(),
             preset_name: preset_name.into(),
+            model_preset_name: "free".to_string(),
             session_id: session_id.into(),
             token_usage: 0,
+            tool_call_count: 0,
             is_generating: false,
             should_quit: false,
             scroll_offset: 0,
             pending_approval: None,
+            pending_ask: None,
+            active_subagents: Vec::new(),
         }
+    }
+
+    pub fn with_model_preset(mut self, model_preset: impl Into<String>) -> Self {
+        self.model_preset_name = model_preset.into();
+        self
     }
 
     pub fn insert_char(&mut self, c: char) {
         self.input.insert(self.cursor_pos, c);
-        self.cursor_pos += 1;
+        self.cursor_pos += c.len_utf8();
     }
 
     pub fn backspace(&mut self) {
         if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
-            self.input.remove(self.cursor_pos);
+            let mut prev = self.cursor_pos - 1;
+            while prev > 0 && !self.input.is_char_boundary(prev) {
+                prev -= 1;
+            }
+            self.input.remove(prev);
+            self.cursor_pos = prev;
         }
     }
 
@@ -82,13 +142,21 @@ impl TuiApp {
 
     pub fn move_cursor_left(&mut self) {
         if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
+            let mut prev = self.cursor_pos - 1;
+            while prev > 0 && !self.input.is_char_boundary(prev) {
+                prev -= 1;
+            }
+            self.cursor_pos = prev;
         }
     }
 
     pub fn move_cursor_right(&mut self) {
         if self.cursor_pos < self.input.len() {
-            self.cursor_pos += 1;
+            let mut next = self.cursor_pos + 1;
+            while next < self.input.len() && !self.input.is_char_boundary(next) {
+                next += 1;
+            }
+            self.cursor_pos = next;
         }
     }
 
@@ -130,18 +198,31 @@ impl TuiApp {
                 }
             }
             TuiEvent::ToolCallStarted { name, args } => {
+                self.tool_call_count += 1;
                 self.items.push(MessageItem::ToolCall {
                     name,
                     args,
                     status: ToolStatus::Running,
                 });
             }
-            TuiEvent::ToolCallFinished { name, output, success } => {
-                // Update status of matching tool call
+            TuiEvent::ToolCallFinished {
+                name,
+                output,
+                success,
+            } => {
                 for item in self.items.iter_mut().rev() {
-                    if let MessageItem::ToolCall { name: tname, status, .. } = item {
+                    if let MessageItem::ToolCall {
+                        name: tname,
+                        status,
+                        ..
+                    } = item
+                    {
                         if tname == &name && *status == ToolStatus::Running {
-                            *status = if success { ToolStatus::Done } else { ToolStatus::Failed };
+                            *status = if success {
+                                ToolStatus::Done
+                            } else {
+                                ToolStatus::Failed
+                            };
                             break;
                         }
                     }
@@ -150,6 +231,17 @@ impl TuiApp {
             }
             TuiEvent::ApprovalRequested(req) => {
                 self.pending_approval = Some(req);
+            }
+            TuiEvent::AskRequested(req) => {
+                self.pending_ask = Some(req);
+            }
+            TuiEvent::SubagentStatus { id, role, status } => {
+                if let Some(existing) = self.active_subagents.iter_mut().find(|(i, _, _)| i == &id)
+                {
+                    existing.2 = status;
+                } else {
+                    self.active_subagents.push((id, role, status));
+                }
             }
             TuiEvent::TurnFinished => {
                 self.is_generating = false;

@@ -991,6 +991,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -999,6 +1000,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "crossterm",
  "purrcode-api",
@@ -1039,7 +1041,6 @@ dependencies = [
  "chrono",
  "purrcode-api",
  "purrcode-config",
- "purrcode-tools",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

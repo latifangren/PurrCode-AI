@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -13,7 +15,7 @@ pub struct Config {
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
 
-    #[serde(default)]
+    #[serde(default, alias = "mcpServers")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
@@ -101,8 +103,11 @@ pub struct McpServerConfig {
 }
 
 impl Config {
-    /// Find provider and model details for a given model string (e.g. "magpie/antigravity/gemini-3.8-flash" or "ollama:qwen2.5-coder:7b")
-    pub fn resolve_model<'a>(&'a self, target_model: &str) -> Option<(&'a str, &'a str, &'a ProviderConfig, &'a ModelConfig)> {
+    /// Find provider and model details for a given model string (format: "provider:model" or "provider/model")
+    pub fn resolve_model<'a>(
+        &'a self,
+        target_model: &str,
+    ) -> Option<(&'a str, &'a str, &'a ProviderConfig, &'a ModelConfig)> {
         // 1. Try matching provider:model prefix
         if let Some(colon_idx) = target_model.find(':') {
             let p_key = &target_model[..colon_idx];

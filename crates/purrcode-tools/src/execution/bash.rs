@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use crate::fs::read::resolve_confined_path;
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -18,7 +21,8 @@ impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "bash".to_string(),
-            description: "Execute a shell command with timeout and working directory support".to_string(),
+            description: "Execute a shell command with timeout and working directory support"
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -33,14 +37,21 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult> {
-        let args: BashArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
-                tool: "bash".to_string(),
-                message: format!("Invalid arguments: {e}"),
-            })?;
+        let args: BashArgs = serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
+            tool: "bash".to_string(),
+            message: format!("Invalid arguments: {e}"),
+        })?;
+
+        if ctx.is_dry_run {
+            return Ok(ToolResult {
+                output: format!("Dry-run: would execute command `{}`", args.command),
+                diff_preview: Some(format!("$ {}", args.command)),
+                metadata: None,
+            });
+        }
 
         let cwd = match args.workdir {
-            Some(ref dir) => ctx.workspace_root.join(dir),
+            Some(ref dir) => resolve_confined_path(dir, &ctx.workspace_root, "bash")?,
             None => ctx.workspace_root.clone(),
         };
 
@@ -63,6 +74,7 @@ impl Tool for BashTool {
         cmd.current_dir(cwd);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
 
         let child = cmd.spawn().map_err(|e| PurrError::Tool {
             tool: "bash".to_string(),

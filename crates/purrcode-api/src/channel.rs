@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::error::Result;
 use crate::event::AgentEvent;
 use async_trait::async_trait;

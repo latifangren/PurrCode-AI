@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
 use purrcode_api::provider::ModelProvider;
-use purrcode_core::AgentLoop;
-use purrcode_tools::ToolRegistry;
+use purrcode_core::{AgentLoop, ApprovalRequester};
+use purrcode_tools::{AskRequester, ToolRegistry};
 
 use crate::task::TaskTool;
 use crate::SubagentRegistry;
@@ -19,34 +22,60 @@ impl MeowstroOrchestrator {
         model: impl Into<String>,
         session_dir: impl Into<PathBuf>,
     ) -> Self {
-        let registry = Arc::new(Mutex::new(SubagentRegistry::new()));
-        let model_str = model.into();
-        let session_path = session_dir.into();
+        Self::with_options(provider, model, session_dir, None, None, false)
+    }
 
-        // Meowstro toolset: read-only + delegation (TaskTool). NO Write/Edit/Bash!
+    pub fn with_options(
+        provider: Arc<dyn ModelProvider>,
+        model: impl Into<String>,
+        session_dir: impl Into<PathBuf>,
+        approval_requester: Option<Arc<dyn ApprovalRequester>>,
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        yolo: bool,
+    ) -> Self {
+        let session_path = session_dir.into();
+        let registry = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(
+            &session_path,
+        )));
+        let model_str = model.into();
+
+        // Meowstro toolset: strictly read, grep, glob, find, todo, ask, task (+ read_skill).
+        // NEVER write, edit, or bash!
         let mut tool_reg = ToolRegistry::new();
-        tool_reg.register(Arc::new(purrcode_tools::fs::ReadTool)).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::search::GrepTool)).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::search::GlobTool)).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::search::FindTool)).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new())).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::coordination::AskTool::new())).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::web::WebsearchTool::new())).unwrap();
+        let _ = tool_reg.register(Arc::new(purrcode_tools::fs::ReadTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::search::GrepTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::search::GlobTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::search::FindTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new()));
+        let ask_tool = match ask_requester.clone() {
+            Some(req) => purrcode_tools::coordination::AskTool::with_requester(req),
+            None => purrcode_tools::coordination::AskTool::new(),
+        };
+        let _ = tool_reg.register(Arc::new(ask_tool));
 
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
         skill_mgr.discover_all(&std::path::PathBuf::from("."));
-        tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(Arc::new(Mutex::new(skill_mgr))))).unwrap();
+        let _ = tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(
+            Arc::new(Mutex::new(skill_mgr)),
+        )));
 
-        let task_tool = TaskTool::new(
+        let task_tool = TaskTool::with_options(
             registry.clone(),
             provider.clone(),
             model_str.clone(),
             session_path,
+            approval_requester.clone(),
+            ask_requester,
+            yolo,
         );
-        tool_reg.register(Arc::new(task_tool)).unwrap();
+        let _ = tool_reg.register(Arc::new(task_tool));
         tool_reg.freeze();
 
-        let agent_loop = AgentLoop::new(provider, model_str, Arc::new(tool_reg));
+        let mut agent_loop =
+            AgentLoop::new(provider, model_str, Arc::new(tool_reg)).with_yolo(yolo);
+        if let Some(req) = approval_requester {
+            agent_loop = agent_loop.with_approval_requester(req);
+        }
 
         Self {
             agent_loop,
@@ -59,17 +88,21 @@ impl MeowstroOrchestrator {
     }
 
     pub fn system_prompt(skills_index: &str) -> String {
-        let mut prompt = String::from(r#"You are Meowstro, the lead orchestrator and user's representative in PurrCode AI.
+        let mut prompt = String::from(
+            r#"You are Meowstro, the lead orchestrator and user's representative in PurrCode AI.
 You understand architecture, analyze user requests, devise execution plans, and delegate tasks to your specialized subagent team (The Clowder):
 - 'tinker': The fixer/implementer who has full write and bash tools to write code, edit files, and run tests.
-- 'whisker': The explorer who searches and scouts the codebase.
-- 'sphinx': The oracle advisor for complex architectural questions.
-- 'tuxeshadow': The shadow critic and auditor who reviews plans before execution.
+- 'whisker': The explorer who searches and scouts the codebase and documentation.
+- 'sphinx': The oracle advisor for complex architectural questions and hard debugging.
+- 'calico': The UI/TUI designer who reads, writes, and edits UI code.
+- 'tuxeshadow': The shadow critic and auditor who reviews plans and risky actions before execution.
+- 'clowder': The multi-seat council for ambiguous or high-risk architectural decisions.
 
 RULE OF HARNESS: You NEVER write or edit code directly, and you NEVER execute bash commands directly.
 When code needs to be created, modified, or tested, you MUST delegate the work to Tinker using the 'task' tool.
 When inspecting files, you may use 'read', 'grep', 'glob', and 'find'.
-Your main context holds plans, summaries, and architectural decisions."#);
+Your main context holds plans, summaries, and architectural decisions."#,
+        );
 
         if !skills_index.is_empty() {
             prompt.push_str("\n\n");

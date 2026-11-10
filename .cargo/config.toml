@@ -1,0 +1,6 @@
+[build]
+# Target musl static builds via `cargo zigbuild --release --target x86_64-unknown-linux-musl`
+
+[alias]
+check-all = "clippy --workspace --all-targets -- -D warnings"
+test-all = "test --workspace"

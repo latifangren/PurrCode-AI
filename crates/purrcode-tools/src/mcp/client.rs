@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -56,16 +58,21 @@ impl StdioMcpClient {
         let name = server_name.into();
         let mut cmd = Command::new(command);
         cmd.args(args);
+        scrub_sensitive_env(&mut cmd);
         for (k, v) in env {
             cmd.env(k, v);
         }
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::null());
+        cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| PurrError::Tool {
             tool: format!("mcp:{}", name),
-            message: format!("Failed to spawn MCP server '{}' (command: '{}'): {e}", name, command),
+            message: format!(
+                "Failed to spawn MCP server '{}' (command: '{}'): {e}",
+                name, command
+            ),
         })?;
 
         let stdin = child.stdin.take().ok_or_else(|| PurrError::Tool {
@@ -105,10 +112,13 @@ impl StdioMcpClient {
 
         {
             let mut stdin = self.stdin.lock().await;
-            stdin.write_all(req_json.as_bytes()).await.map_err(|e| PurrError::Tool {
-                tool: format!("mcp:{}", self.server_name),
-                message: format!("Failed to write to MCP stdin: {e}"),
-            })?;
+            stdin
+                .write_all(req_json.as_bytes())
+                .await
+                .map_err(|e| PurrError::Tool {
+                    tool: format!("mcp:{}", self.server_name),
+                    message: format!("Failed to write to MCP stdin: {e}"),
+                })?;
             stdin.flush().await.map_err(|e| PurrError::Tool {
                 tool: format!("mcp:{}", self.server_name),
                 message: format!("Failed to flush MCP stdin: {e}"),
@@ -121,10 +131,13 @@ impl StdioMcpClient {
 
         loop {
             line.clear();
-            let bytes_read = reader.read_line(&mut line).await.map_err(|e| PurrError::Tool {
-                tool: format!("mcp:{}", self.server_name),
-                message: format!("Failed to read line from MCP stdout: {e}"),
-            })?;
+            let bytes_read = reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| PurrError::Tool {
+                    tool: format!("mcp:{}", self.server_name),
+                    message: format!("Failed to read line from MCP stdout: {e}"),
+                })?;
 
             if bytes_read == 0 {
                 return Err(PurrError::Tool {
@@ -159,10 +172,13 @@ impl StdioMcpClient {
         };
         let notif_json = serde_json::to_string(&notif)? + "\n";
         let mut stdin = self.stdin.lock().await;
-        stdin.write_all(notif_json.as_bytes()).await.map_err(|e| PurrError::Tool {
-            tool: format!("mcp:{}", self.server_name),
-            message: format!("Failed to write notification to MCP stdin: {e}"),
-        })?;
+        stdin
+            .write_all(notif_json.as_bytes())
+            .await
+            .map_err(|e| PurrError::Tool {
+                tool: format!("mcp:{}", self.server_name),
+                message: format!("Failed to write notification to MCP stdin: {e}"),
+            })?;
         stdin.flush().await.map_err(|e| PurrError::Tool {
             tool: format!("mcp:{}", self.server_name),
             message: format!("Failed to flush MCP stdin: {e}"),
@@ -186,8 +202,13 @@ impl StdioMcpClient {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpToolDefinition>> {
-        let res = self.send_request("tools/list", Some(serde_json::json!({}))).await?;
-        let tools_val = res.get("tools").cloned().unwrap_or(Value::Array(Vec::new()));
+        let res = self
+            .send_request("tools/list", Some(serde_json::json!({})))
+            .await?;
+        let tools_val = res
+            .get("tools")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
         serde_json::from_value(tools_val).map_err(|e| PurrError::Tool {
             tool: format!("mcp:{}", self.server_name),
             message: format!("Failed to parse tools/list result: {e}"),
@@ -239,7 +260,9 @@ impl McpDynamicTool {
             mcp_tool_name: def.name,
             full_tool_name: full_name,
             description: def.description.unwrap_or_else(|| "MCP tool".to_string()),
-            schema: def.input_schema.unwrap_or_else(|| serde_json::json!({"type": "object"})),
+            schema: def
+                .input_schema
+                .unwrap_or_else(|| serde_json::json!({"type": "object"})),
             server_client,
         }
     }
@@ -250,14 +273,33 @@ impl Tool for McpDynamicTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.full_tool_name.clone(),
-            description: format!("[MCP: {}] {}", self.server_client.server_name, self.description),
+            description: format!(
+                "[MCP: {}] {}",
+                self.server_client.server_name, self.description
+            ),
             parameters: self.schema.clone(),
             tier: ApprovalTier::Exec,
         }
     }
 
-    async fn execute(&self, arguments: Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let result_text = self.server_client.call_tool(&self.mcp_tool_name, arguments).await?;
+    async fn execute(&self, arguments: Value, ctx: &ToolContext) -> Result<ToolResult> {
+        if ctx.is_dry_run {
+            return Ok(ToolResult {
+                output: format!(
+                    "Dry-run: would call MCP tool '{}' on server '{}'",
+                    self.mcp_tool_name, self.server_client.server_name
+                ),
+                diff_preview: Some(format!(
+                    "[MCP: {}] {}({})",
+                    self.server_client.server_name, self.mcp_tool_name, arguments
+                )),
+                metadata: None,
+            });
+        }
+        let result_text = self
+            .server_client
+            .call_tool(&self.mcp_tool_name, arguments)
+            .await?;
         Ok(ToolResult {
             output: result_text,
             diff_preview: None,
@@ -266,5 +308,26 @@ impl Tool for McpDynamicTool {
                 "mcp_tool": self.mcp_tool_name
             })),
         })
+    }
+}
+
+/// Removes PurrCode and provider secret environment variables before spawning child processes.
+pub fn scrub_sensitive_env(cmd: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        if let Some(k_str) = key.to_str() {
+            let upper = k_str.to_ascii_uppercase();
+            if upper.starts_with("PURRCODE_")
+                || upper.ends_with("_API_KEY")
+                || upper.ends_with("_SECRET")
+                || upper.ends_with("_TOKEN")
+                || upper == "OPENAI_API_KEY"
+                || upper == "ANTHROPIC_API_KEY"
+                || upper == "GEMINI_API_KEY"
+                || upper == "DEEPSEEK_API_KEY"
+                || upper == "OPENROUTER_API_KEY"
+            {
+                cmd.env_remove(&key);
+            }
+        }
     }
 }

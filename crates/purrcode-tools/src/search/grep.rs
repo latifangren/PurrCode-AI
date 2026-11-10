@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -35,14 +37,13 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult> {
-        let args: GrepArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
-                tool: "grep".to_string(),
-                message: format!("Invalid arguments: {e}"),
-            })?;
+        let args: GrepArgs = serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
+            tool: "grep".to_string(),
+            message: format!("Invalid arguments: {e}"),
+        })?;
 
         let search_root = match args.path {
-            Some(ref p) => ctx.workspace_root.join(p),
+            Some(ref p) => crate::fs::read::resolve_confined_path(p, &ctx.workspace_root, "grep")?,
             None => ctx.workspace_root.clone(),
         };
 
@@ -60,7 +61,11 @@ impl Tool for GrepTool {
             let mut results = Vec::new();
             let max_matches = 100;
 
-            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())).flatten() {
+            for entry in WalkDir::new(&search_root)
+                .into_iter()
+                .filter_entry(|e| !is_ignored(e.path()))
+                .flatten()
+            {
                 if entry.file_type().is_file() {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let rel_path = entry

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -47,9 +49,13 @@ impl Tool for WebsearchTool {
         }
     }
 
-    async fn execute(&self, arguments: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let args: WebsearchArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        let args: WebsearchArgs =
+            serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
                 tool: "websearch".to_string(),
                 message: format!("Invalid websearch arguments: {e}"),
             })?;
@@ -67,12 +73,18 @@ impl Tool for WebsearchTool {
                 if let Ok(html) = resp.text().await {
                     let text = extract_search_snippets(&html);
                     if text.is_empty() {
-                        format!("Search completed for query '{}', but no direct snippets found.", args.query)
+                        format!(
+                            "Search completed for query '{}', but no direct snippets found.",
+                            args.query
+                        )
                     } else {
                         text
                     }
                 } else {
-                    format!("Failed to parse search response for query '{}'.", args.query)
+                    format!(
+                        "Failed to parse search response for query '{}'.",
+                        args.query
+                    )
                 }
             }
             Err(e) => {

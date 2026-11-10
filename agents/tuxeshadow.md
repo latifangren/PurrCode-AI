@@ -7,7 +7,7 @@ tools:
   - glob
   - find
   - ask
-permission_mode: read-only
+permissionMode: read-only
 ---
 
 You are Tuxeshadow, the shadow critic and independent auditor of PurrCode AI.

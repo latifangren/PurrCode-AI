@@ -1,14 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallDelta, ToolCallRequest,
 };
-use purrcode_api::tool::ToolContext;
-use purrcode_tools::ToolRegistry;
+use purrcode_api::tool::{ApprovalTier, ToolContext, ToolRegistry};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use purrcode_api::tool::ApprovalTier;
+use crate::steering::SteeringQueue;
 
 #[async_trait]
 pub trait ApprovalRequester: Send + Sync {
@@ -28,6 +30,8 @@ pub struct AgentLoop {
     max_steps: usize,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
     is_yolo: bool,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    steering_queue: Option<SteeringQueue>,
 }
 
 impl AgentLoop {
@@ -43,6 +47,8 @@ impl AgentLoop {
             max_steps: 25,
             approval_requester: None,
             is_yolo: false,
+            cancel_flag: None,
+            steering_queue: None,
         }
     }
 
@@ -59,6 +65,23 @@ impl AgentLoop {
     pub fn with_yolo(mut self, yolo: bool) -> Self {
         self.is_yolo = yolo;
         self
+    }
+
+    pub fn with_cancel_flag(mut self, cancel_flag: Arc<AtomicBool>) -> Self {
+        self.cancel_flag = Some(cancel_flag);
+        self
+    }
+
+    pub fn with_steering_queue(mut self, queue: SteeringQueue) -> Self {
+        self.steering_queue = Some(queue);
+        self
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel_flag
+            .as_ref()
+            .map(|f| f.load(Ordering::SeqCst))
+            .unwrap_or(false)
     }
 
     /// Runs a turn with persistent multi-turn message history and optional event listener
@@ -92,6 +115,23 @@ impl AgentLoop {
         let mut final_answer = String::new();
 
         while step < self.max_steps {
+            if self.is_cancelled() {
+                return Err(PurrError::Internal(
+                    "Turn cancelled by user interrupt".to_string(),
+                ));
+            }
+
+            if let Some(ref sq) = self.steering_queue {
+                while let Some(steered) = sq.pop() {
+                    messages.push(ChatMessage {
+                        role: MessageRole::User,
+                        content: steered,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+            }
+
             step += 1;
 
             let request = CompletionRequest {
@@ -107,9 +147,16 @@ impl AgentLoop {
             let mut stream = self.provider.stream_completion(request).await?;
 
             let mut step_text = String::new();
-            let mut tool_calls_in_flight: HashMap<usize, (Option<String>, String, String)> = HashMap::new();
+            let mut tool_calls_in_flight: HashMap<usize, (Option<String>, String, String)> =
+                HashMap::new();
 
             while let Some(chunk) = stream.recv().await {
+                if self.is_cancelled() {
+                    return Err(PurrError::Internal(
+                        "Turn cancelled by user interrupt".to_string(),
+                    ));
+                }
+
                 if let Some(reasoning) = chunk.reasoning_delta {
                     if let Some(l) = listener {
                         l.on_text_chunk(&reasoning, true);
@@ -166,8 +213,13 @@ impl AgentLoop {
             }
 
             if executed_calls.is_empty() {
-                // Model provided final answer without calling any further tools
                 final_answer = step_text;
+                messages.push(ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: final_answer.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
                 break;
             }
 
@@ -189,32 +241,61 @@ impl AgentLoop {
                     l.on_tool_call_started(&tool_name, &args_str);
                 }
 
-                let (tool_output, is_success) = if let Some(tool) = self.tool_registry.get(&tool_name) {
-                    let args_val: serde_json::Value = serde_json::from_str(&args_str)
-                        .unwrap_or_else(|_| serde_json::json!({}));
+                let (tool_output, is_success) = if let Some(tool) =
+                    self.tool_registry.get(&tool_name)
+                {
+                    let args_val: serde_json::Value =
+                        serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
 
                     let def = tool.definition();
-                    let is_destructive = matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec);
+                    let is_destructive =
+                        matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec);
 
                     let is_approved = if !is_destructive || self.is_yolo {
                         true
                     } else if let Some(ref req) = self.approval_requester {
-                        req.request_approval(&tool_name, &format!("Run tool '{}'", tool_name), None).await
+                        let mut dry_ctx = ctx.clone();
+                        dry_ctx.is_dry_run = true;
+                        let preview = match tool.execute(args_val.clone(), &dry_ctx).await {
+                            Ok(dry_res) => dry_res.diff_preview,
+                            Err(_) => None,
+                        };
+                        req.request_approval(
+                            &tool_name,
+                            &format!("Run tool '{}'", tool_name),
+                            preview.as_deref(),
+                        )
+                        .await
                     } else {
                         // Supervised fail-closed! If no approval requester is wired, deny destructive actions.
                         false
                     };
 
                     if !is_approved {
-                        (format!("Action denied by approval policy: execution of '{}' requires explicit confirmation.", tool_name), false)
+                        (
+                                format!(
+                                    "Action denied by approval policy: execution of '{}' requires explicit confirmation.",
+                                    tool_name
+                                ),
+                                false,
+                            )
                     } else {
                         match tool.execute(args_val, ctx).await {
                             Ok(res) => (res.output, true),
-                            Err(e) => (format!("Error executing tool '{}': {}", tool_name, e), false),
+                            Err(e) => (
+                                format!("Error executing tool '{}': {}", tool_name, e),
+                                false,
+                            ),
                         }
                     }
                 } else {
-                    (format!("Error: tool '{}' not found in registry", tool_name), false)
+                    (
+                        format!(
+                            "Error: tool '{}' is not in preset for agent '{}'",
+                            tool_name, ctx.agent_role
+                        ),
+                        false,
+                    )
                 };
 
                 if let Some(l) = listener {
@@ -230,11 +311,36 @@ impl AgentLoop {
             }
         }
 
+        // ARCHITECTURE §2: when max_steps is reached, force a final text answer with tools disabled
         if step >= self.max_steps && final_answer.is_empty() {
-            return Err(PurrError::Internal(format!(
-                "Agent reached max steps ({}) without completing turn.",
-                self.max_steps
-            )));
+            let final_req = CompletionRequest {
+                model: self.model.clone(),
+                messages: messages.clone(),
+                tools: None,
+                temperature: Some(0.2),
+                max_tokens: None,
+                reasoning_effort: None,
+                stop: None,
+            };
+            if let Ok(mut stream) = self.provider.stream_completion(final_req).await {
+                while let Some(chunk) = stream.recv().await {
+                    if !chunk.delta.is_empty() {
+                        final_answer.push_str(&chunk.delta);
+                        if let Some(l) = listener {
+                            l.on_text_chunk(&chunk.delta, false);
+                        }
+                    }
+                    if chunk.is_finished {
+                        break;
+                    }
+                }
+            }
+            if final_answer.is_empty() {
+                final_answer = format!(
+                    "[Max steps ({}) reached; summarizing completed tool steps.]",
+                    self.max_steps
+                );
+            }
         }
 
         Ok(final_answer)
@@ -261,6 +367,139 @@ impl AgentLoop {
         }
         let listener = FnListener(tokio::sync::Mutex::new(on_text_chunk));
         let mut messages = Vec::new();
-        self.run_turn_with_history(&mut messages, prompt, system_prompt, ctx, Some(&listener)).await
+        self.run_turn_with_history(&mut messages, prompt, system_prompt, ctx, Some(&listener))
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use purrcode_api::provider::StreamChunk;
+    use purrcode_api::tool::{Tool, ToolDefinition, ToolResult};
+    use std::sync::Mutex;
+
+    struct DryRunMockTool;
+
+    #[async_trait]
+    impl Tool for DryRunMockTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "write_mock".to_string(),
+                description: "Mock write tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                tier: ApprovalTier::Write,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolResult> {
+            if ctx.is_dry_run {
+                Ok(ToolResult {
+                    output: "dry-run".to_string(),
+                    diff_preview: Some("+added line".to_string()),
+                    metadata: None,
+                })
+            } else {
+                Ok(ToolResult {
+                    output: "written".to_string(),
+                    diff_preview: Some("+added line".to_string()),
+                    metadata: None,
+                })
+            }
+        }
+    }
+
+    struct CaptureApprover {
+        captured_preview: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl ApprovalRequester for CaptureApprover {
+        async fn request_approval(
+            &self,
+            _tool: &str,
+            _description: &str,
+            preview: Option<&str>,
+        ) -> bool {
+            if let Ok(mut g) = self.captured_preview.lock() {
+                *g = preview.map(|s| s.to_string());
+            }
+            true
+        }
+    }
+
+    struct SingleToolTurnProvider {
+        step: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ModelProvider for SingleToolTurnProvider {
+        fn provider_name(&self) -> &str {
+            "mock"
+        }
+        fn is_healthy(&self) -> bool {
+            true
+        }
+        async fn stream_completion(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            if !self.step.swap(true, Ordering::SeqCst) {
+                let _ = tx.try_send(StreamChunk {
+                    delta: String::new(),
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index: 0,
+                        id: Some("call_1".to_string()),
+                        name: Some("write_mock".to_string()),
+                        arguments_delta: Some("{}".to_string()),
+                    }),
+                    is_finished: true,
+                    usage: None,
+                });
+            } else {
+                let _ = tx.try_send(StreamChunk {
+                    delta: "Done!".to_string(),
+                    reasoning_delta: None,
+                    tool_call_delta: None,
+                    is_finished: true,
+                    usage: None,
+                });
+            }
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_diff_preview_forwarded_to_approver() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DryRunMockTool)).unwrap();
+        let captured = Arc::new(Mutex::new(None));
+        let approver = Arc::new(CaptureApprover {
+            captured_preview: captured.clone(),
+        });
+        let provider = Arc::new(SingleToolTurnProvider {
+            step: AtomicBool::new(false),
+        });
+
+        let engine = AgentLoop::new(provider, "m", Arc::new(reg)).with_approval_requester(approver);
+        let ctx = ToolContext {
+            session_id: "s1".to_string(),
+            agent_role: "tinker".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            is_dry_run: false,
+        };
+
+        let out = engine
+            .run_turn("write file", None, &ctx, |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(out, "Done!");
+        assert_eq!(captured.lock().unwrap().as_deref(), Some("+added line"));
     }
 }

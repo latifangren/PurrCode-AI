@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: UI/TUI aesthetic guidelines: modern palette, differential rendering, anti-AI-slop.
+description: Load when designing or materially updating TUI/UI layouts, color palettes, Ratatui widgets, or web interfaces to enforce anti-AI-slop visual discipline. Do NOT load for backend logic, CLI parser flags, database migrations, or non-visual refactoring.
 ---
 
 # Frontend Design Skill

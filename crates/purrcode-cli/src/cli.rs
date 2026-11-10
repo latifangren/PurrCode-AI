@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -17,7 +19,7 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Run with Meowstro orchestrator + Tinker subagents
+    /// Run with Meowstro orchestrator + The Clowder subagents
     #[arg(long)]
     pub orchestrator: bool,
 
@@ -25,7 +27,15 @@ pub struct Cli {
     #[arg(long)]
     pub yolo: bool,
 
-    /// Override model to use (e.g. "magpie/antigravity/gemini-3.8-flash" or "ollama:qwen2.5-coder:7b")
+    /// Override mode preset (carrier, tabby, oyen)
+    #[arg(long)]
+    pub preset: Option<String>,
+
+    /// Override subagent model preset (free, local, premium, custom-endpoint)
+    #[arg(long)]
+    pub model_preset: Option<String>,
+
+    /// Override model to use (format: "provider:model" or "provider/model")
     #[arg(short = 'm', long)]
     pub model: Option<String>,
 
@@ -47,10 +57,38 @@ pub enum Commands {
     Preset {
         #[arg(default_value = "list")]
         action: String,
+        #[arg()]
+        name: Option<String>,
     },
-    /// List or inspect model presets (free, local, premium, custom)
+    /// List or inspect model presets (free, local, premium, custom-endpoint)
     ModelPreset {
         #[arg(default_value = "list")]
         action: String,
+        #[arg()]
+        name: Option<String>,
+    },
+    /// Manage sessions (list, export, fork)
+    Session {
+        #[arg(default_value = "list")]
+        action: String,
+        #[arg()]
+        id: Option<String>,
+        #[arg(long, default_value = "jsonl")]
+        format: String,
+    },
+    /// List or inspect installed plugins
+    Plugin {
+        #[arg(default_value = "list")]
+        action: String,
+    },
+    /// Generate or check systemd/OpenRC daemon service units
+    Service {
+        #[arg(default_value = "status")]
+        action: String,
+    },
+    /// Headless execution reading prompt from stdin or arguments for CI/scripts
+    Exec {
+        #[arg()]
+        prompt: Option<String>,
     },
 }

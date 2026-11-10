@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use purrcode_api::error::{PurrError, Result};
-use purrcode_api::provider::{CompletionRequest, MessageRole, ModelProvider, StreamChunk, TokenUsage};
+use purrcode_api::provider::{
+    CompletionRequest, MessageRole, ModelProvider, StreamChunk, TokenUsage,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -170,30 +174,38 @@ impl ModelProvider for OpenAiCompatibleProvider {
                     MessageRole::Assistant => "assistant",
                     MessageRole::Tool => "tool",
                 },
-                content: if m.content.is_empty() { None } else { Some(&m.content) },
+                content: if m.content.is_empty() {
+                    None
+                } else {
+                    Some(&m.content)
+                },
                 tool_calls: m.tool_calls.as_ref().map(|tcs| {
-                    tcs.iter().map(|tc| ApiToolCall {
-                        id: &tc.id,
-                        r#type: "function",
-                        function: ApiToolCallFunction {
-                            name: &tc.name,
-                            arguments: &tc.arguments,
-                        },
-                    }).collect()
+                    tcs.iter()
+                        .map(|tc| ApiToolCall {
+                            id: &tc.id,
+                            r#type: "function",
+                            function: ApiToolCallFunction {
+                                name: &tc.name,
+                                arguments: &tc.arguments,
+                            },
+                        })
+                        .collect()
                 }),
                 tool_call_id: m.tool_call_id.as_deref(),
             })
             .collect();
 
         let tools: Option<Vec<ApiTool>> = request.tools.as_ref().map(|ts| {
-            ts.iter().map(|t| ApiTool {
-                r#type: "function",
-                function: ApiFunction {
-                    name: &t.name,
-                    description: &t.description,
-                    parameters: &t.parameters,
-                },
-            }).collect()
+            ts.iter()
+                .map(|t| ApiTool {
+                    r#type: "function",
+                    function: ApiFunction {
+                        name: &t.name,
+                        description: &t.description,
+                        parameters: &t.parameters,
+                    },
+                })
+                .collect()
         });
 
         let body = ChatCompletionRequestBody {
@@ -220,16 +232,25 @@ impl ModelProvider for OpenAiCompatibleProvider {
             req_builder = req_builder.header(k, v);
         }
 
-        let response = req_builder.send().await.map_err(|e| {
-            PurrError::Provider {
-                provider: self.name.clone(),
-                message: format!("HTTP request to {} failed: {}", url, e),
-            }
+        let response = req_builder.send().await.map_err(|e| PurrError::Provider {
+            provider: self.name.clone(),
+            message: format!("HTTP request to {} failed: {}", url, e),
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let err_text = response.text().await.unwrap_or_default();
+            let lower = err_text.to_ascii_lowercase();
+            if lower.contains("content_policy_violation")
+                || lower.contains("safety_violation")
+                || lower.contains("policy_refusal")
+                || lower.contains("violates our usage policy")
+            {
+                return Err(PurrError::ProviderRefusal {
+                    provider: self.name.clone(),
+                    reason: format!("HTTP {}: {}", status, err_text),
+                });
+            }
             return Err(PurrError::Provider {
                 provider: self.name.clone(),
                 message: format!("HTTP error {}: {}", status, err_text),
@@ -307,8 +328,14 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                             let tool_call_delta = ToolCallDelta {
                                                 index: tc.index,
                                                 id: tc.id.clone(),
-                                                name: tc.function.as_ref().and_then(|f| f.name.clone()),
-                                                arguments_delta: tc.function.as_ref().and_then(|f| f.arguments.clone()),
+                                                name: tc
+                                                    .function
+                                                    .as_ref()
+                                                    .and_then(|f| f.name.clone()),
+                                                arguments_delta: tc
+                                                    .function
+                                                    .as_ref()
+                                                    .and_then(|f| f.arguments.clone()),
                                             };
                                             let _ = tx
                                                 .send(StreamChunk {

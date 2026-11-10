@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 pub mod client;
 
 pub use client::{McpDynamicTool, McpToolDefinition, StdioMcpClient};
@@ -30,7 +32,8 @@ impl McpManager {
                         let client_arc = Arc::new(client);
                         if let Ok(tools) = client_arc.list_tools().await {
                             for tool_def in tools {
-                                let dynamic_tool = McpDynamicTool::new(client_arc.clone(), tool_def);
+                                let dynamic_tool =
+                                    McpDynamicTool::new(client_arc.clone(), tool_def);
                                 let _ = registry.register(Arc::new(dynamic_tool));
                             }
                         }

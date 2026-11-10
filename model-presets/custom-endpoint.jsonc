@@ -1,37 +1,33 @@
 {
   "$schema": "model-preset/v1",
   "name": "custom-endpoint",
-  "description": "Template for local/LAN custom OpenAI-compatible router (e.g. Magpie, OmniRoute, vLLM)",
+  "description": "Template for user-configured custom OpenAI-compatible router/endpoint. Meowstro follows the session model.",
   "agents": {
-    "meowstro": {
-      "model": "magpie/antigravity/gemini-3.8-flash",
-      "variant": "medium"
-    },
     "whisker": {
-      "model": "magpie/group/custom-coding-free",
+      "model": "custom:fast-coder",
       "variant": "low"
     },
     "sphinx": {
-      "model": "magpie/codex/gpt-6-luna",
+      "model": "custom:primary-model",
       "variant": "high"
     },
     "calico": {
-      "model": "magpie/group/custom-coding-free",
+      "model": "custom:fast-coder",
       "variant": "medium"
     },
     "tinker": {
-      "model": "magpie/group/custom-coding-free",
+      "model": "custom:fast-coder",
       "variant": "high",
       "temperature": 0.2
     },
     "tuxeshadow": {
-      "model": "magpie/codex/gpt-6-luna",
+      "model": "custom:primary-model",
       "variant": "high"
     },
     "clowder": {
       "model": [
-        "magpie/group/custom-coding-free",
-        "magpie/antigravity/gemini-3.8-flash"
+        "custom:primary-model",
+        "custom:fast-coder"
       ]
     }
   }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -19,7 +21,9 @@ impl Tool for GlobTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "glob".to_string(),
-            description: "Find files matching a glob pattern (e.g. '**/*.rs', 'docs/*.md', 'src/**/lib.rs')".to_string(),
+            description:
+                "Find files matching a glob pattern (e.g. '**/*.rs', 'docs/*.md', 'src/**/lib.rs')"
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -33,14 +37,13 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, arguments: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult> {
-        let args: GlobArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
-                tool: "glob".to_string(),
-                message: format!("Invalid arguments: {e}"),
-            })?;
+        let args: GlobArgs = serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
+            tool: "glob".to_string(),
+            message: format!("Invalid arguments: {e}"),
+        })?;
 
         let search_root = match args.path {
-            Some(ref p) => ctx.workspace_root.join(p),
+            Some(ref p) => crate::fs::read::resolve_confined_path(p, &ctx.workspace_root, "glob")?,
             None => ctx.workspace_root.clone(),
         };
 
@@ -59,7 +62,11 @@ impl Tool for GlobTool {
             let mut results = Vec::new();
             let max_results = 100;
 
-            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())).flatten() {
+            for entry in WalkDir::new(&search_root)
+                .into_iter()
+                .filter_entry(|e| !is_ignored(e.path()))
+                .flatten()
+            {
                 if entry.file_type().is_file() {
                     let rel_path = entry
                         .path()

@@ -1,6 +1,6 @@
 ---
 name: webapp-testing
-description: Web application testing, headless browser validation via Playwright MCP, and endpoint reachability.
+description: Load when verifying runnable web applications, HTTP/SSE endpoints, or interactive browser UIs via headless browser MCP tools (Playwright) and reachability probes. Do NOT load for CLI-only unit tests, static documentation, or when the user explicitly opts out of testing.
 ---
 
 # WebApp Testing Skill

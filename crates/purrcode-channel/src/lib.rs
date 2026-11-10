@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 pub mod tui;
 
-pub use tui::{ApprovalRequest, MessageItem, ToolStatus, TuiApp, TuiEvent, TuiRunner};
+pub use tui::{
+    ApprovalRequest, AskPromptRequest, MessageItem, ToolStatus, TuiApp, TuiEvent, TuiRunner,
+};
 
 use purrcode_api::channel::Channel;
 use std::sync::Arc;

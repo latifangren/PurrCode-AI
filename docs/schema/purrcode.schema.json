@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PurrCode AI Configuration Schema",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "preset": {
+      "type": "string",
+      "description": "Mode preset name (carrier, tabby, oyen, or custom preset/v1 file)",
+      "default": "tabby"
+    },
+    "model_preset": {
+      "type": "string",
+      "description": "Subagent model preset name (free, local, premium, custom-endpoint, or custom model-preset/v1 file)"
+    },
+    "model": {
+      "type": "string",
+      "description": "Primary session model (provider:model or provider/model)"
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "api": { "type": "string", "default": "openai-completions" },
+          "base_url": { "type": "string" },
+          "api_key": { "type": "string" },
+          "headers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "models": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "context_window": { "type": "integer", "minimum": 65536 },
+                "max_tokens": { "type": "integer", "minimum": 1 },
+                "reasoning": { "type": "boolean" },
+                "reasoning_effort": {
+                  "type": "string",
+                  "enum": ["low", "medium", "high"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mcp_servers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "url": { "type": "string" },
+          "headers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

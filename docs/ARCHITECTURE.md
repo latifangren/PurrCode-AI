@@ -2,9 +2,9 @@
 
 Versi: 0.3 (revisi tinjauan ulang) — 2026-11-11
 Bahasa implementasi: **Rust** (keputusan user 2026-11-11 00:24 WIB).
-Lisensi: **GPL-3.0**. Tugas saat ini: dokumentasi & arsitektur saja — bukan kode.
+Lisensi: **GPL-3.0**. Nama binary: **`purrcode-ai`**.
 Arsitektur ini tidak bergantung pada detail bahasa: Bab 2–8 adalah desain;
-Bab 9 adalah pemetaan ke Rust.
+Bab 9 adalah pemetaan ke Rust di `crates/`.
 
 ## 1. Gambaran sistem
 
@@ -170,15 +170,15 @@ Satu model preset = satu file JSONC berskema `model-preset/v1`:
 
 ```jsonc
 {
-  "schema": "model-preset/v1",
+  "$schema": "model-preset/v1",
   "name": "free",
   "extends": "base",              // opsional, satu parent saja (ala slim)
   "agents": {
-    "whisker": { "model": "ollama:qwen2.5-coder:32b" },
+    "whisker": { "model": "ollama:qwen2.5-coder:7b", "variant": "low" },
     "sphinx":  { "model": ["openrouter:meta-llama/llama-3.3-70b-instruct:free",
-                            "ollama:qwen2.5-coder:32b"],
+                            "ollama:qwen2.5-coder:7b"],
                  "variant": "high" },
-    "tinker":  { "model": "ollama:qwen2.5-coder:32b", "temperature": 0.2 }
+    "tinker":  { "model": "ollama:qwen2.5-coder:7b", "temperature": 0.2 }
   }
 }
 ```
@@ -206,7 +206,7 @@ Urutan penentuan model subagent (menang yang paling atas):
 
 Model Meowstro (main agent) TIDAK diatur preset model — ia memakai model sesi
 (dari `model` di preset mode / `/model` / config). Preset model hanya mengatur
-subagent (Whisker/Sphinx/Calico/Tinker/kursi Clowder) — sama seperti slim yang
+subagent (Whisker/Sphinx/Calico/Tinker/Tuxeshadow/kursi Clowder) — sama seperti slim yang
 preset-nya hanya mengatur inferensi subagent, sementara main agent memakai
 pemilihan model native host.
 
@@ -527,22 +527,20 @@ guard prototype pollution, migrasi legacy no-clobber + backup (ala `omo.jsonc`).
 ## 9. Implementasi v0.1 (Rust)
 
 ```
-src/  (workspace Cargo — rantai crate satu arah, ala OpenHuman, ditegakkan CI)
-  purrcode-api/       # trait Tool/Channel/ModelProvider/Plugin (kontrak bersama)
-  purrcode-core/      # event bus, agent loop, session store
-  purrcode-provider/  # adapter: Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral,
-                      #   Groq, Cerebras, OpenRouter, Kimi, MiniMax, custom endpoint,
-                      #   Ollama/LM Studio; fallback chain + cooldown
-  purrcode-tools/     # 12 tool inti + registry
-  purrcode-orchestrator/ # work graph, task(), registry subagent
-  purrcode-memory/    # trait MemoryBackend + MarkdownMemory default + compaction
-  purrcode-plugin/    # manager + hooks + transport process JSON-RPC
-  purrcode-channel/   # registry + TUI (ratatui) + json/print
-  purrcode-approval/  # rule engine + audit
-  purrcode-config/    # JSONC berlapis + onboarding
-  purrcode-service/   # systemd/OpenRC install (ala zeroclaw service install)
-  purrcode-web/       # v0.4: HTTP + SSE + WebUI
-  purrcode-cli/       # binary: clap (agent/gateway/web/cron/skills/onboard/plugin/service)
+crates/  (workspace Cargo — rantai crate satu arah, ala OpenHuman, ditegakkan CI)
+  purrcode-api/       # trait Tool/Channel/ModelProvider/Plugin + ToolRegistry (kontrak bersama)
+  purrcode-config/    # JSONC berlapis + validator 64K + loader preset/v1 & model-preset/v1
+  purrcode-core/      # event bus, agent loop, session store JSONL, steering queue
+  purrcode-provider/  # adapter: OpenAI-compatible + 11 provider default URL + Ollama;
+                      #   FallbackRouter + cooldown + ProviderRefusal
+  purrcode-tools/     # 12 tool inti + read_skill + MCP stdio client
+  purrcode-orchestrator/ # Meowstro, The Clowder, task(), SubagentRegistry, workgraph.json
+  purrcode-memory/    # trait MemoryBackend + MarkdownMemory default (mtime hot-reload)
+  purrcode-plugin/    # manager + manifest plugin.yaml + hooks + transport process JSON-RPC
+  purrcode-channel/   # registry + TUI (ratatui) + Ask picker + Approval card
+  purrcode-approval/  # rule engine 3 sumbu + secret scrubber + audit.jsonl & rotasi
+  purrcode-service/   # systemd/OpenRC generator & status (ala zeroclaw service install)
+  purrcode-cli/       # binary `purrcode-ai`: clap (onboard/doctor/preset/model-preset/session/plugin/service/exec)
 ```
 
 - **Stack:** tokio (async), ratatui + crossterm (TUI), rusqlite (session store
@@ -574,8 +572,7 @@ src/  (workspace Cargo — rantai crate satu arah, ala OpenHuman, ditegakkan CI)
 | 0.3 | Cron + kurator skill + sandbox OS | Otonom harian tanpa intervensi |
 | 0.4 | WebUI khusus (`purrcode web`): sesi, plugin manager, scheduler | WebUI lokal jalan, TUI tetap utama |
 
-Catatan: **tugas saat ini hanya sampai dokumentasi & arsitektur (dokumen ini).
-Tidak ada kode yang ditulis pada tahap ini** — keputusan user 2026-11-11.
+Catatan: Implementasi crate v0.1 berjalan di `crates/` mengikuti panduan sprint di `docs/ROADMAP_SPRINT.md` dan ADR terpusat di `docs/DECISIONS.md`.
 
 ## 11. Keputusan yang dicatat
 
@@ -644,4 +641,4 @@ Tidak ada kode yang ditulis pada tahap ini** — keputusan user 2026-11-11.
     Trigger sempit: evaluasi plan sebelum eksekusi, sebelum aksi destruktif/di luar workspace, saat replan setelah error, dan wajib pada cron job otomatis.
     Bekerja atas artefak mentah (diff, plan JSON, tool args). Non-binding secara default: Meowstro bisa override dengan alasan tercatat di audit log (`⚠ [shadow overridden]`).
     Tanpa tool `task` (rantai delegasi tetap tunggal di Meowstro).
-    → `PRD.md` §4.1 F4, §4.5 butir 7; `DESIGN.md` ADR-012.
+    → `PRD.md` §4.1 F4, §4.5 butir 7; `DECISIONS.md` ADR-012.

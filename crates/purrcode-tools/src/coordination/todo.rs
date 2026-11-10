@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -48,7 +50,9 @@ impl Tool for TodoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "todo".to_string(),
-            description: "Record and update task plan progress checklist. Keep exactly one item in_progress.".to_string(),
+            description:
+                "Record and update task plan progress checklist. Keep exactly one item in_progress."
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -75,12 +79,15 @@ impl Tool for TodoTool {
         }
     }
 
-    async fn execute(&self, arguments: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let args: TodoArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
-                tool: "todo".to_string(),
-                message: format!("Invalid todo arguments: {e}"),
-            })?;
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        let args: TodoArgs = serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
+            tool: "todo".to_string(),
+            message: format!("Invalid todo arguments: {e}"),
+        })?;
 
         let mut output = String::new();
         output.push_str("📋 Task Plan Progress:\n");

@@ -97,11 +97,12 @@ Detail kontraknya di `ARCHITECTURE.md` §3.
   rollout JSONL + compaction via model); claude-code (MEMORY.md + CLAUDE.md hierarkis +
   `/compact` dengan instruksi fokus).
 
-**Keputusan PurrCode:** 3 lapis ala PicoClaw, tanpa vector DB di v0.1 —
-(1) session JSONL append-only, (2) SQLite FTS5 untuk recall, (3) `MEMORY.md` +
-`SOUL.md` + `USER.md` ala Hermes/Claude sebagai memori yang bisa dibaca manusia.
+**Keputusan PurrCode:** Default minimal `MarkdownMemory` (`MEMORY.md` + `SOUL.md` +
+`USER.md` + `.purrcode/MEMORY.md` per proyek) + session JSONL append-only, tanpa
+database wajib di v0.1; SQLite FTS5 dan backend eksternal diletakkan sebagai plugin
+opsional di belakang trait `MemoryBackend` v1 (lihat §4 butir 5 dan `ARCHITECTURE.md` §4).
 Skill: format `SKILL.md` + frontmatter (standar terbuka agentskills.io), dimuat on-demand;
-kurator skill ala Hermes ditunda ke v0.3 (default: skill ditulis manusia / `purrcode skill learn`
+kurator skill ala Hermes ditunda ke v0.3 (default: skill ditulis manusia / `purrcode-ai skill learn`
 manual, bukan otomatis).
 
 ### 2.3 Plugin — "Everything is a Plugin" dalam versi yang ringan
@@ -249,9 +250,9 @@ Temuan yang mengubah desain PurrCode:
 
 1. **Rust, single binary statis musl**, feature-gating ala ZeroClaw. → `ARCHITECTURE.md` §1, §9
 2. Core daemon + event bus; TUI, Telegram, dan WebUI (v0.4) = channel tipis. → `ARCHITECTURE.md` §2, §6
-3. Meowstro + The Clowder (Set Clowder, keputusan user 2026-11-11):
-   Meowstro/Whisker/Sphinx/Calico/Tinker/Clowder — adaptasi Pantheon slim,
-   Whisker menyerap Librarian. → `PRD.md` §4
+3. Meowstro + The Clowder (Set Clowder, 7 agen, keputusan user 2026-11-11):
+   Meowstro/Whisker/Sphinx/Calico/Tinker/Tuxeshadow/Clowder — adaptasi Pantheon slim +
+   Shadow Auditor independen, Whisker menyerap Librarian. → `PRD.md` §4
 4. Subagent: continuation ID + handoff file + registry. → `ARCHITECTURE.md` §3
 5. Memory default MD minimal (MarkdownMemory) + SKILL.md on-demand; FTS5,
    vector, dan backend eksternal = plugin di belakang trait `MemoryBackend`

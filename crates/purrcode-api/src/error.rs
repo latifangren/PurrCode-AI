@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use thiserror::Error;
 
 /// Core PurrCode error enumeration
@@ -7,16 +9,10 @@ pub enum PurrError {
     Config(String),
 
     #[error("Provider error ({provider}): {message}")]
-    Provider {
-        provider: String,
-        message: String,
-    },
+    Provider { provider: String, message: String },
 
     #[error("Provider policy refusal by {provider}: {reason}")]
-    ProviderRefusal {
-        provider: String,
-        reason: String,
-    },
+    ProviderRefusal { provider: String, reason: String },
 
     #[error("Tool execution failed ({tool}): {message}")]
     Tool { tool: String, message: String },

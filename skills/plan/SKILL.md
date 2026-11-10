@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Plan multi-step refactors, architectural migrations, and complex features before writing code.
+description: Load when tackling multi-step tasks (3+ distinct phases), architectural migrations, or cross-crate features that require an explicit milestone checklist and `todo` tracking before implementation. Do NOT load for atomic one-file typo fixes, single-line edits, or direct Q&A.
 ---
 
 # Plan Skill

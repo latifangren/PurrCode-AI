@@ -111,3 +111,46 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
   - Tombol interaktif: `[a]` Setuju/Apply, `[t]` Tolak/Deny, `[e]` Edit (teruji).
 - [x] **6.3 Onboarding Wizard Interaktif (`purrcode-ai onboard`)**
   - Panduan interaktif setup endpoint (Local Proxy Magpie, Ollama, Cloud API), API key, model, dan preset yang langsung menulis `purrcode.jsonc` (teruji).
+
+---
+
+## Sprint 7: Konfigurasi Berlapis, Preset Engine, dan Provider Router
+> **Tujuan:** Menutup celah konfigurasi hierarkis, gate konteks 64K, loader `preset/v1` & `model-preset/v1`, serta fallback router.
+
+- [x] **7.1 Hierarchical Config Merge & 64K Context Gate (`crates/purrcode-config/`)**
+  - Merge berjenjang system -> `~/.purrcode/purrcode.jsonc` -> `purrcode.jsonc` -> `.purrcode/purrcode.jsonc` + `mcp.json` (teruji).
+  - Validasi `MIN_CONTEXT_WINDOW = 65536` menolak model < 64K (teruji).
+- [x] **7.2 Mode Preset (`preset/v1`) & Model Preset (`model-preset/v1`) Loaders**
+  - Discovery dan parsing dinamis `presets/*.jsonc` dan `model-presets/*.jsonc` dengan dukungan `extends` satu parent (teruji).
+- [x] **7.3 Provider Default Base URLs, Fallback Router & `ProviderRefusal` (`crates/purrcode-provider/`)**
+  - Default base URL untuk 11 provider bawaan + Ollama/LM Studio (teruji).
+  - `FallbackRouter` dengan cooldown error teknis dan penghentian rantai saat `PurrError::ProviderRefusal` (teruji).
+
+---
+
+## Sprint 8: Session Store, Stateful Subagent Resume, dan Penegakan Toolset 7 Agen
+> **Tujuan:** Menyelesaikan kontrak anti-hilang-konteks subagent, penyimpanan sesi JSONL, dan toolset The Clowder.
+
+- [x] **8.1 Session Store & Non-Destructive Compaction (`crates/purrcode-core/src/session.rs`)**
+  - Append-only `sessions/<id>.jsonl`, `fork_session`, `export_session` (JSONL/HTML), dan `compact_messages` (teruji).
+  - Dry-run diff preview diteruskan ke `ApprovalRequester` sebelum eksekusi tool tulis/eksekusi (teruji).
+- [x] **8.2 Stateful Subagent Resume & Disk Registry (`crates/purrcode-orchestrator/`)**
+  - Persistensi `subagents/<id>.json`, `subagents/<id>/history.json`, `brief.md`, `result.md`, dan `workgraph.json` (teruji).
+  - Skenario PRD §4.5: delegasi berantai & resume menggunakan continuation ID `purr_<id>` yang sama dengan riwayat utuh (teruji).
+- [x] **8.3 Penegakan Toolset 7 Agen, Clowder Council, & Hash-Anchored Edit**
+  - Penegakan toolset `meowstro`, `whisker`, `sphinx`, `calico`, `tinker`, `tuxeshadow`, dan 2-seat paralel `clowder` (teruji).
+  - Hash-anchoring FNV-1a (`expected_hash` / `content_hash`) dan workspace confinement pada `read`, `write`, `edit`, `bash`, `find`, `glob`, `grep` (teruji).
+
+---
+
+## Sprint 9: Approval Rule Engine, Audit Log, Memory Hot-Reload, Plugin RPC, & TUI/CLI
+> **Tujuan:** Menyelesaikan sistem keamanan 3 sumbu, rotasi audit, memory forget/mtime, plugin JSON-RPC, dan slash commands.
+
+- [x] **9.1 Approval Gate 3 Sumbu & Audit Logger (`crates/purrcode-approval/`)**
+  - Evaluasi `deny > ask > allow`, penyaringan `[FILTERED]`, dan penulisan `audit.jsonl` dengan rotasi ukuran (teruji).
+- [x] **9.2 Memory `forget` & `mtime` Hot-Reload (`crates/purrcode-memory/`)**
+  - Pemuatan `SOUL.md`, `USER.md`, `MEMORY.md`, dan `.purrcode/MEMORY.md` beserta penghapusan fakta `forget` (teruji).
+- [x] **9.3 Plugin Manager JSON-RPC & Capability Default-Deny (`crates/purrcode-plugin/`)**
+  - Parser `plugin.yaml`, isolasi secret environment (`scrub_plugin_env`), dan lifecycle hooks (teruji).
+- [x] **9.4 TUI Ask Picker, Slash Commands, Embedded Skills, & Subcommand CLI**
+  - Widget `AskPromptRequest` di Ratatui, slash commands TUI, 8 skill bawaan ter-embed di binary, dan subcommand CLI `preset`, `model-preset`, `session`, `plugin`, `service`, `exec` (teruji).

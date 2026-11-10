@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Systematic debugging: reproduction, hypothesis generation, root cause isolation, and regression verification.
+description: Load when diagnosing a bug, test failure, crash, or regression that requires reproduction, hypothesis testing, root-cause isolation, and regression verification. Do NOT load for greenfield scaffolding, pure documentation edits, formatting-only runs, or routine status questions.
 ---
 
 # Debug Skill

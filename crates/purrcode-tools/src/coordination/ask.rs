@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -76,12 +78,15 @@ impl Tool for AskTool {
         }
     }
 
-    async fn execute(&self, arguments: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let args: AskArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
-                tool: "ask".to_string(),
-                message: format!("Invalid ask arguments: {e}"),
-            })?;
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        let args: AskArgs = serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
+            tool: "ask".to_string(),
+            message: format!("Invalid ask arguments: {e}"),
+        })?;
 
         if args.options.is_empty() {
             return Err(PurrError::Tool {
@@ -93,7 +98,12 @@ impl Tool for AskTool {
         // 1. If an explicit AskRequester is provided (e.g. from TUI channel), use it
         if let Some(ref req) = self.requester {
             if let Some(selected_id) = req.request_decision(&args.question, &args.options).await {
-                let label = args.options.iter().find(|o| o.id == selected_id).map(|o| o.label.as_str()).unwrap_or(&selected_id);
+                let label = args
+                    .options
+                    .iter()
+                    .find(|o| o.id == selected_id)
+                    .map(|o| o.label.as_str())
+                    .unwrap_or(&selected_id);
                 return Ok(ToolResult {
                     output: format!("Selected decision: {} ({})", selected_id, label),
                     diff_preview: None,
@@ -128,7 +138,10 @@ impl Tool for AskTool {
                     if num >= 1 && num <= args.options.len() {
                         let selected = &args.options[num - 1];
                         return Ok(ToolResult {
-                            output: format!("Selected decision: {} ({})", selected.id, selected.label),
+                            output: format!(
+                                "Selected decision: {} ({})",
+                                selected.id, selected.label
+                            ),
                             diff_preview: None,
                             metadata: Some(serde_json::json!({
                                 "selected_id": selected.id,
@@ -166,7 +179,9 @@ impl Tool for AskTool {
                 output.push_str(&format!("  • [{}] {}\n", opt.id, opt.label));
             }
         }
-        output.push_str("\n[Decision Pending: User input required. No option was automatically selected.]");
+        output.push_str(
+            "\n[Decision Pending: User input required. No option was automatically selected.]",
+        );
 
         Ok(ToolResult {
             output,
@@ -207,7 +222,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(res.output.contains("Decision Pending: Choose database type"));
+        assert!(res
+            .output
+            .contains("Decision Pending: Choose database type"));
         assert!(res.output.contains("[sqlite] SQLite"));
         assert!(res.output.contains("No option was automatically selected"));
     }

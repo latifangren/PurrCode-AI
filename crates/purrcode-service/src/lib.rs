@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 pub struct ServiceInstaller;
 
 impl ServiceInstaller {
@@ -32,5 +34,15 @@ depend() {
 }
 "#
         .to_string()
+    }
+
+    pub fn status_report() -> String {
+        if std::path::Path::new("/etc/systemd/system/purrcode-ai.service").exists() {
+            "systemd unit installed at /etc/systemd/system/purrcode-ai.service".to_string()
+        } else if std::path::Path::new("/etc/init.d/purrcode-ai").exists() {
+            "OpenRC init script installed at /etc/init.d/purrcode-ai".to_string()
+        } else {
+            "not installed (run `purrcode-ai service install --print` to inspect unit)".to_string()
+        }
     }
 }

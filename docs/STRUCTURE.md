@@ -65,14 +65,22 @@ PurrCode-AI/
 ├── .gitignore                  # Filter ketat (target/, references/, .purrcode/, dll.)
 ├── AGENTS.md                   # Aturan kerja agen & manusia di repo ini
 ├── README.md                   # Ringkasan proyek & status
+├── LICENSE                     # GNU GPL v3.0
+├── purrcode.jsonc.example      # Contoh konfigurasi lengkap
+├── agents/                     # Definisi 7 agen The Clowder (.md + frontmatter)
+├── skills/                     # 8 skill bawaan v0.1 (SKILL.md + kontrak routing)
 ├── docs/                       # Dokumentasi arsitektur & desain
 │   ├── 00-analysis-references.md # Analisis repo referensi & lisensi
 │   ├── PRD.md                  # Product Requirements Document (v0.3)
 │   ├── ARCHITECTURE.md         # Spesifikasi arsitektur teknis
 │   ├── DESIGN.md               # Desain TUI, UX, dan ADR
 │   ├── STRUCTURE.md            # File ini (panduan folder & file)
-│   ├── DECISIONS.md            # Catatan ADR terpusat (Architecture Decision Records)
-│   └── DEPENDENCIES.md         # Audit lisensi dependensi GPL-3.0
+│   ├── DECISIONS.md            # Catatan ADR terpusat (ADR-001 s/d ADR-012)
+│   ├── DEPENDENCIES.md         # Audit lisensi dependensi GPL-3.0
+│   ├── SUBAGENTS.md            # Kontrak protokol handoff & continuation ID
+│   ├── MCP.md                  # Spesifikasi klien MCP stdio/HTTP
+│   ├── LSP.md                  # Strategi code intelligence & LSP
+│   └── ROADMAP_SPRINT.md       # Checklist eksekusi sprint
 ├── presets/                    # Mode presets bawaan (preset/v1)
 │   ├── carrier.jsonc           # Strict mode
 │   ├── tabby.jsonc             # Default supervised mode
@@ -234,7 +242,7 @@ crates/purrcode-orchestrator/
 └── src/
     ├── lib.rs              # Orchestrator facade
     ├── meowstro.rs         # Meowstro orchestrator loop (read-only + delegation guard) (< 500 baris)
-    ├── clowder.rs          # The Clowder team definitions (Whisker, Sphinx, Calico, Tinker)
+    ├── clowder.rs          # The Clowder team definitions (Whisker, Sphinx, Calico, Tinker, Tuxeshadow, Clowder)
     ├── subagent/
     │   ├── mod.rs          # Subagent runner
     │   ├── continuation.rs # Continuation ID generator & resolver (purr_<id>)

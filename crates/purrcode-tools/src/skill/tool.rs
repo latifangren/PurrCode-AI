@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
@@ -27,7 +29,9 @@ impl Tool for ReadSkillTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_skill".to_string(),
-            description: "Load the full instructions and guidelines for one available skill by name".to_string(),
+            description:
+                "Load the full instructions and guidelines for one available skill by name"
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -39,9 +43,13 @@ impl Tool for ReadSkillTool {
         }
     }
 
-    async fn execute(&self, arguments: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let args: ReadSkillArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        let args: ReadSkillArgs =
+            serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
                 tool: "read_skill".to_string(),
                 message: format!("Invalid read_skill arguments: {e}"),
             })?;

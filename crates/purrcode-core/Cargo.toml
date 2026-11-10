@@ -8,7 +8,6 @@ description = "PurrCode AI event bus, agent loop engine, and session management"
 [dependencies]
 purrcode-api.workspace = true
 purrcode-config.workspace = true
-purrcode-tools.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true

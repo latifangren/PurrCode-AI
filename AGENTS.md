@@ -36,11 +36,12 @@ docs contradicts your instinct, the docs win until the user changes them.
 | Agent | Role | Tool set (enforced at runtime, not by prompt) |
 |---|---|---|
 | Meowstro | Orchestrator, the user's representative | `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task` — **never `write`, `edit`, `bash`** |
-| Whisker | Explorer (absorbs Librarian) | read-only + `webfetch`, `websearch` |
-| Sphinx | Oracle | read-only + `ask` |
-| Calico | Designer (UI/TUI) | read + `write`, `edit` |
-| Tinker | Fixer — the only full implementer | all 12 v0.1 tools |
-| Clowder | Council, 2–3 seats, different models | read-only |
+| Whisker | Explorer (absorbs Librarian) | read-only (`read`, `grep`, `glob`, `find`) + `webfetch`, `websearch` |
+| Sphinx | Oracle | read-only (`read`, `grep`, `glob`, `find`) + `ask` |
+| Calico | Designer (UI/TUI) | `read`, `write`, `edit`, `grep`, `glob`, `find` (no `bash`) |
+| Tinker | Fixer — the only full implementer | all v0.1 implementation tools (no `task`) |
+| Tuxeshadow | Shadow Auditor — independent plan/risk critic | read-only (`read`, `grep`, `glob`, `find`) + `ask` (no `task`, no `write`/`edit`/`bash`) |
+| Clowder | Council, 2–3 seats, different models | read-only (`read`, `grep`, `glob`, `find`) |
 
 Rules:
 
@@ -66,7 +67,7 @@ Two preset kinds, separate namespaces:
   `--preset` / config / per-project override. Adding a mode = adding a file.
 - **Model preset** (`model-presets/*.jsonc`, schema `model-preset/v1`):
   inference settings per subagent. Built-ins: `free` (default),
-  `local`, `premium`, + user custom files (name = filename).
+  `local`, `premium`, `custom-endpoint`, + user custom files (name = filename).
 
 `yolo` is about **approval** only; `god` is about **guardrails** only — two
 separate decisions, two separate flags. `oyen` is never `yolo` automatically.

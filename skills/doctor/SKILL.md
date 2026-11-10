@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Diagnosing PurrCode AI runtime issues, provider health, model context bounds, and environment readiness.
+description: Load ONLY when diagnosing PurrCode AI installation, configuration, provider reachability, 64K context window gates, or MCP child process health. Do NOT load for ordinary repository code bugs, user application tests, or third-party project troubleshooting.
 ---
 
 # Doctor Skill

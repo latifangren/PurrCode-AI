@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 pub mod app;
 pub mod render;
 
-pub use app::{ApprovalRequest, MessageItem, ToolStatus, TuiApp, TuiEvent};
+pub use app::{
+    ApprovalRequest, AskOptionItem, AskPromptRequest, MessageItem, ToolStatus, TuiApp, TuiEvent,
+};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -85,6 +89,13 @@ fn run_loop<B: ratatui::backend::Backend>(
                     app.should_quit = true;
                     break;
                 }
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('d')
+                    && app.input.is_empty()
+                {
+                    app.should_quit = true;
+                    break;
+                }
 
                 // If approval card is active, intercept [a], [t], [e]
                 if let Some(req) = app.pending_approval.take() {
@@ -114,8 +125,52 @@ fn run_loop<B: ratatui::backend::Backend>(
                             continue;
                         }
                         _ => {
-                            // Put request back if other key pressed
                             app.pending_approval = Some(req);
+                            continue;
+                        }
+                    }
+                }
+
+                // If Ask picker is active, intercept Up/Down/Enter/Esc/1..9
+                if let Some(mut ask_req) = app.pending_ask.take() {
+                    match key.code {
+                        KeyCode::Up => {
+                            if ask_req.selected_idx > 0 {
+                                ask_req.selected_idx -= 1;
+                            }
+                            app.pending_ask = Some(ask_req);
+                            continue;
+                        }
+                        KeyCode::Down => {
+                            if ask_req.selected_idx + 1 < ask_req.options.len() {
+                                ask_req.selected_idx += 1;
+                            }
+                            app.pending_ask = Some(ask_req);
+                            continue;
+                        }
+                        KeyCode::Enter => {
+                            let chosen = ask_req
+                                .options
+                                .get(ask_req.selected_idx)
+                                .map(|o| o.id.clone());
+                            let _ = ask_req.tx.send(chosen);
+                            continue;
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            let idx = (c as usize).saturating_sub('1' as usize);
+                            if let Some(opt) = ask_req.options.get(idx) {
+                                let _ = ask_req.tx.send(Some(opt.id.clone()));
+                            } else {
+                                app.pending_ask = Some(ask_req);
+                            }
+                            continue;
+                        }
+                        KeyCode::Esc => {
+                            let _ = ask_req.tx.send(None);
+                            continue;
+                        }
+                        _ => {
+                            app.pending_ask = Some(ask_req);
                             continue;
                         }
                     }
@@ -138,21 +193,25 @@ fn run_loop<B: ratatui::backend::Backend>(
                     }
                     KeyCode::Enter => {
                         if let Some(cmd) = app.submit_input() {
-                            if cmd == "/quit" || cmd == "/exit" {
-                                app.should_quit = true;
-                                break;
-                            } else {
-                                app.items.push(MessageItem::User(cmd.clone()));
-                                app.is_generating = true;
-                                if let Some(p_tx) = prompt_tx {
-                                    let _ = p_tx.send(cmd);
-                                } else {
-                                    app.items.push(MessageItem::Assistant {
-                                        text: format!("Echo response for '{}' (TUI standalone mode).", cmd),
-                                        reasoning: None,
-                                    });
-                                    app.is_generating = false;
+                            if handle_slash_command(app, &cmd, prompt_tx) {
+                                if app.should_quit {
+                                    break;
                                 }
+                                continue;
+                            }
+                            app.items.push(MessageItem::User(cmd.clone()));
+                            app.is_generating = true;
+                            if let Some(p_tx) = prompt_tx {
+                                let _ = p_tx.send(cmd);
+                            } else {
+                                app.items.push(MessageItem::Assistant {
+                                    text: format!(
+                                        "Echo response for '{}' (TUI standalone mode).",
+                                        cmd
+                                    ),
+                                    reasoning: None,
+                                });
+                                app.is_generating = false;
                             }
                         }
                     }
@@ -167,4 +226,117 @@ fn run_loop<B: ratatui::backend::Backend>(
     }
 
     Ok(())
+}
+
+fn handle_slash_command(
+    app: &mut TuiApp,
+    cmd: &str,
+    prompt_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+) -> bool {
+    if !cmd.starts_with('/') {
+        return false;
+    }
+
+    let mut parts = cmd.split_whitespace();
+    let head = parts.next().unwrap_or("");
+    let rest: String = parts.collect::<Vec<_>>().join(" ");
+
+    match head {
+        "/quit" | "/exit" => {
+            app.should_quit = true;
+            true
+        }
+        "/clear" => {
+            app.items.clear();
+            app.scroll_offset = 0;
+            true
+        }
+        "/new" => {
+            app.items.clear();
+            app.scroll_offset = 0;
+            app.session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send("/__internal_reset".to_string());
+            }
+            app.items.push(MessageItem::Assistant {
+                text: format!("Started new session: {}", app.session_id),
+                reasoning: None,
+            });
+            true
+        }
+        "/help" | "/?" => {
+            app.items.push(MessageItem::Assistant {
+                text: "Slash commands: /help /new /resume <id> /fork /compact [focus] /clear /memory /export [jsonl|html] /stats /model <provider:model> /preset [name] /model-preset [name] /skill <name> /plugin list /status /quit".to_string(),
+                reasoning: None,
+            });
+            true
+        }
+        "/status" | "/stats" => {
+            app.items.push(MessageItem::Assistant {
+                text: format!(
+                    "Session: {} | Model: {} | Preset: {} | Model-Preset: {} | Tool Calls: {} | Tokens: {}",
+                    app.session_id,
+                    app.model_name,
+                    app.preset_name,
+                    app.model_preset_name,
+                    app.tool_call_count,
+                    app.token_usage
+                ),
+                reasoning: None,
+            });
+            true
+        }
+        "/preset" => {
+            if !rest.is_empty() {
+                app.preset_name = rest.clone();
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Switched session mode preset to '{}'.", rest),
+                    reasoning: None,
+                });
+            } else {
+                app.items.push(MessageItem::Assistant {
+                    text: format!(
+                        "Active mode preset: {} (available: carrier, tabby, oyen)",
+                        app.preset_name
+                    ),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        "/model-preset" => {
+            if !rest.is_empty() {
+                app.model_preset_name = rest.clone();
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Switched session model preset to '{}'.", rest),
+                    reasoning: None,
+                });
+            } else {
+                app.items.push(MessageItem::Assistant {
+                    text: format!(
+                        "Active model preset: {} (available: free, local, premium, custom-endpoint)",
+                        app.model_preset_name
+                    ),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        "/model" => {
+            if !rest.is_empty() {
+                app.model_name = rest.clone();
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Active model updated to '{}'.", rest),
+                    reasoning: None,
+                });
+            } else {
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Current model: {}", app.model_name),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        _ => false,
+    }
 }

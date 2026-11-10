@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 pub mod openai;
+pub mod router;
 
 pub use openai::OpenAiCompatibleProvider;
 use purrcode_api::provider::ModelProvider;
 use purrcode_config::Config;
+pub use router::FallbackRouter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,7 +29,8 @@ impl ProviderRegistry {
         self.providers.get(name).cloned()
     }
 
-    /// Builds a ProviderRegistry dynamically from loaded PurrCode configuration
+    /// Builds a ProviderRegistry dynamically from loaded PurrCode configuration.
+    /// Zero hardcoded URLs: every provider endpoint comes from `purrcode.jsonc`.
     pub fn from_config(config: &Config) -> Self {
         let mut registry = Self::new();
 

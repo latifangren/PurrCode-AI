@@ -1,6 +1,6 @@
 ---
 name: scaffold
-description: Guidelines for greenfield project bootstrapping, modular layout, and workspace structure.
+description: Load when bootstrapping a brand-new greenfield project, adding a new Cargo workspace crate, or establishing modular directory layouts. Do NOT load for bug fixes in existing files, verification-only runs, or read-only audits.
 ---
 
 # Scaffold Skill

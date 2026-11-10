@@ -1,6 +1,6 @@
 ---
 name: review
-description: Code review and verification checklist for bugs, edge cases, and architectural regressions.
+description: Load when auditing a repository, reviewing code changes or pull requests, checking contract compliance, or verifying security and boundary conditions. Do NOT load for greenfield scaffolding or simple conversational greetings.
 ---
 
 # Review Skill

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use purrcode_api::error::{PurrError, Result};
@@ -53,7 +55,9 @@ impl Tool for WebfetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "webfetch".to_string(),
-            description: "Fetch web content or API documentation via HTTP/HTTPS GET with SSRF protection".to_string(),
+            description:
+                "Fetch web content or API documentation via HTTP/HTTPS GET with SSRF protection"
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -65,9 +69,13 @@ impl Tool for WebfetchTool {
         }
     }
 
-    async fn execute(&self, arguments: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult> {
-        let args: WebfetchArgs = serde_json::from_value(arguments)
-            .map_err(|e| PurrError::Tool {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolResult> {
+        let args: WebfetchArgs =
+            serde_json::from_value(arguments).map_err(|e| PurrError::Tool {
                 tool: "webfetch".to_string(),
                 message: format!("Invalid webfetch arguments: {e}"),
             })?;
@@ -79,12 +87,15 @@ impl Tool for WebfetchTool {
 
         validate_destination(&parsed_url)?;
 
-        let resp = self.client.get(parsed_url.clone()).send().await.map_err(|e| {
-            PurrError::Tool {
+        let resp = self
+            .client
+            .get(parsed_url.clone())
+            .send()
+            .await
+            .map_err(|e| PurrError::Tool {
                 tool: "webfetch".to_string(),
                 message: format!("HTTP request to '{}' failed: {e}", args.url),
-            }
-        })?;
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -120,7 +131,10 @@ impl Tool for WebfetchTool {
 
         let final_text = if clean_text.len() > MAX_OUTPUT_CHARS {
             let truncated_slice = safe_truncate_str(&clean_text, MAX_OUTPUT_CHARS);
-            format!("{}\n\n(output truncated at {} characters)", truncated_slice, MAX_OUTPUT_CHARS)
+            format!(
+                "{}\n\n(output truncated at {} characters)",
+                truncated_slice, MAX_OUTPUT_CHARS
+            )
         } else if was_truncated {
             format!("{}\n\n(stream truncated at 1 MB limit)", clean_text)
         } else {
@@ -146,7 +160,10 @@ pub fn validate_destination(url: &Url) -> Result<()> {
         other => {
             return Err(PurrError::Tool {
                 tool: "webfetch".to_string(),
-                message: format!("Blocked scheme '{}': only http and https are allowed.", other),
+                message: format!(
+                    "Blocked scheme '{}': only http and https are allowed.",
+                    other
+                ),
             });
         }
     }
@@ -172,7 +189,10 @@ pub fn validate_destination(url: &Url) -> Result<()> {
         if is_private_or_restricted_ip(ip) {
             return Err(PurrError::Tool {
                 tool: "webfetch".to_string(),
-                message: format!("Access to private/loopback/metadata IP '{}' is blocked for security.", ip),
+                message: format!(
+                    "Access to private/loopback/metadata IP '{}' is blocked for security.",
+                    ip
+                ),
             });
         }
     }
@@ -249,7 +269,10 @@ mod tests {
         assert!(validate_destination(&Url::parse("http://172.16.0.5").unwrap()).is_err());
 
         // Cloud Metadata IP
-        assert!(validate_destination(&Url::parse("http://169.254.169.254/latest/meta-data").unwrap()).is_err());
+        assert!(validate_destination(
+            &Url::parse("http://169.254.169.254/latest/meta-data").unwrap()
+        )
+        .is_err());
 
         // Localhost domain
         assert!(validate_destination(&Url::parse("http://localhost:3000").unwrap()).is_err());
@@ -260,8 +283,13 @@ mod tests {
         assert!(validate_destination(&Url::parse("file:///etc/passwd").unwrap()).is_err());
 
         // Valid public URLs
-        assert!(validate_destination(&Url::parse("https://raw.githubusercontent.com/test").unwrap()).is_ok());
-        assert!(validate_destination(&Url::parse("https://crates.io/api/v1/crates").unwrap()).is_ok());
+        assert!(validate_destination(
+            &Url::parse("https://raw.githubusercontent.com/test").unwrap()
+        )
+        .is_ok());
+        assert!(
+            validate_destination(&Url::parse("https://crates.io/api/v1/crates").unwrap()).is_ok()
+        );
     }
 
     #[test]

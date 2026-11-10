@@ -6,11 +6,11 @@ Telegram = fase 2. WebUI khusus = fase mendatang (v0.4).
 Referensi: `docs/00-analysis-references.md`.
 
 **Keputusan user 2026-11-11 00:24 WIB (mengikat, menggantikan draf v0.1):**
-bahasa implementasi **Rust**, lisensi **GPL-3.0**, bahasa balasan agen **adaptif**
-(mengikuti bahasa user dan model LLM yang dipakai — seperti AI coding agent pada
-umumnya, bukan bahasa yang dikunci), provider = provider terkenal + custom endpoint,
-dan nanti ada WebUI khusus ala DeepSeek Harness. **Tugas saat ini hanya dokumentasi
-dan arsitektur — bukan menulis kode.**
+bahasa implementasi **Rust**, lisensi **GPL-3.0**, nama binary **`purrcode-ai`**,
+bahasa balasan agen **adaptif** (mengikuti bahasa user dan model LLM yang dipakai —
+seperti AI coding agent pada umumnya, bukan bahasa yang dikunci), provider = provider
+terkenal + custom endpoint, dan nanti ada WebUI khusus ala DeepSeek Harness.
+Implementasi v0.1 telah berjalan di `crates/` sesuai `docs/ROADMAP_SPRINT.md`.
 
 ## 1. Visi
 
@@ -66,12 +66,12 @@ Satu kalimat: **Muse/Hermes yang ringan, modular, dan sesuai gaya coding user.**
 ### 4.1 v0.1 — Terminal CLI / TUI (fase ini)
 
 Fungsional:
-- F1. **TUI interaktif** (`purrcode`): transcript streaming, tool call sebagai card,
+- F1. **TUI interaktif** (`purrcode-ai`): transcript streaming, tool call sebagai card,
   preview edit sebelum ditulis ke disk, `ask` tool untuk ambiguitas (pilihan
   terstruktur di tengah turn), sidebar status subagent, status bar (model, preset
   mode, preset model, token, sesi). Keyboard-first; mouse opsional.
-- F2. **Mode non-TUI sejak hari pertama:** `purrcode -p "<prompt>"` (one-shot),
-  `purrcode --json` (event stream NDJSON), `purrcode exec` (headless untuk skrip/CI).
+- F2. **Mode non-TUI sejak hari pertama:** `purrcode-ai -p "<prompt>"` (one-shot),
+  `purrcode-ai --json` (event stream NDJSON), `purrcode-ai exec` (headless untuk skrip/CI).
 - F3. **Agent loop:** gather context → take action (tool) → verify → jawab.
   Interrupt (Ctrl-C / Esc) membatalkan run yang sedang jalan; steering (pesan susulan
   di tengah run) masuk antrean satu-per-satu.
@@ -294,8 +294,9 @@ dengan nama bebas**. Per agen: `model` (provider:model atau fallback chain),
 
 - Bawaan v0.1: `free` (default — Ollama lokal + tier gratis; tanpa jalur
   berbayar), `local` (semua Ollama, offline penuh), `premium` (flagship per
-  peran, BYO key, dipilih eksplisit — bukan default).
-- Berlaku untuk subagent (Whisker/Sphinx/Calico/Tinker/kursi Clowder); model
+  peran, BYO key, dipilih eksplisit — bukan default), `custom-endpoint` (template
+  router/proxy lokal seperti Magpie/OmniRoute).
+- Berlaku untuk subagent (Whisker/Sphinx/Calico/Tinker/Tuxeshadow/kursi Clowder); model
   Meowstro = model sesi. Urutan menang: model eksplisit di `task()` >
   preset model > frontmatter agen > model sesi.
 - Binding per sesi (snapshot di `sessions/<id>/model-preset.json`); ubah
@@ -303,7 +304,7 @@ dengan nama bebas**. Per agen: `model` (provider:model atau fallback chain),
   mengubah delegasi berikutnya di sesi itu; tanpa restart.
 - Perintah: `/model-preset` (manager TUI 3 tingkat: daftar → susunan agen →
   edit agen) + `/model-preset <nama>` (fast path); CLI
-  `purrcode model-preset list/show`; flag `--model-preset`.
+  `purrcode-ai model-preset list/show`; flag `--model-preset`.
 
 Kriteria penerimaan: preset `free` bisa dipakai tanpa satu pun key berbayar;
 preset custom baru dikenali hanya dengan menambah file; ganti preset di tengah
@@ -353,7 +354,7 @@ sesi tidak mengulang pekerjaan child yang sedang berjalan.
 | 3 | Bahasa balasan: **adaptif** — mengikuti bahasa user & model LLM yang dipakai | ✅ Diputuskan user |
 | 4 | Provider: terkenal dulu (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral, Groq, Cerebras, OpenRouter, Kimi, MiniMax) + custom endpoint + Ollama/LM Studio | ✅ Diputuskan user |
 | 5 | WebUI khusus ala DeepSeek Harness di fase mendatang (v0.4) | ✅ Diputuskan user |
-| 6 | Tugas saat ini: **dokumentasi & arsitektur saja, bukan menulis kode** | ✅ Diputuskan user |
+| 6 | Tahap awal dokumentasi & arsitektur dilanjutkan implementasi crate Rust v0.1 | ✅ Selesai & Diimplementasikan |
 | 7 | Repo publik atau privat? | ✅ **Publik** (`latifangren/purrcode-ai`, keputusan user 2026-11-11) |
 | 8 | Model default v0.1 | ✅ **Tidak ada default hardcode** — wajib di-set user lebih dulu via config/onboarding (bisa custom endpoint/proxy seperti Magpie/OmniRoute ala opencode & omp). Menolak jalan tanpa konfigurasi model. (keputusan user 2026-11-11) |
 | 9 | Nama binary / perintah: **`purrcode-ai`** | ✅ Diputuskan user (2026-11-11) |

@@ -1,6 +1,6 @@
 ---
 name: git
-description: Source-control safety rules, atomic commit grouping, and commit conventions.
+description: Load before creating commits, branches, tags, or recovering Git working tree/index state. Enforces explicit per-action user approval before any push or history change. Do NOT load for read-only `git status` or `git diff` inspections when no Git write is requested.
 ---
 
 # Git Safety Skill

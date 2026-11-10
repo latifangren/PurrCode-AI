@@ -2,8 +2,8 @@
 
 Versi: 0.3 (revisi tinjauan ulang) — 2026-11-11
 Cakupan: TUI terminal (v0.1) + Telegram (v0.2) + WebUI (v0.4) + config/onboarding
-+ gaya repo. **Tugas saat ini hanya dokumentasi & arsitektur — bukan kode.**
-Bahasa implementasi: Rust. Lisensi: GPL-3.0.
++ gaya repo. Binary: **`purrcode-ai`**.
+Bahasa implementasi: Rust. Lisensi: GPL-3.0. Catatan ADR terpusat di `docs/DECISIONS.md`.
 
 ## 1. Prinsip desain
 
@@ -83,15 +83,15 @@ Bahasa implementasi: Rust. Lisensi: GPL-3.0.
 /preset [nama] /model-preset [nama]
 ```
 
-Semua perintah juga tersedia sebagai subcommand CLI (`purrcode session list`, dst.)
+Semua perintah juga tersedia sebagai subcommand CLI (`purrcode-ai session list`, dst.)
 agar bisa dipakai dari skrip.
 
 ### 2.3 Mode non-TUI
 
-- `purrcode -p "<prompt>"` — one-shot, output teks biasa ke stdout.
-- `purrcode -p "<prompt>" --json` — NDJSON event stream (satu event per baris,
+- `purrcode-ai -p "<prompt>"` — one-shot, output teks biasa ke stdout.
+- `purrcode-ai -p "<prompt>" --json` — NDJSON event stream (satu event per baris,
   kompatibel dengan pola pi/omp RPC): `{"type":"tool_call",...}`.
-- `purrcode exec < skrip` — headless untuk CI; exit code non-nol bila agen gagal.
+- `purrcode-ai exec < skrip` — headless untuk CI; exit code non-nol bila agen gagal.
 
 ## 3. Telegram (v0.2) — desain channel
 
@@ -176,10 +176,10 @@ coding agent pada umumnya. Bukan bahasa yang dikunci di config.
 ## 6. Suara & penamaan
 
 - **Nama:** PurrCode AI. Binary: `purrcode-ai`. Prompt: `purr>`. Agen (Set Clowder,
-  keputusan user 2026-11-11): Meowstro (orchestrator), Whisker (explorer),
-  Sphinx (oracle), Calico (designer), Tinker (fixer), Clowder (council).
-  Tim agen disebut **The Clowder**, bukan Pantheon — nama asalnya dari Pantheon
-  oh-my-opencode-slim, tapi identitasnya dirombak ke tema kucing.
+  7 agen, keputusan user 2026-11-11): Meowstro (orchestrator), Whisker (explorer),
+  Sphinx (oracle), Calico (designer), Tinker (fixer), Tuxeshadow (shadow auditor),
+  Clowder (council). Tim agen disebut **The Clowder**, bukan Pantheon — nama
+  asalnya dari Pantheon oh-my-opencode-slim, tapi identitasnya dirombak ke tema kucing.
 - **Suara agen:** ringkas, langsung ke hasil, dalam bahasa user saat itu. Tanpa
   korporat filler ("Tentu!", "Pertanyaan bagus!"). Bila tidak tahu, bilang tidak
   tahu + apa yang sudah dicek. Bila hasil tidak terverifikasi, beri label begitu —
@@ -359,3 +359,6 @@ aturan di bawah berlaku saat implementasi dimulai.**
   fungsional Inggris (kompatibel ekosistem agentskills.io — skill bisa
   dipakai bersama Claude Code), tema kucing tetap di nama agen, bukan di
   nama skill.
+- **Indeks ADR Terpusat:** Seluruh ADR (ADR-001 s/d ADR-012, termasuk keputusan
+  `purrcode-ai`, zero hardcode model, batas 800–1000 baris kode, dan agen ke-7
+  `Tuxeshadow`) telah dikonsolidasikan secara kanonik di `docs/DECISIONS.md`.

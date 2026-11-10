@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /// Strips single-line (`//`), multi-line (`/* */`) comments, and trailing commas from JSONC.
 /// Preserves comment markers that appear inside string literals (e.g. "http://...").
 pub fn clean_jsonc(input: &str) -> String {
@@ -118,12 +120,12 @@ mod tests {
         let jsonc = r#"{
             // This is a comment
             "key": "value", /* inline comment */
-            "url": "http://127.0.0.1:3425/v1" // url with // must survive
+            "uri": "proto://host/path" // string with // must survive
         }"#;
         let cleaned = clean_jsonc(jsonc);
         let parsed: serde_json::Value = serde_json::from_str(&cleaned).expect("should parse");
         assert_eq!(parsed["key"], "value");
-        assert_eq!(parsed["url"], "http://127.0.0.1:3425/v1");
+        assert_eq!(parsed["uri"], "proto://host/path");
     }
 
     #[test]

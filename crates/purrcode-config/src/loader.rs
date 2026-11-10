@@ -1,10 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::jsonc::clean_jsonc;
-use crate::model::Config;
+use crate::model::{Config, McpServerConfig};
+use crate::validator::validate_config;
 use purrcode_api::error::{PurrError, Result};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Interpolates `${VAR}` and `$VAR` from environment variables
+/// Interpolates `${VAR}` and `$VAR` from environment variables and an optional credentials map
 pub fn expand_env_vars(input: &str) -> String {
+    let creds = read_credentials_map();
+    expand_env_vars_with_map(input, &creds)
+}
+
+pub fn expand_env_vars_with_map(input: &str, creds: &HashMap<String, String>) -> String {
     let mut result = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
     let len = chars.len();
@@ -13,7 +23,6 @@ pub fn expand_env_vars(input: &str) -> String {
     while i < len {
         if chars[i] == '$' && i + 1 < len {
             if chars[i + 1] == '{' {
-                // ${VAR_NAME}
                 let start = i + 2;
                 let mut end = start;
                 while end < len && chars[end] != '}' {
@@ -23,12 +32,13 @@ pub fn expand_env_vars(input: &str) -> String {
                     let var_name: String = chars[start..end].iter().collect();
                     if let Ok(val) = std::env::var(&var_name) {
                         result.push_str(&val);
+                    } else if let Some(val) = creds.get(&var_name) {
+                        result.push_str(val);
                     }
                     i = end + 1;
                     continue;
                 }
             } else if chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' {
-                // $VAR_NAME
                 let start = i + 1;
                 let mut end = start;
                 while end < len && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
@@ -37,6 +47,8 @@ pub fn expand_env_vars(input: &str) -> String {
                 let var_name: String = chars[start..end].iter().collect();
                 if let Ok(val) = std::env::var(&var_name) {
                     result.push_str(&val);
+                } else if let Some(val) = creds.get(&var_name) {
+                    result.push_str(val);
                 }
                 i = end;
                 continue;
@@ -49,13 +61,15 @@ pub fn expand_env_vars(input: &str) -> String {
     result
 }
 
+#[derive(Deserialize, Default)]
+struct StandaloneMcpFile {
+    #[serde(rename = "mcpServers", alias = "mcp_servers", default)]
+    mcp_servers: HashMap<String, McpServerConfig>,
+}
+
 pub struct ConfigLoader;
 
 impl ConfigLoader {
-    /// Discovers default config path in order:
-    /// 1. `.purrcode/purrcode.jsonc` in current directory
-    /// 2. `purrcode.jsonc` in current directory
-    /// 3. `~/.purrcode/purrcode.jsonc` in user home directory
     pub fn find_config_path() -> Option<PathBuf> {
         let local_sub = Path::new(".purrcode/purrcode.jsonc");
         if local_sub.exists() {
@@ -80,9 +94,10 @@ impl ConfigLoader {
     pub fn load_from_str(content: &str) -> Result<Config> {
         let cleaned = clean_jsonc(content);
         let expanded = expand_env_vars(&cleaned);
-        serde_json::from_str(&expanded).map_err(|e| {
-            PurrError::Config(format!("Failed to parse config JSONC: {e}"))
-        })
+        let cfg: Config = serde_json::from_str(&expanded)
+            .map_err(|e| PurrError::Config(format!("Failed to parse config JSONC: {e}")))?;
+        validate_config(&cfg)?;
+        Ok(cfg)
     }
 
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Config> {
@@ -93,17 +108,106 @@ impl ConfigLoader {
         Self::load_from_str(&content)
     }
 
+    /// Loads and hierarchically merges configuration layers:
+    /// system -> global (`~/.purrcode/purrcode.jsonc`) -> project (`purrcode.jsonc` / `.purrcode/purrcode.jsonc`)
+    /// plus standalone `mcp.json` files (`~/.purrcode/mcp.json` and `.purrcode/mcp.json`).
     pub fn load_effective() -> Result<Config> {
-        load_credentials_file();
-        if let Some(path) = Self::find_config_path() {
-            Self::load_from_file(path)
-        } else {
-            Ok(Config::default())
+        let mut effective = Config::default();
+
+        // 1. System layer (Linux/macOS `/etc/purrcode/purrcode.jsonc`)
+        #[cfg(not(windows))]
+        {
+            let sys_path = Path::new("/etc/purrcode/purrcode.jsonc");
+            if sys_path.exists() {
+                if let Ok(sys_cfg) = Self::load_from_file(sys_path) {
+                    Self::merge_into(&mut effective, sys_cfg);
+                }
+            }
+        }
+
+        // 2. Global user layer (`~/.purrcode/purrcode.jsonc` + `~/.purrcode/mcp.json`)
+        if let Some(home) = dirs_home() {
+            let global_path = home.join(".purrcode").join("purrcode.jsonc");
+            if global_path.exists() {
+                let global_cfg = Self::load_from_file(&global_path)?;
+                Self::merge_into(&mut effective, global_cfg);
+            }
+            let global_mcp = home.join(".purrcode").join("mcp.json");
+            Self::merge_mcp_file(&mut effective, &global_mcp);
+        }
+
+        // 3. Project root `purrcode.jsonc`
+        let root_path = Path::new("purrcode.jsonc");
+        if root_path.exists() {
+            let root_cfg = Self::load_from_file(root_path)?;
+            Self::merge_into(&mut effective, root_cfg);
+        }
+
+        // 4. Project `.purrcode/purrcode.jsonc` + `.purrcode/mcp.json` (highest precedence)
+        let proj_path = Path::new(".purrcode/purrcode.jsonc");
+        if proj_path.exists() {
+            let proj_cfg = Self::load_from_file(proj_path)?;
+            Self::merge_into(&mut effective, proj_cfg);
+        }
+        Self::merge_mcp_file(&mut effective, Path::new(".purrcode/mcp.json"));
+        Self::merge_mcp_file(&mut effective, Path::new("mcp.json"));
+
+        validate_config(&effective)?;
+        Ok(effective)
+    }
+
+    pub fn merge_into(base: &mut Config, overlay: Config) {
+        if overlay.preset != "tabby" || base.preset.is_empty() {
+            base.preset = overlay.preset;
+        }
+        if overlay.model_preset.is_some() {
+            base.model_preset = overlay.model_preset;
+        }
+        if overlay.model.is_some() {
+            base.model = overlay.model;
+        }
+        for (p_name, p_cfg) in overlay.providers {
+            base.providers
+                .entry(p_name)
+                .and_modify(|existing| {
+                    if p_cfg.base_url.is_some() {
+                        existing.base_url = p_cfg.base_url.clone();
+                    }
+                    if p_cfg.api_key.is_some() {
+                        existing.api_key = p_cfg.api_key.clone();
+                    }
+                    for (hk, hv) in &p_cfg.headers {
+                        existing.headers.insert(hk.clone(), hv.clone());
+                    }
+                    for (mk, mv) in &p_cfg.models {
+                        existing.models.insert(mk.clone(), mv.clone());
+                    }
+                })
+                .or_insert(p_cfg);
+        }
+        for (m_name, m_cfg) in overlay.mcp_servers {
+            base.mcp_servers.insert(m_name, m_cfg);
+        }
+    }
+
+    fn merge_mcp_file(base: &mut Config, path: &Path) {
+        if !path.exists() {
+            return;
+        }
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let cleaned = clean_jsonc(&raw);
+            let expanded = expand_env_vars(&cleaned);
+            if let Ok(parsed) = serde_json::from_str::<StandaloneMcpFile>(&expanded) {
+                for (k, v) in parsed.mcp_servers {
+                    base.mcp_servers.insert(k, v);
+                }
+            }
         }
     }
 }
 
-fn load_credentials_file() {
+pub fn read_credentials_map() -> HashMap<String, String> {
+    let mut map = HashMap::new();
     if let Some(home) = dirs_home() {
         let creds_path = home.join(".purrcode").join("credentials");
         if let Ok(content) = std::fs::read_to_string(creds_path) {
@@ -113,16 +217,15 @@ fn load_credentials_file() {
                     continue;
                 }
                 if let Some((k, v)) = trimmed.split_once('=') {
-                    if std::env::var_os(k).is_none() {
-                        std::env::set_var(k, v);
-                    }
+                    map.insert(k.trim().to_string(), v.trim().to_string());
                 }
             }
         }
     }
+    map
 }
 
-fn dirs_home() -> Option<PathBuf> {
+pub fn dirs_home() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE").map(PathBuf::from)
@@ -139,19 +242,61 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars() {
-        std::env::set_var("TEST_PURR_KEY", "secret_key_123");
-        let raw = "Bearer ${TEST_PURR_KEY}";
-        let expanded = expand_env_vars(raw);
-        assert_eq!(expanded, "Bearer secret_key_123");
+        let mut map = HashMap::new();
+        map.insert("TEST_PURR_VAR".to_string(), "expanded_val_42".to_string());
+        let raw = "Header ${TEST_PURR_VAR}";
+        let expanded = expand_env_vars_with_map(raw, &map);
+        assert_eq!(expanded, "Header expanded_val_42");
     }
 
     #[test]
     fn test_parse_example_file() {
         let example_content = include_str!("../../../purrcode.jsonc.example");
-        let config = ConfigLoader::load_from_str(example_content).expect("purrcode.jsonc.example must parse cleanly");
+        let config = ConfigLoader::load_from_str(example_content)
+            .expect("purrcode.jsonc.example must parse cleanly");
         assert_eq!(config.preset, "tabby");
         assert_eq!(config.model_preset.as_deref(), Some("custom-endpoint"));
-        assert!(config.providers.contains_key("magpie"));
-        assert!(config.providers.contains_key("ollama"));
+        assert!(!config.providers.is_empty());
+    }
+
+    #[test]
+    fn test_hierarchical_merge() {
+        let mut base = ConfigLoader::load_from_str(
+            r#"{
+                "preset": "tabby",
+                "model": "provider-a:model-1",
+                "providers": {
+                    "provider-a": {
+                        "base_url": "${PROVIDER_A_URL}",
+                        "models": {
+                            "model-1": { "context_window": 131072 }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let overlay = ConfigLoader::load_from_str(
+            r#"{
+                "preset": "carrier",
+                "model": "provider-b:model-2",
+                "providers": {
+                    "provider-b": {
+                        "base_url": "${PROVIDER_B_URL}",
+                        "models": {
+                            "model-2": { "context_window": 262144 }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        ConfigLoader::merge_into(&mut base, overlay);
+        assert_eq!(base.preset, "carrier");
+        assert_eq!(base.model.as_deref(), Some("provider-b:model-2"));
+        assert!(base.providers.contains_key("provider-a"));
+        assert!(base.providers.contains_key("provider-b"));
     }
 }

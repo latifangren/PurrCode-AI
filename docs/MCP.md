@@ -22,7 +22,8 @@ Dengan mendukung MCP:
 PurrCode AI mengadopsi format kanonik yang sama persis dengan `oh-my-pi` dan `Claude Code`:
 
 ```jsonc
-// ~/.purrcode/mcp.json atau .purrcode/mcp.json
+// ~/.purrcode/mcp.json, .purrcode/mcp.json (mendukung key "mcpServers" maupun "mcp_servers"),
+// atau langsung di blok "mcp_servers" di dalam ~/.purrcode/purrcode.jsonc
 {
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
