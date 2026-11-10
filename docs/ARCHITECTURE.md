@@ -628,3 +628,12 @@ Tidak ada kode yang ditulis pada tahap ini** — keputusan user 2026-11-11.
     (nama file bebas). Hanya setelan inferensi per subagent; Meowstro ikut
     model sesi; binding per sesi (snapshot), tanpa restart.
     → `ARCHITECTURE.md` §3.5, `PRD.md` §4.7, `DESIGN.md` ADR-004.
+15. **Tanpa default model hardcode — wajib di-set user lebih dulu (keputusan user 2026-11-11).**
+    Tidak ada model default hardcode yang berjalan diam-diam. User wajib mengonfigurasi
+    provider & model lebih dulu via `purrcode-ai onboard` atau file config `purrcode.jsonc`.
+    Mendukung custom endpoint / proxy OpenAI-compatible (seperti Magpie `http://127.0.0.1:3425/v1`,
+    9router, atau OmniRoute ala opencode `opencode.json` dan omp `models.yml`) dengan field
+    `baseUrl`, `apiKey`, `models` (`contextWindow`, `maxTokens`, `reasoning: true/false`,
+    `variants: reasoningEffort`). Bila dijalankan tanpa model yang dikonfigurasi, sistem menolak
+    jalan di mode non-TUI dengan pesan error jelas, atau membuka wizard onboarding di mode interaktif.
+    → `PRD.md` §4.1 F12, §7 butir 8; `DESIGN.md` §7.

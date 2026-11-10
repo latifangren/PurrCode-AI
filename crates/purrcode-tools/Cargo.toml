@@ -1,0 +1,16 @@
+[package]
+name = "purrcode-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI core 12 tools and tool registry"
+
+[dependencies]
+purrcode-api.workspace = true
+purrcode-approval.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,29 @@
+{
+  "$schema": "model-preset/v1",
+  "name": "premium",
+  "description": "Template for flagship models with user-provided API keys (BYO key)",
+  "agents": {
+    "whisker": {
+      "model": "anthropic:claude-3-5-haiku-latest",
+      "variant": "low"
+    },
+    "sphinx": {
+      "model": "anthropic:claude-3-5-sonnet-latest",
+      "variant": "high"
+    },
+    "calico": {
+      "model": "anthropic:claude-3-5-sonnet-latest",
+      "variant": "medium"
+    },
+    "tinker": {
+      "model": "anthropic:claude-3-5-sonnet-latest",
+      "temperature": 0.2
+    },
+    "clowder": {
+      "model": [
+        "anthropic:claude-3-5-sonnet-latest",
+        "openai:gpt-4o"
+      ]
+    }
+  }
+}

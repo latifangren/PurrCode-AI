@@ -1,0 +1,22 @@
+{
+  "$schema": "preset/v1",
+  "name": "tabby",
+  "description": "Default mode — supervised approval (prompt on write/edit/exec outside workspace), baseline legal guardrail",
+  "approval": "supervised",
+  "guardrail": "default",
+  "sandbox": "confinement",
+  "tools": [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "glob",
+    "find",
+    "todo",
+    "ask",
+    "task",
+    "webfetch",
+    "websearch"
+  ]
+}

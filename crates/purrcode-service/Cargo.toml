@@ -1,0 +1,11 @@
+[package]
+name = "purrcode-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI systemd and OpenRC service installer"
+
+[dependencies]
+purrcode-api.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

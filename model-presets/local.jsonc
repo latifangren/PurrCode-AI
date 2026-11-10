@@ -1,0 +1,26 @@
+{
+  "$schema": "model-preset/v1",
+  "name": "local",
+  "description": "Template for fully offline local inference with Ollama",
+  "agents": {
+    "whisker": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "low"
+    },
+    "sphinx": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "high"
+    },
+    "calico": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "medium"
+    },
+    "tinker": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "temperature": 0.2
+    },
+    "clowder": {
+      "model": "ollama:qwen2.5-coder:7b"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+[package]
+name = "purrcode-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI CLI binary entry point (purrcode-ai)"
+
+[[bin]]
+name = "purrcode-ai"
+path = "src/main.rs"
+
+[dependencies]
+purrcode-api.workspace = true
+purrcode-config.workspace = true
+purrcode-core.workspace = true
+purrcode-provider.workspace = true
+purrcode-approval.workspace = true
+purrcode-tools.workspace = true
+purrcode-memory.workspace = true
+purrcode-orchestrator.workspace = true
+purrcode-plugin.workspace = true
+purrcode-channel.workspace = true
+purrcode-service.workspace = true
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

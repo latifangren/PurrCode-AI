@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/purrcode-api",
+    "crates/purrcode-config",
+    "crates/purrcode-core",
+    "crates/purrcode-provider",
+    "crates/purrcode-approval",
+    "crates/purrcode-tools",
+    "crates/purrcode-memory",
+    "crates/purrcode-orchestrator",
+    "crates/purrcode-plugin",
+    "crates/purrcode-channel",
+    "crates/purrcode-service",
+    "crates/purrcode-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["latifangren <latifangren@users.noreply.github.com>"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/latifangren/purrcode-ai"
+readme = "README.md"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Internal workspace crates
+purrcode-api = { path = "crates/purrcode-api" }
+purrcode-config = { path = "crates/purrcode-config" }
+purrcode-core = { path = "crates/purrcode-core" }
+purrcode-provider = { path = "crates/purrcode-provider" }
+purrcode-approval = { path = "crates/purrcode-approval" }
+purrcode-tools = { path = "crates/purrcode-tools" }
+purrcode-memory = { path = "crates/purrcode-memory" }
+purrcode-orchestrator = { path = "crates/purrcode-orchestrator" }
+purrcode-plugin = { path = "crates/purrcode-plugin" }
+purrcode-channel = { path = "crates/purrcode-channel" }
+purrcode-service = { path = "crates/purrcode-service" }
+
+# Shared external dependencies (GPL-compatible)
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -346,9 +346,9 @@ sesi tidak mengulang pekerjaan child yang sedang berjalan.
 | 4 | Provider: terkenal dulu (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral, Groq, Cerebras, OpenRouter, Kimi, MiniMax) + custom endpoint + Ollama/LM Studio | ✅ Diputuskan user |
 | 5 | WebUI khusus ala DeepSeek Harness di fase mendatang (v0.4) | ✅ Diputuskan user |
 | 6 | Tugas saat ini: **dokumentasi & arsitektur saja, bukan menulis kode** | ✅ Diputuskan user |
-| 7 | Repo publik atau privat? (usulan: `latifangren/purrcode-ai`) | ⏳ Terbuka — perlu persetujuan eksplisit sebelum `git push` / pembuatan repo |
-| 8 | Model default v0.1 | ⏳ Terbuka — usulan: Ollama bila tersedia, fallback ke provider yang dikonfigurasi |
-| 9 | Nama binary / perintah: `purrcode` (usulan) | ⏳ Terbuka |
+| 7 | Repo publik atau privat? | ✅ **Publik** (`latifangren/purrcode-ai`, keputusan user 2026-11-11) |
+| 8 | Model default v0.1 | ✅ **Tidak ada default hardcode** — wajib di-set user lebih dulu via config/onboarding (bisa custom endpoint/proxy seperti Magpie/OmniRoute ala opencode & omp). Menolak jalan tanpa konfigurasi model. (keputusan user 2026-11-11) |
+| 9 | Nama binary / perintah: **`purrcode-ai`** | ✅ Diputuskan user (2026-11-11) |
 | 10 | Sistem preset & guardrail berlapis (preset = file `preset/v1`, 3 sumbu approval × guardrail × sandbox, strict/default/god, lapis ToS provider, fallback tidak retry atas penolakan kebijakan) | ✅ Diputuskan user (2026-11-11 00:47 WIB) |
 | 11 | Nama display ketiga preset: Carrier (strict), Tabby (default), Oyen (god) | ✅ Diputuskan user (2026-11-11 00:50 WIB) |
 | 12 | Sistem preset model (free default, local, premium, custom; binding per sesi ala slim v2) | ✅ Diputuskan user (2026-11-11 00:52 WIB) |

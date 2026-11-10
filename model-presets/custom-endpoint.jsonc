@@ -1,0 +1,34 @@
+{
+  "$schema": "model-preset/v1",
+  "name": "custom-endpoint",
+  "description": "Template for local/LAN custom OpenAI-compatible router (e.g. Magpie, OmniRoute, vLLM)",
+  "agents": {
+    "meowstro": {
+      "model": "magpie/antigravity/gemini-3.8-flash",
+      "variant": "medium"
+    },
+    "whisker": {
+      "model": "magpie/group/custom-coding-free",
+      "variant": "low"
+    },
+    "sphinx": {
+      "model": "magpie/codex/gpt-6-luna",
+      "variant": "high"
+    },
+    "calico": {
+      "model": "magpie/group/custom-coding-free",
+      "variant": "medium"
+    },
+    "tinker": {
+      "model": "magpie/group/custom-coding-free",
+      "variant": "high",
+      "temperature": 0.2
+    },
+    "clowder": {
+      "model": [
+        "magpie/group/custom-coding-free",
+        "magpie/antigravity/gemini-3.8-flash"
+      ]
+    }
+  }
+}

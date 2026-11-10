@@ -5,5 +5,18 @@
 purrcode.db*
 /bin/
 /dist/
-# references/ = clone read-only ~2 GB, bukan bagian repo. Lihat docs/00-analysis-references.md
+# Rust / Cargo build artifacts
+/target/
+Cargo.lock.bak
+**/*.rs.bk
+
+# Runtime & cache
+.purrcode/
+audit*.jsonl*
+*.log
+
+# references/ = clone read-only ~2 GB, BUKAN bagian repo. Lihat docs/00-analysis-references.md
 /references/
+references/
+references/**
+**/references/**

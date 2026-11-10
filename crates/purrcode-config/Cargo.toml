@@ -1,0 +1,12 @@
+[package]
+name = "purrcode-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI configuration loader, JSONC parser, and schema validator"
+
+[dependencies]
+purrcode-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

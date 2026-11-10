@@ -1,0 +1,15 @@
+[package]
+name = "purrcode-channel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI TUI terminal and CLI channels"
+
+[dependencies]
+purrcode-api.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

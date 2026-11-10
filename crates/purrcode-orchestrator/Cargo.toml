@@ -1,0 +1,19 @@
+[package]
+name = "purrcode-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI orchestrator, Meowstro DAG scheduler, and subagent continuation registry"
+
+[dependencies]
+purrcode-api.workspace = true
+purrcode-config.workspace = true
+purrcode-core.workspace = true
+purrcode-tools.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true

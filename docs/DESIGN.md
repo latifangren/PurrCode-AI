@@ -175,7 +175,7 @@ coding agent pada umumnya. Bukan bahasa yang dikunci di config.
 
 ## 6. Suara & penamaan
 
-- **Nama:** PurrCode AI. Binary: `purrcode`. Prompt: `purr>`. Agen (Set Clowder,
+- **Nama:** PurrCode AI. Binary: `purrcode-ai`. Prompt: `purr>`. Agen (Set Clowder,
   keputusan user 2026-11-11): Meowstro (orchestrator), Whisker (explorer),
   Sphinx (oracle), Calico (designer), Tinker (fixer), Clowder (council).
   Tim agen disebut **The Clowder**, bukan Pantheon — nama asalnya dari Pantheon
@@ -191,25 +191,39 @@ coding agent pada umumnya. Bukan bahasa yang dikunci di config.
 ## 7. Onboarding & konfigurasi — desain UX
 
 ```
-$ purrcode onboard
+$ purrcode-ai onboard
 🐾 Selamat datang di PurrCode AI.
+(PurrCode AI tidak memiliki default model hardcode — konfigurasi provider/model Anda terlebih dahulu)
 
-  Provider model? [1] Ollama (lokal, gratis)  [2] Anthropic  [3] OpenAI
-                [4] Google Gemini  [5] DeepSeek  [6] OpenRouter  [7] Custom endpoint
+  Tipe provider?
+    [1] Custom Endpoint / Local Proxy (Magpie, OmniRoute, vLLM, OpenAI-compatible)
+    [2] Ollama (lokal)
+    [3] Provider Cloud (OpenRouter, DeepSeek, Anthropic, OpenAI, Gemini, dll.)
   > 1
-  Model Ollama? (terdeteksi: qwen3:8b, deepseek-coder:6.7b)
-  > qwen3:8b
-  Preset model? [1] free (lokal + gratis, disarankan)  [2] local (semua Ollama)
-                [3] premium (flagship, butuh key berbayar)
-  > 1
+
+  Base URL? [misal: http://127.0.0.1:3425/v1]
+  > http://127.0.0.1:3425/v1
+  API Key? (kosongkan jika tidak butuh / local proxy)
+  > [hidden]
+  Model ID utama (Meowstro / Sesi)?
+  > magpie/antigravity/gemini-3.8-flash
+  Konteks window (token)? [default: 1048576]
+  > 1048576
+  Model untuk subagent (Whisker/Tinker/Sphinx)?
+  > magpie/group/custom-coding-free
+
   Preset mode? [1] tabby (default, disarankan)  [2] carrier (paling aman)
   > 1
-  Telegram? (nanti bisa diaktifkan) [y/N]
+  Telegram? (nanti bisa diaktifkan di v0.2) [y/N]
   > N
 
   ✓ Config tersimpan di ~/.purrcode/purrcode.jsonc
-  ✓ Coba: purrcode -p "jelaskan isi repo ini"
+  ✓ Coba: purrcode-ai -p "jelaskan isi repo ini"
 ```
+
+- **Pola Konfigurasi:** Mengadopsi arsitektur konfigurasi yang fleksibel seperti opencode (`opencode.json` bagian `providers`) dan omp (`models.yml` + `config.yml`). Mendukung custom router lokal/LAN, custom header, context window, output limit, dan variant reasoning effort (`low`/`medium`/`high`).
+- **Startup Guard (Tanpa Model):** Bila `purrcode-ai -p "..."` dijalankan saat belum ada konfigurasi model, sistem menolak eksekusi dengan pesan jelas:
+  `Error: No model configured. Please run 'purrcode-ai onboard' or configure ~/.purrcode/purrcode.jsonc`
 
 - Onboarding tidak pernah meminta API key di terminal dengan echo; token
   dimasukkan via `purrcode auth login <provider>` yang menyimpannya 0600,

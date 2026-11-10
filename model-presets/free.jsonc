@@ -1,0 +1,32 @@
+{
+  "$schema": "model-preset/v1",
+  "name": "free",
+  "description": "Template for free-first setups (local Ollama + OpenRouter free tier)",
+  "agents": {
+    "whisker": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "low"
+    },
+    "sphinx": {
+      "model": [
+        "openrouter:meta-llama/llama-3.3-70b-instruct:free",
+        "ollama:qwen2.5-coder:7b"
+      ],
+      "variant": "high"
+    },
+    "calico": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "variant": "medium"
+    },
+    "tinker": {
+      "model": "ollama:qwen2.5-coder:7b",
+      "temperature": 0.2
+    },
+    "clowder": {
+      "model": [
+        "openrouter:meta-llama/llama-3.3-70b-instruct:free",
+        "ollama:qwen2.5-coder:7b"
+      ]
+    }
+  }
+}

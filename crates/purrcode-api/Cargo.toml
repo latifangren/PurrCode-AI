@@ -1,0 +1,15 @@
+[package]
+name = "purrcode-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PurrCode AI core traits, event definitions, and shared interfaces"
+
+[dependencies]
+tokio = { workspace = true, features = ["sync"] }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true

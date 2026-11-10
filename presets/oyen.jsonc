@@ -1,0 +1,22 @@
+{
+  "$schema": "preset/v1",
+  "name": "oyen",
+  "description": "God mode — agent-side guardrails disabled; approval stays supervised; audit log always ON. Requires explicit confirmation per session.",
+  "approval": "supervised",
+  "guardrail": "god",
+  "sandbox": "confinement",
+  "tools": [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "glob",
+    "find",
+    "todo",
+    "ask",
+    "task",
+    "webfetch",
+    "websearch"
+  ]
+}

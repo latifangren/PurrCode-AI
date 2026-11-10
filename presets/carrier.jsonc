@@ -1,0 +1,17 @@
+{
+  "$schema": "preset/v1",
+  "name": "carrier",
+  "description": "Strict mode — maximum security, manual approval for write/exec, narrow network egress",
+  "approval": "manual",
+  "guardrail": "strict",
+  "sandbox": "confinement",
+  "tools": [
+    "read",
+    "grep",
+    "glob",
+    "find",
+    "todo",
+    "ask",
+    "task"
+  ]
+}
