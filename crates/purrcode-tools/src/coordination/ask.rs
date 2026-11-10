@@ -4,7 +4,34 @@ use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolRe
 use serde::Deserialize;
 use std::io::{self, IsTerminal, Write};
 
-pub struct AskTool;
+use std::sync::Arc;
+
+#[async_trait]
+pub trait AskRequester: Send + Sync {
+    async fn request_decision(&self, question: &str, options: &[AskOption]) -> Option<String>;
+}
+
+pub struct AskTool {
+    requester: Option<Arc<dyn AskRequester>>,
+}
+
+impl AskTool {
+    pub fn new() -> Self {
+        Self { requester: None }
+    }
+
+    pub fn with_requester(requester: Arc<dyn AskRequester>) -> Self {
+        Self {
+            requester: Some(requester),
+        }
+    }
+}
+
+impl Default for AskTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Deserialize)]
 struct AskArgs {
@@ -63,7 +90,23 @@ impl Tool for AskTool {
             });
         }
 
-        // Check if stdin is an interactive terminal
+        // 1. If an explicit AskRequester is provided (e.g. from TUI channel), use it
+        if let Some(ref req) = self.requester {
+            if let Some(selected_id) = req.request_decision(&args.question, &args.options).await {
+                let label = args.options.iter().find(|o| o.id == selected_id).map(|o| o.label.as_str()).unwrap_or(&selected_id);
+                return Ok(ToolResult {
+                    output: format!("Selected decision: {} ({})", selected_id, label),
+                    diff_preview: None,
+                    metadata: Some(serde_json::json!({
+                        "selected_id": selected_id,
+                        "selected_label": label,
+                        "source": "requester"
+                    })),
+                });
+            }
+        }
+
+        // 2. Check if stdin is an interactive terminal
         if io::stdin().is_terminal() {
             println!();
             println!("❓ Decision Required: {}", args.question);
@@ -142,7 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_non_interactive() {
-        let tool = AskTool;
+        let tool = AskTool::new();
         let ctx = ToolContext {
             session_id: "test".to_string(),
             agent_role: "meowstro".to_string(),
@@ -171,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_empty_options() {
-        let tool = AskTool;
+        let tool = AskTool::new();
         let ctx = ToolContext {
             session_id: "test".to_string(),
             agent_role: "meowstro".to_string(),

@@ -15,12 +15,19 @@ pub trait ApprovalRequester: Send + Sync {
     async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool;
 }
 
+pub trait AgentEventListener: Send + Sync {
+    fn on_text_chunk(&self, _chunk: &str, _is_reasoning: bool) {}
+    fn on_tool_call_started(&self, _name: &str, _args: &str) {}
+    fn on_tool_call_finished(&self, _name: &str, _output: &str, _success: bool) {}
+}
+
 pub struct AgentLoop {
     provider: Arc<dyn ModelProvider>,
     model: String,
     tool_registry: Arc<ToolRegistry>,
     max_steps: usize,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
+    is_yolo: bool,
 }
 
 impl AgentLoop {
@@ -35,6 +42,7 @@ impl AgentLoop {
             tool_registry,
             max_steps: 25,
             approval_requester: None,
+            is_yolo: false,
         }
     }
 
@@ -48,26 +56,29 @@ impl AgentLoop {
         self
     }
 
-    /// Runs the turn loop until the model gives a final textual answer or hits max_steps
-    pub async fn run_turn<F>(
+    pub fn with_yolo(mut self, yolo: bool) -> Self {
+        self.is_yolo = yolo;
+        self
+    }
+
+    /// Runs a turn with persistent multi-turn message history and optional event listener
+    pub async fn run_turn_with_history(
         &self,
+        messages: &mut Vec<ChatMessage>,
         prompt: &str,
         system_prompt: Option<&str>,
         ctx: &ToolContext,
-        mut on_text_chunk: F,
-    ) -> Result<String>
-    where
-        F: FnMut(&str, bool), // (chunk_text, is_reasoning)
-    {
-        let mut messages: Vec<ChatMessage> = Vec::new();
-
-        if let Some(sys) = system_prompt {
-            messages.push(ChatMessage {
-                role: MessageRole::System,
-                content: sys.to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            });
+        listener: Option<&dyn AgentEventListener>,
+    ) -> Result<String> {
+        if messages.is_empty() {
+            if let Some(sys) = system_prompt {
+                messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: sys.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
         }
 
         messages.push(ChatMessage {
@@ -100,12 +111,16 @@ impl AgentLoop {
 
             while let Some(chunk) = stream.recv().await {
                 if let Some(reasoning) = chunk.reasoning_delta {
-                    on_text_chunk(&reasoning, true);
+                    if let Some(l) = listener {
+                        l.on_text_chunk(&reasoning, true);
+                    }
                 }
 
                 if !chunk.delta.is_empty() {
                     step_text.push_str(&chunk.delta);
-                    on_text_chunk(&chunk.delta, false);
+                    if let Some(l) = listener {
+                        l.on_text_chunk(&chunk.delta, false);
+                    }
                 }
 
                 if let Some(ToolCallDelta {
@@ -170,34 +185,41 @@ impl AgentLoop {
                 let tool_name = tool_call.name.clone();
                 let args_str = tool_call.arguments.clone();
 
-                let tool_output = if let Some(tool) = self.tool_registry.get(&tool_name) {
+                if let Some(l) = listener {
+                    l.on_tool_call_started(&tool_name, &args_str);
+                }
+
+                let (tool_output, is_success) = if let Some(tool) = self.tool_registry.get(&tool_name) {
                     let args_val: serde_json::Value = serde_json::from_str(&args_str)
                         .unwrap_or_else(|_| serde_json::json!({}));
 
                     let def = tool.definition();
                     let is_destructive = matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec);
 
-                    let is_approved = if is_destructive {
-                        if let Some(ref req) = self.approval_requester {
-                            req.request_approval(&tool_name, &format!("Run tool '{}'", tool_name), None).await
-                        } else {
-                            true
-                        }
-                    } else {
+                    let is_approved = if !is_destructive || self.is_yolo {
                         true
+                    } else if let Some(ref req) = self.approval_requester {
+                        req.request_approval(&tool_name, &format!("Run tool '{}'", tool_name), None).await
+                    } else {
+                        // Supervised fail-closed! If no approval requester is wired, deny destructive actions.
+                        false
                     };
 
                     if !is_approved {
-                        format!("Action denied by user approval: execution of '{}' was rejected.", tool_name)
+                        (format!("Action denied by approval policy: execution of '{}' requires explicit confirmation.", tool_name), false)
                     } else {
                         match tool.execute(args_val, ctx).await {
-                            Ok(res) => res.output,
-                            Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+                            Ok(res) => (res.output, true),
+                            Err(e) => (format!("Error executing tool '{}': {}", tool_name, e), false),
                         }
                     }
                 } else {
-                    format!("Error: tool '{}' not found in registry", tool_name)
+                    (format!("Error: tool '{}' not found in registry", tool_name), false)
                 };
+
+                if let Some(l) = listener {
+                    l.on_tool_call_finished(&tool_name, &tool_output, is_success);
+                }
 
                 messages.push(ChatMessage {
                     role: MessageRole::Tool,
@@ -216,5 +238,29 @@ impl AgentLoop {
         }
 
         Ok(final_answer)
+    }
+
+    /// Runs a single turn without persisting external messages
+    pub async fn run_turn<F>(
+        &self,
+        prompt: &str,
+        system_prompt: Option<&str>,
+        ctx: &ToolContext,
+        on_text_chunk: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str, bool) + Send,
+    {
+        struct FnListener<T>(tokio::sync::Mutex<T>);
+        impl<T: FnMut(&str, bool) + Send> AgentEventListener for FnListener<T> {
+            fn on_text_chunk(&self, chunk: &str, is_reasoning: bool) {
+                if let Ok(mut lock) = self.0.try_lock() {
+                    (*lock)(chunk, is_reasoning);
+                }
+            }
+        }
+        let listener = FnListener(tokio::sync::Mutex::new(on_text_chunk));
+        let mut messages = Vec::new();
+        self.run_turn_with_history(&mut messages, prompt, system_prompt, ctx, Some(&listener)).await
     }
 }

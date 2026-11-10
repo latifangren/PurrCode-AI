@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
 
     // 3. One-shot prompt mode (-p / --prompt)
     if let Some(prompt) = args.prompt {
-        run_one_shot(prompt, args.model, args.json, args.orchestrator, &config).await?;
+        run_one_shot(prompt, args.model, args.json, args.orchestrator, args.yolo, &config).await?;
         return Ok(());
     }
 
@@ -148,19 +148,54 @@ async fn main() -> Result<()> {
         system_prompt.push_str(&skills_index);
     }
 
+    struct TuiEventListener {
+        event_tx: tokio::sync::mpsc::Sender<purrcode_channel::TuiEvent>,
+    }
+
+    impl purrcode_core::AgentEventListener for TuiEventListener {
+        fn on_text_chunk(&self, chunk: &str, is_reasoning: bool) {
+            if is_reasoning {
+                let _ = self.event_tx.try_send(purrcode_channel::TuiEvent::ReasoningChunk(chunk.to_string()));
+            } else {
+                let _ = self.event_tx.try_send(purrcode_channel::TuiEvent::TextChunk(chunk.to_string()));
+            }
+        }
+
+        fn on_tool_call_started(&self, name: &str, args: &str) {
+            let _ = self.event_tx.try_send(purrcode_channel::TuiEvent::ToolCallStarted {
+                name: name.to_string(),
+                args: args.to_string(),
+            });
+        }
+
+        fn on_tool_call_finished(&self, name: &str, output: &str, success: bool) {
+            let _ = self.event_tx.try_send(purrcode_channel::TuiEvent::ToolCallFinished {
+                name: name.to_string(),
+                output: output.to_string(),
+                success,
+            });
+        }
+    }
+
+    let listener: Arc<dyn purrcode_core::AgentEventListener> = Arc::new(TuiEventListener {
+        event_tx: event_tx.clone(),
+    });
+
+    // Multi-turn message history persistent across turns in TUI
+    let mut session_messages: Vec<purrcode_api::provider::ChatMessage> = Vec::new();
+
     // Spawn background worker for TUI interactive prompts
     let event_tx_worker = event_tx.clone();
     tokio::spawn(async move {
         while let Some(user_prompt) = prompt_rx.recv().await {
-            let tx_clone = event_tx_worker.clone();
             let _ = agent_loop
-                .run_turn(&user_prompt, Some(&system_prompt), &tool_context, |chunk, is_reasoning| {
-                    if is_reasoning {
-                        let _ = tx_clone.try_send(purrcode_channel::TuiEvent::ReasoningChunk(chunk.to_string()));
-                    } else {
-                        let _ = tx_clone.try_send(purrcode_channel::TuiEvent::TextChunk(chunk.to_string()));
-                    }
-                })
+                .run_turn_with_history(
+                    &mut session_messages,
+                    &user_prompt,
+                    Some(&system_prompt),
+                    &tool_context,
+                    Some(listener.as_ref()),
+                )
                 .await;
             let _ = event_tx_worker.send(purrcode_channel::TuiEvent::TurnFinished).await;
         }
@@ -179,11 +214,41 @@ use std::sync::Arc;
 
 use purrcode_orchestrator::MeowstroOrchestrator;
 
+struct CliApprovalRequester;
+
+#[async_trait::async_trait]
+impl purrcode_core::ApprovalRequester for CliApprovalRequester {
+    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            eprintln!("⚠️  [Approval Denied]: Tool '{}' requires approval. Run in terminal or pass --yolo.", tool);
+            return false;
+        }
+
+        eprintln!();
+        eprintln!("⚠️  Approval Required: {}", description);
+        if let Some(diff) = preview {
+            eprintln!("Diff preview:\n{}", diff);
+        }
+        eprint!("Approve execution of tool '{}'? [y/N]: ", tool);
+        let _ = std::io::stderr().flush();
+
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            let trimmed = input.trim();
+            trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
+        } else {
+            false
+        }
+    }
+}
+
 async fn run_one_shot(
     prompt: String,
     model_override: Option<String>,
     as_json: bool,
     use_orchestrator: bool,
+    yolo: bool,
     config: &Config,
 ) -> Result<()> {
     // Determine target model
@@ -251,7 +316,9 @@ async fn run_one_shot(
         None
     };
 
-    let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry));
+    let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry))
+        .with_approval_requester(Arc::new(CliApprovalRequester))
+        .with_yolo(yolo);
 
     let mut in_reasoning = false;
     let mut stdout = std::io::stdout();

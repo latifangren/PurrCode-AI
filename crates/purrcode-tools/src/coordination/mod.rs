@@ -1,5 +1,5 @@
 pub mod ask;
 pub mod todo;
 
-pub use ask::AskTool;
+pub use ask::{AskOption, AskRequester, AskTool};
 pub use todo::TodoTool;

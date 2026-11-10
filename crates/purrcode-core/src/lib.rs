@@ -1,6 +1,6 @@
 pub mod loop_engine;
 
-pub use loop_engine::{AgentLoop, ApprovalRequester};
+pub use loop_engine::{AgentEventListener, AgentLoop, ApprovalRequester};
 use purrcode_api::event::AgentEvent;
 use tokio::sync::broadcast;
 

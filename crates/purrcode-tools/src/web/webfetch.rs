@@ -20,7 +20,16 @@ impl WebfetchTool {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(15))
-                .redirect(reqwest::redirect::Policy::limited(5))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 5 {
+                        attempt.stop()
+                    } else if validate_destination(attempt.url()).is_err() {
+                        // Prevent SSRF redirection to private or local loopback targets
+                        attempt.stop()
+                    } else {
+                        attempt.follow()
+                    }
+                }))
                 .user_agent("PurrCode-AI/0.1.0")
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
@@ -110,7 +119,8 @@ impl Tool for WebfetchTool {
         let clean_text = strip_html_tags(&raw_body);
 
         let final_text = if clean_text.len() > MAX_OUTPUT_CHARS {
-            format!("{}\n\n(output truncated at {} characters)", &clean_text[..MAX_OUTPUT_CHARS], MAX_OUTPUT_CHARS)
+            let truncated_slice = safe_truncate_str(&clean_text, MAX_OUTPUT_CHARS);
+            format!("{}\n\n(output truncated at {} characters)", truncated_slice, MAX_OUTPUT_CHARS)
         } else if was_truncated {
             format!("{}\n\n(stream truncated at 1 MB limit)", clean_text)
         } else {
@@ -196,6 +206,18 @@ fn is_unicast_link_local_ipv6(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
+fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = max_bytes;
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
+    }
+}
+
 fn strip_html_tags(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;
@@ -240,5 +262,18 @@ mod tests {
         // Valid public URLs
         assert!(validate_destination(&Url::parse("https://raw.githubusercontent.com/test").unwrap()).is_ok());
         assert!(validate_destination(&Url::parse("https://crates.io/api/v1/crates").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn test_utf8_safe_truncation() {
+        // Multi-byte emoji "🐾" is 4 bytes: [0xF0, 0x9F, 0x90, 0xBE]
+        let s = "Hello 🐾 World";
+        // Trying to slice at byte index 7 (middle of emoji) would panic with s[..7]
+        let safe = safe_truncate_str(s, 7);
+        assert_eq!(safe, "Hello "); // Cleanly backed off to char boundary
+
+        // Exactly after the emoji (byte index 10)
+        let safe2 = safe_truncate_str(s, 10);
+        assert_eq!(safe2, "Hello 🐾");
     }
 }

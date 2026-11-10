@@ -30,7 +30,7 @@ impl MeowstroOrchestrator {
         tool_reg.register(Arc::new(purrcode_tools::search::GlobTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::search::FindTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new())).unwrap();
-        tool_reg.register(Arc::new(purrcode_tools::coordination::AskTool)).unwrap();
+        tool_reg.register(Arc::new(purrcode_tools::coordination::AskTool::new())).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::web::WebsearchTool::new())).unwrap();
 
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();

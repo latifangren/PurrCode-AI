@@ -6,7 +6,7 @@ pub mod search;
 pub mod skill;
 pub mod web;
 
-pub use coordination::{AskTool, TodoTool};
+pub use coordination::{AskOption, AskRequester, AskTool, TodoTool};
 pub use execution::BashTool;
 pub use fs::{EditTool, ReadTool, WriteTool};
 pub use search::{FindTool, GlobTool, GrepTool};
@@ -42,7 +42,7 @@ impl ToolRegistry {
         registry.register(Arc::new(GlobTool)).unwrap();
         registry.register(Arc::new(FindTool)).unwrap();
         registry.register(Arc::new(TodoTool::new())).unwrap();
-        registry.register(Arc::new(AskTool)).unwrap();
+        registry.register(Arc::new(AskTool::new())).unwrap();
         registry.register(Arc::new(WebfetchTool::new())).unwrap();
         registry.register(Arc::new(WebsearchTool::new())).unwrap();
 

@@ -21,6 +21,10 @@ pub struct Cli {
     #[arg(long)]
     pub orchestrator: bool,
 
+    /// Automatically approve all tool actions without prompting (YOLO mode)
+    #[arg(long)]
+    pub yolo: bool,
+
     /// Override model to use (e.g. "magpie/antigravity/gemini-3.8-flash" or "ollama:qwen2.5-coder:7b")
     #[arg(short = 'm', long)]
     pub model: Option<String>,
