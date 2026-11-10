@@ -80,3 +80,34 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
   - Pemuatan konteks memori hierarkis (`USER.md`, `MEMORY.md`, `.purrcode/MEMORY.md`) ke prompt sistem (teruji).
   - Trait `MemoryBackend` dengan dukungan `remember` (append) dan `recall` (teruji).
   - **Milestone 4:** Terverifikasi sukses menjalankan Meowstro yang mendelegasikan tugas ke Tinker, mencatat handoff ke disk, dan menghasilkan laporan sintesis.
+
+---
+
+## Sprint 5: Sisa Tool Inti & Skill Engine (Agentskills)
+> **Tujuan:** Menyelesaikan 12 tool inti v0.1 dan sistem pemuatan skill berbasis SKILL.md.
+
+- [x] **5.1 Tool Coordination (`crates/purrcode-tools/src/coordination/`)**
+  - `todo`: Pelacak progres rencana kerja (`[ ]`, `[▶]`, `[✓]`, `[-]`) (teruji).
+  - `ask`: Dialog pertanyaan terstruktur ke user dengan pilihan opsi saat ada ambiguitas (teruji).
+- [x] **5.2 Tool Web (`crates/purrcode-tools/src/web/`)**
+  - `webfetch`: Mengambil dan mengekstrak teks halaman web/API via reqwest dengan tag stripping (teruji).
+  - `websearch`: Pencarian web tanpa browser berat via DuckDuckGo HTML extractor (teruji).
+- [x] **5.3 Skill Engine (`crates/purrcode-tools/src/skill/` & `skills/`)**
+  - Discovery hirarkis `skills/` bawaan, `~/.purrcode/skills/`, dan `.purrcode/skills/` (teruji).
+  - Pemuatan hemat token: deskripsi frontmatter di awal, isi lengkap via tool `read_skill` (teruji).
+  - 8 Skill bawaan v0.1 selesai dibuat: `plan`, `review`, `git`, `debug`, `scaffold`, `frontend-design`, `webapp-testing`, `doctor`.
+- [x] **Milestone 5:** Terverifikasi live eksekusi `todo`, `ask`, dan pemuatan on-demand `read_skill git`.
+
+---
+
+## Sprint 6: Integrasi TUI Live Stream & Approval Card Interaktif
+> **Tujuan:** Menghubungkan AgentLoop langsung ke TUI Ratatui dengan card preview diff interaktif.
+
+- [ ] **6.1 TUI Live Event Stream**
+  - Sambungkan EventBus ke TUI thread-safe.
+  - Transkrip streaming langsung menampilkan teks delta dan token reasoning.
+- [ ] **6.2 Interactive Approval Card Widget**
+  - Card pop-up saat tool write/edit/bash dipanggil di mode supervised (Tabby).
+  - Tombol interaktif keyboard: `[a]` Terapkan, `[t]` Tolak, `[e]` Edit.
+- [ ] **6.3 Onboarding Wizard Interaktif (`purrcode-ai onboard`)**
+  - Setup interaktif provider, base_url, API key, model, dan preset langsung dari TUI.

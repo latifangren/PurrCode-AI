@@ -28,6 +28,13 @@ impl MeowstroOrchestrator {
         tool_reg.register(Arc::new(purrcode_tools::fs::ReadTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::search::GrepTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::search::FindTool)).unwrap();
+        tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new())).unwrap();
+        tool_reg.register(Arc::new(purrcode_tools::coordination::AskTool)).unwrap();
+        tool_reg.register(Arc::new(purrcode_tools::web::WebsearchTool::new())).unwrap();
+
+        let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+        skill_mgr.discover_all(&std::path::PathBuf::from("."));
+        tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(Arc::new(Mutex::new(skill_mgr))))).unwrap();
 
         let task_tool = TaskTool::new(
             registry.clone(),

@@ -1,14 +1,22 @@
+pub mod coordination;
 pub mod execution;
 pub mod fs;
 pub mod mcp;
 pub mod search;
+pub mod skill;
+pub mod web;
 
-use fs::{EditTool, ReadTool, WriteTool};
-use execution::BashTool;
-use search::{FindTool, GrepTool};
+pub use coordination::{AskTool, TodoTool};
+pub use execution::BashTool;
+pub use fs::{EditTool, ReadTool, WriteTool};
+pub use search::{FindTool, GrepTool};
+pub use skill::{ReadSkillTool, SkillManager};
+pub use web::{WebfetchTool, WebsearchTool};
+
 use purrcode_api::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
@@ -32,6 +40,15 @@ impl ToolRegistry {
         registry.register(Arc::new(BashTool)).unwrap();
         registry.register(Arc::new(GrepTool)).unwrap();
         registry.register(Arc::new(FindTool)).unwrap();
+        registry.register(Arc::new(TodoTool::new())).unwrap();
+        registry.register(Arc::new(AskTool)).unwrap();
+        registry.register(Arc::new(WebfetchTool::new())).unwrap();
+        registry.register(Arc::new(WebsearchTool::new())).unwrap();
+
+        let mut skill_mgr = SkillManager::new();
+        skill_mgr.discover_all(&std::path::PathBuf::from("."));
+        registry.register(Arc::new(ReadSkillTool::new(Arc::new(Mutex::new(skill_mgr))))).unwrap();
+
         registry
     }
 

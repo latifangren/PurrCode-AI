@@ -1125,6 +1125,7 @@ dependencies = [
  "purrcode-approval",
  "purrcode-config",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "similar",
