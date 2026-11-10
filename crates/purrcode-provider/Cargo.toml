@@ -8,6 +8,8 @@ description = "PurrCode AI provider adapters and custom endpoint client"
 [dependencies]
 purrcode-api.workspace = true
 purrcode-config.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true

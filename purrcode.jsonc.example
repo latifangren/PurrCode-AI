@@ -15,19 +15,19 @@
       "base_url": "http://127.0.0.1:3425/v1",
       "api_key": "magpie",
       "models": {
-        "magpie/antigravity/gemini-3.8-flash": {
+        "antigravity/gemini-3.8-flash": {
           "name": "Gemini 3.8 Flash Tiered",
           "context_window": 1048576,
           "max_tokens": 65536,
           "reasoning": true
         },
-        "magpie/group/custom-coding-free": {
+        "group/custom-coding-free": {
           "name": "Custom Coding Free Group",
           "context_window": 1048576,
           "max_tokens": 65536,
           "reasoning": true
         },
-        "magpie/codex/gpt-6-luna": {
+        "codex/gpt-6-luna": {
           "name": "Codex Luna High",
           "context_window": 200000,
           "max_tokens": 64000,
