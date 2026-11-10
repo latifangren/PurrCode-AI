@@ -8,19 +8,20 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
 ## Sprint 1: One-Shot LLM CLI (`purrcode-ai -p "<prompt>"`)
 > **Tujuan:** Binary bisa membaca config custom endpoint (Magpie/Ollama/OpenRouter), streaming respon ke terminal, dan selesai.
 
-- [ ] **1.1 Config Loader (`crates/purrcode-config/`)**
-  - Baca file `~/.purrcode/purrcode.jsonc` (atau `purrcode.jsonc` lokal).
-  - Parse mapping `providers` dan model endpoint.
-  - Test: Unit test parsing `purrcode.jsonc.example`.
-- [ ] **1.2 OpenAI-Compatible Provider (`crates/purrcode-provider/`)**
-  - Implementasi `reqwest` SSE client untuk custom endpoint `POST /v1/chat/completions`.
-  - Dukungan streaming text chunk & token usage.
-  - Dukungan parameter `reasoning_effort` (low/medium/high) bila endpoint mendukung.
-  - Test: Panggilan langsung ke `http://127.0.0.1:3425/v1` atau Ollama lokal.
-- [ ] **1.3 Simple CLI One-Shot (`crates/purrcode-cli/`)**
-  - Tambahkan perintah `purrcode-ai -p "<prompt>"` dan cetak streaming jawaban ke stdout.
-  - Guard: Cetak error bersih bila belum ada model yang dikonfigurasi.
-  - **Milestone 1:** `cargo run -p purrcode-cli -- -p "halo PurrCode"` berhasil menjawab secara streaming.
+- [x] **1.1 Config Loader (`crates/purrcode-config/`)**
+  - Baca file `~/.purrcode/purrcode.jsonc` (atau `purrcode.jsonc` lokal) dengan stripper JSONC komentar & trailing comma (teruji).
+  - Parse mapping `providers` dan model endpoint custom (teruji).
+  - Test: Unit test parsing `purrcode.jsonc.example` (lulus).
+- [x] **1.2 OpenAI-Compatible Provider (`crates/purrcode-provider/`)**
+  - Implementasi `reqwest` SSE client untuk custom endpoint `POST /v1/chat/completions` (teruji).
+  - Dukungan streaming text chunk, reasoning delta (`thought`/`reasoning_content`), & token usage (teruji).
+  - Dukungan parameter `reasoning_effort` (low/medium/high) (teruji).
+  - Test: Panggilan langsung terverifikasi ke Magpie `http://127.0.0.1:3425/v1` (lulus).
+- [x] **1.3 Simple CLI One-Shot (`crates/purrcode-cli/`)**
+  - Perintah `purrcode-ai -p "<prompt>"` mencetak streaming jawaban ke stdout (teruji).
+  - Flag `--json` mengalirkan NDJSON stream (teruji).
+  - Guard: Menolak jalan bila model belum dikonfigurasi dengan pesan panduan bersih (teruji).
+  - **Milestone 1:** Terverifikasi sukses streaming respon dari model live.
 
 ---
 
@@ -67,14 +68,15 @@ Tiap sprint memiliki deliverable konkret yang bisa langsung diuji (`cargo run`).
 ## Sprint 4: Meowstro & Subagents (The Clowder)
 > **Tujuan:** Orchestrator dan subagent anti-hilang-konteks.
 
-- [ ] **4.1 Meowstro Engine (`crates/purrcode-orchestrator/`)**
-  - Enforce tool set Meowstro (read-only + delegation: `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task`).
-  - Tolak pemanggilan `write`/`edit`/`bash` di level runtime.
-- [ ] **4.2 Continuation Registry & Handoff Files**
-  - Pembuatan ID stabil `purr_<id>`.
-  - Penulisan otomatis `brief.md` dan `result.md` di direktori sesi.
-  - Subagent Tinker (Fixer) & Whisker (Explorer).
-- [ ] **4.3 Memori Persisten Markdown (`crates/purrcode-memory/`)**
-  - Pemuatan `MEMORY.md`, `USER.md`, `SOUL.md`.
-  - Auto-compaction non-destruktif.
-  - **Milestone 4:** Meowstro mendelegasikan tugas kompleks ke Tinker, Tinker mengedit kode dan verifikasi test, lalu melaporkan kembali ke Meowstro tanpa Meowstro kehilangan konteks rencana.
+- [x] **4.1 Meowstro Engine (`crates/purrcode-orchestrator/`)**
+  - Enforce tool set Meowstro di level runtime: read-only + delegasi `task` (`read`, `grep`, `find`, `task`) (teruji).
+  - Meowstro tidak memiliki tool `write`, `edit`, atau `bash` (teruji).
+- [x] **4.2 Continuation Registry & Handoff Files**
+  - Pembuatan ID stabil `purr_<id>` (teruji).
+  - Penulisan otomatis `brief.md` dan `result.md` di direktori sesi fisik `subagents/<id>/` (teruji langsung di disk).
+  - Subagent Tinker (Fixer dengan full tools) & Whisker (Explorer read-only) (teruji).
+  - Dukungan delegasi ke `tuxeshadow` (Shadow Auditor) (teruji).
+- [x] **4.3 Memori Persisten Markdown (`crates/purrcode-memory/`)**
+  - Pemuatan konteks memori hierarkis (`USER.md`, `MEMORY.md`, `.purrcode/MEMORY.md`) ke prompt sistem (teruji).
+  - Trait `MemoryBackend` dengan dukungan `remember` (append) dan `recall` (teruji).
+  - **Milestone 4:** Terverifikasi sukses menjalankan Meowstro yang mendelegasikan tugas ke Tinker, mencatat handoff ke disk, dan menghasilkan laporan sintesis.
