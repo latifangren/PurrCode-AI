@@ -94,10 +94,30 @@ impl ConfigLoader {
     }
 
     pub fn load_effective() -> Result<Config> {
+        load_credentials_file();
         if let Some(path) = Self::find_config_path() {
             Self::load_from_file(path)
         } else {
             Ok(Config::default())
+        }
+    }
+}
+
+fn load_credentials_file() {
+    if let Some(home) = dirs_home() {
+        let creds_path = home.join(".purrcode").join("credentials");
+        if let Ok(content) = std::fs::read_to_string(creds_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = trimmed.split_once('=') {
+                    if std::env::var_os(k).is_none() {
+                        std::env::set_var(k, v);
+                    }
+                }
+            }
         }
     }
 }

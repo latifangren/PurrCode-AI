@@ -7,11 +7,20 @@ use purrcode_tools::ToolRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use purrcode_api::tool::ApprovalTier;
+
+#[async_trait]
+pub trait ApprovalRequester: Send + Sync {
+    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool;
+}
+
 pub struct AgentLoop {
     provider: Arc<dyn ModelProvider>,
     model: String,
     tool_registry: Arc<ToolRegistry>,
     max_steps: usize,
+    approval_requester: Option<Arc<dyn ApprovalRequester>>,
 }
 
 impl AgentLoop {
@@ -25,11 +34,17 @@ impl AgentLoop {
             model: model.into(),
             tool_registry,
             max_steps: 25,
+            approval_requester: None,
         }
     }
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    pub fn with_approval_requester(mut self, requester: Arc<dyn ApprovalRequester>) -> Self {
+        self.approval_requester = Some(requester);
         self
     }
 
@@ -159,9 +174,26 @@ impl AgentLoop {
                     let args_val: serde_json::Value = serde_json::from_str(&args_str)
                         .unwrap_or_else(|_| serde_json::json!({}));
 
-                    match tool.execute(args_val, ctx).await {
-                        Ok(res) => res.output,
-                        Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+                    let def = tool.definition();
+                    let is_destructive = matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec);
+
+                    let is_approved = if is_destructive {
+                        if let Some(ref req) = self.approval_requester {
+                            req.request_approval(&tool_name, &format!("Run tool '{}'", tool_name), None).await
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    };
+
+                    if !is_approved {
+                        format!("Action denied by user approval: execution of '{}' was rejected.", tool_name)
+                    } else {
+                        match tool.execute(args_val, ctx).await {
+                            Ok(res) => res.output,
+                            Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+                        }
                     }
                 } else {
                     format!("Error: tool '{}' not found in registry", tool_name)

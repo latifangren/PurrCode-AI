@@ -9,7 +9,7 @@ pub mod web;
 pub use coordination::{AskTool, TodoTool};
 pub use execution::BashTool;
 pub use fs::{EditTool, ReadTool, WriteTool};
-pub use search::{FindTool, GrepTool};
+pub use search::{FindTool, GlobTool, GrepTool};
 pub use skill::{ReadSkillTool, SkillManager};
 pub use web::{WebfetchTool, WebsearchTool};
 
@@ -39,6 +39,7 @@ impl ToolRegistry {
         registry.register(Arc::new(EditTool)).unwrap();
         registry.register(Arc::new(BashTool)).unwrap();
         registry.register(Arc::new(GrepTool)).unwrap();
+        registry.register(Arc::new(GlobTool)).unwrap();
         registry.register(Arc::new(FindTool)).unwrap();
         registry.register(Arc::new(TodoTool::new())).unwrap();
         registry.register(Arc::new(AskTool)).unwrap();

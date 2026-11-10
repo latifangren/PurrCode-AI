@@ -998,7 +998,9 @@ name = "purrcode-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "crossterm",
  "purrcode-api",
  "purrcode-approval",
  "purrcode-channel",
@@ -1033,6 +1035,7 @@ dependencies = [
 name = "purrcode-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "purrcode-api",
  "purrcode-config",
@@ -1121,6 +1124,7 @@ name = "purrcode-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "purrcode-api",
  "purrcode-approval",
  "purrcode-config",

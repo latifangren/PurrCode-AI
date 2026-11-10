@@ -60,22 +60,20 @@ impl Tool for GrepTool {
             let mut results = Vec::new();
             let max_matches = 100;
 
-            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())) {
-                if let Ok(entry) = entry {
-                    if entry.file_type().is_file() {
-                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                            let rel_path = entry
-                                .path()
-                                .strip_prefix(&workspace_root)
-                                .unwrap_or(entry.path())
-                                .to_string_lossy();
+            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())).flatten() {
+                if entry.file_type().is_file() {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        let rel_path = entry
+                            .path()
+                            .strip_prefix(&workspace_root)
+                            .unwrap_or(entry.path())
+                            .to_string_lossy();
 
-                            for (i, line) in content.lines().enumerate() {
-                                if regex.is_match(line) {
-                                    results.push(format!("{}:{}:{}", rel_path, i + 1, line.trim()));
-                                    if results.len() >= max_matches {
-                                        return results;
-                                    }
+                        for (i, line) in content.lines().enumerate() {
+                            if regex.is_match(line) {
+                                results.push(format!("{}:{}:{}", rel_path, i + 1, line.trim()));
+                                if results.len() >= max_matches {
+                                    return results;
                                 }
                             }
                         }

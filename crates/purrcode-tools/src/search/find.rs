@@ -50,19 +50,17 @@ impl Tool for FindTool {
             let mut results = Vec::new();
             let max_results = 100;
 
-            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())) {
-                if let Ok(entry) = entry {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.contains(&pat) {
-                        let rel = entry
-                            .path()
-                            .strip_prefix(&workspace_root)
-                            .unwrap_or(entry.path())
-                            .to_string_lossy();
-                        results.push(rel.to_string());
-                        if results.len() >= max_results {
-                            return results;
-                        }
+            for entry in WalkDir::new(&search_root).into_iter().filter_entry(|e| !is_ignored(e.path())).flatten() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.contains(&pat) {
+                    let rel = entry
+                        .path()
+                        .strip_prefix(&workspace_root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy();
+                    results.push(rel.to_string());
+                    if results.len() >= max_results {
+                        return results;
                     }
                 }
             }

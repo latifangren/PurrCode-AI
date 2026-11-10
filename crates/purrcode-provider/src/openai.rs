@@ -294,13 +294,13 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                     if let Some(ref c) = delta.content {
                                         text_delta.push_str(c);
                                     }
-                                    if let Some(ref r) = delta
+                                    if let Some(r) = delta
                                         .reasoning_content
                                         .as_ref()
                                         .or(delta.reasoning.as_ref())
                                         .or(delta.thought.as_ref())
                                     {
-                                        reasoning_delta = Some((*r).clone());
+                                        reasoning_delta = Some(r.clone());
                                     }
                                     if let Some(ref tcs) = delta.tool_calls {
                                         for tc in tcs {
@@ -334,12 +334,11 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 cache_write_tokens: None,
                             });
 
-                            if !text_delta.is_empty()
+                            if (!text_delta.is_empty()
                                 || reasoning_delta.is_some()
                                 || is_finished
-                                || usage.is_some()
-                            {
-                                if tx
+                                || usage.is_some())
+                                && tx
                                     .send(StreamChunk {
                                         delta: text_delta,
                                         reasoning_delta,
@@ -349,10 +348,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                     })
                                     .await
                                     .is_err()
-                                {
-                                    // Receiver dropped
-                                    return;
-                                }
+                            {
+                                // Receiver dropped
+                                return;
                             }
                         }
                     }

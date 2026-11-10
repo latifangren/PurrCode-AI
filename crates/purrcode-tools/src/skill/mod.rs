@@ -118,9 +118,9 @@ fn parse_skill_file(path: &Path) -> Result<SkillMetadata> {
 
     let mut description = format!("Skill {}", name);
 
-    if content.starts_with("---") {
-        if let Some(end_frontmatter) = content[3..].find("---") {
-            let frontmatter = &content[3..3 + end_frontmatter];
+    if let Some(rest) = content.strip_prefix("---") {
+        if let Some(end_frontmatter) = rest.find("---") {
+            let frontmatter = &rest[..end_frontmatter];
             for line in frontmatter.lines() {
                 let trimmed = line.trim();
                 if let Some(n) = trimmed.strip_prefix("name:") {

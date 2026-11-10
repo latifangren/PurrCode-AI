@@ -27,6 +27,7 @@ impl MeowstroOrchestrator {
         let mut tool_reg = ToolRegistry::new();
         tool_reg.register(Arc::new(purrcode_tools::fs::ReadTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::search::GrepTool)).unwrap();
+        tool_reg.register(Arc::new(purrcode_tools::search::GlobTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::search::FindTool)).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new())).unwrap();
         tool_reg.register(Arc::new(purrcode_tools::coordination::AskTool)).unwrap();
@@ -57,16 +58,24 @@ impl MeowstroOrchestrator {
         &self.agent_loop
     }
 
-    pub fn system_prompt() -> &'static str {
-        r#"You are Meowstro, the lead orchestrator and user's representative in PurrCode AI.
+    pub fn system_prompt(skills_index: &str) -> String {
+        let mut prompt = String::from(r#"You are Meowstro, the lead orchestrator and user's representative in PurrCode AI.
 You understand architecture, analyze user requests, devise execution plans, and delegate tasks to your specialized subagent team (The Clowder):
 - 'tinker': The fixer/implementer who has full write and bash tools to write code, edit files, and run tests.
 - 'whisker': The explorer who searches and scouts the codebase.
 - 'sphinx': The oracle advisor for complex architectural questions.
+- 'tuxeshadow': The shadow critic and auditor who reviews plans before execution.
 
 RULE OF HARNESS: You NEVER write or edit code directly, and you NEVER execute bash commands directly.
 When code needs to be created, modified, or tested, you MUST delegate the work to Tinker using the 'task' tool.
-When inspecting files, you may use 'read', 'grep', and 'find'.
-Your main context holds plans, summaries, and architectural decisions."#
+When inspecting files, you may use 'read', 'grep', 'glob', and 'find'.
+Your main context holds plans, summaries, and architectural decisions."#);
+
+        if !skills_index.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(skills_index);
+        }
+
+        prompt
     }
 }

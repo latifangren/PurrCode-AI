@@ -17,7 +17,11 @@ use tokio::sync::mpsc::Receiver;
 pub struct TuiRunner;
 
 impl TuiRunner {
-    pub fn run(mut app: TuiApp, mut rx: Option<Receiver<TuiEvent>>) -> Result<()> {
+    pub fn run(
+        mut app: TuiApp,
+        mut rx: Option<Receiver<TuiEvent>>,
+        prompt_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<()> {
         enable_raw_mode().map_err(|e| PurrError::Channel {
             channel: "tui".to_string(),
             message: format!("Failed to enable raw mode: {e}"),
@@ -35,7 +39,7 @@ impl TuiRunner {
             message: format!("Failed to initialize terminal: {e}"),
         })?;
 
-        let res = run_loop(&mut terminal, &mut app, rx.as_mut());
+        let res = run_loop(&mut terminal, &mut app, rx.as_mut(), prompt_tx.as_ref());
 
         // Always restore terminal on exit
         let _ = disable_raw_mode();
@@ -50,6 +54,7 @@ fn run_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut TuiApp,
     mut rx: Option<&mut Receiver<TuiEvent>>,
+    prompt_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<()> {
     while !app.should_quit {
         // 1. Drain any pending events from the background agent loop
@@ -138,10 +143,16 @@ fn run_loop<B: ratatui::backend::Backend>(
                                 break;
                             } else {
                                 app.items.push(MessageItem::User(cmd.clone()));
-                                app.items.push(MessageItem::Assistant {
-                                    text: format!("Echo response for '{}' (TUI interactive hook). Use 'purrcode-ai -p' for live multi-turn agent streaming.", cmd),
-                                    reasoning: None,
-                                });
+                                app.is_generating = true;
+                                if let Some(p_tx) = prompt_tx {
+                                    let _ = p_tx.send(cmd);
+                                } else {
+                                    app.items.push(MessageItem::Assistant {
+                                        text: format!("Echo response for '{}' (TUI standalone mode).", cmd),
+                                        reasoning: None,
+                                    });
+                                    app.is_generating = false;
+                                }
                             }
                         }
                     }

@@ -53,22 +53,121 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 4. Default interactive mode: launch Ratatui TUI
-    let target_model = args
-        .model
-        .or_else(|| config.model.clone())
-        .unwrap_or_else(|| {
+    // 4. Default interactive mode: launch Ratatui TUI connected to AgentLoop
+    let target_model = match args.model.or_else(|| config.model.clone()) {
+        Some(m) => m,
+        None => {
+            let mut found = None;
             for (p_name, p_cfg) in &config.providers {
                 if let Some(m_key) = p_cfg.models.keys().next() {
-                    return format!("{}:{}", p_name, m_key);
+                    found = Some(format!("{}:{}", p_name, m_key));
+                    break;
                 }
             }
-            "unconfigured".to_string()
-        });
+            match found {
+                Some(m) => m,
+                None => {
+                    eprintln!("Error: No model configured.");
+                    eprintln!("PurrCode AI has no hardcoded default models.");
+                    eprintln!();
+                    eprintln!("Please configure your provider in '~/.purrcode/purrcode.jsonc' or run 'purrcode-ai onboard'.");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+
+    let registry = ProviderRegistry::from_config(&config);
+    let (provider_name, wire_model, _provider_cfg, _model_cfg) = match config.resolve_model(&target_model) {
+        Some(resolved) => resolved,
+        None => {
+            eprintln!("Error: Model '{}' could not be resolved from configuration.", target_model);
+            std::process::exit(1);
+        }
+    };
+
+    let provider = match registry.get(provider_name) {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: Provider '{}' has no base_url or client configured.", provider_name);
+            std::process::exit(1);
+        }
+    };
+
+    let mut tool_registry = ToolRegistry::with_defaults();
+    let mut mcp_manager = McpManager::new();
+    let _ = mcp_manager.load_servers(&config.mcp_servers, &mut tool_registry).await;
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<purrcode_channel::TuiEvent>(64);
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    struct TuiApprovalRequester {
+        event_tx: tokio::sync::mpsc::Sender<purrcode_channel::TuiEvent>,
+    }
+
+    #[async_trait::async_trait]
+    impl purrcode_core::ApprovalRequester for TuiApprovalRequester {
+        async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let req = purrcode_channel::ApprovalRequest {
+                tool_name: tool.to_string(),
+                description: description.to_string(),
+                diff_preview: preview.map(|p| p.to_string()),
+                tx,
+            };
+            if self.event_tx.send(purrcode_channel::TuiEvent::ApprovalRequested(req)).await.is_err() {
+                return false;
+            }
+            rx.await.unwrap_or(false)
+        }
+    }
+
+    let approval_requester = Arc::new(TuiApprovalRequester {
+        event_tx: event_tx.clone(),
+    });
+
+    let agent_loop = AgentLoop::new(provider.clone(), wire_model, Arc::new(tool_registry))
+        .with_approval_requester(approval_requester);
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+
+    let tool_context = ToolContext {
+        session_id: session_id.clone(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        is_dry_run: false,
+    };
+
+    let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+    skill_mgr.discover_all(&tool_context.workspace_root);
+    let skills_index = skill_mgr.format_prompt_index();
+
+    let mut system_prompt = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
+    if !skills_index.is_empty() {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&skills_index);
+    }
+
+    // Spawn background worker for TUI interactive prompts
+    let event_tx_worker = event_tx.clone();
+    tokio::spawn(async move {
+        while let Some(user_prompt) = prompt_rx.recv().await {
+            let tx_clone = event_tx_worker.clone();
+            let _ = agent_loop
+                .run_turn(&user_prompt, Some(&system_prompt), &tool_context, |chunk, is_reasoning| {
+                    if is_reasoning {
+                        let _ = tx_clone.try_send(purrcode_channel::TuiEvent::ReasoningChunk(chunk.to_string()));
+                    } else {
+                        let _ = tx_clone.try_send(purrcode_channel::TuiEvent::TextChunk(chunk.to_string()));
+                    }
+                })
+                .await;
+            let _ = event_tx_worker.send(purrcode_channel::TuiEvent::TurnFinished).await;
+        }
+    });
+
     let app = purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id);
-    purrcode_channel::TuiRunner::run(app, None)?;
+    purrcode_channel::TuiRunner::run(app, Some(event_rx), Some(prompt_tx))?;
     Ok(())
 }
 
@@ -157,10 +256,19 @@ async fn run_one_shot(
     let mut in_reasoning = false;
     let mut stdout = std::io::stdout();
 
+    let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+    skill_mgr.discover_all(&tool_context.workspace_root);
+    let skills_index = skill_mgr.format_prompt_index();
+
     let system_prompt = if use_orchestrator {
-        MeowstroOrchestrator::system_prompt()
+        MeowstroOrchestrator::system_prompt(&skills_index)
     } else {
-        "You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools."
+        let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
+        if !skills_index.is_empty() {
+            base.push_str("\n\n");
+            base.push_str(&skills_index);
+        }
+        base
     };
 
     let loop_runner = if let Some(ref m) = meowstro {
@@ -172,7 +280,7 @@ async fn run_one_shot(
     loop_runner
         .run_turn(
             &prompt,
-            Some(system_prompt),
+            Some(&system_prompt),
             &tool_context,
             |chunk, is_reasoning| {
                 if as_json {
@@ -202,7 +310,7 @@ async fn run_one_shot(
         .await?;
 
     if in_reasoning {
-        print!("]\n");
+        println!("]");
         let _ = stdout.flush();
     }
 

@@ -10,6 +10,7 @@ purrcode-api.workspace = true
 purrcode-config.workspace = true
 purrcode-approval.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true
 regex.workspace = true
 walkdir.workspace = true
 similar.workspace = true

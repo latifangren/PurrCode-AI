@@ -35,7 +35,7 @@ impl MarkdownMemory {
             if !user_content.trim().is_empty() {
                 context.push_str("\n### User Information & Preferences (USER.md)\n");
                 context.push_str(user_content.trim());
-                context.push_str("\n");
+                context.push('\n');
             }
         }
 
@@ -44,7 +44,7 @@ impl MarkdownMemory {
             if !mem_content.trim().is_empty() {
                 context.push_str("\n### Curated Memory (MEMORY.md)\n");
                 context.push_str(mem_content.trim());
-                context.push_str("\n");
+                context.push('\n');
             }
         }
 
@@ -55,7 +55,7 @@ impl MarkdownMemory {
                 if !local_content.trim().is_empty() {
                     context.push_str("\n### Project Memory (.purrcode/MEMORY.md)\n");
                     context.push_str(local_content.trim());
-                    context.push_str("\n");
+                    context.push('\n');
                 }
             }
         }
