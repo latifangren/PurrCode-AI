@@ -37,7 +37,8 @@ impl OpenAiCompatibleProvider {
         api_key: Option<String>,
         headers: HashMap<String, String>,
         user_agent: Option<String>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let name: String = name.into();
         let mut url = base_url.into();
         if url.ends_with('/') {
             url.pop();
@@ -55,19 +56,27 @@ impl OpenAiCompatibleProvider {
         } else {
             DEFAULT_USER_AGENT.to_string()
         };
+        // Fail loudly instead of degrading: the old fallback
+        // `.unwrap_or_else(|_| reqwest::Client::new())` would PANIC
+        // (reqwest's `Client::new()` is `build().expect(...)`) if the
+        // builder failed for a non-UA reason (e.g. TLS init). A provider
+        // whose HTTP client cannot be built is a startup error.
         let client = reqwest::Client::builder()
             .user_agent(user_agent.clone())
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        Self {
-            name: name.into(),
+            .map_err(|e| PurrError::Provider {
+                provider: name.clone(),
+                message: format!("Failed to build HTTP client: {e}"),
+            })?;
+        Ok(Self {
+            name,
             base_url: url,
             api_key,
             headers,
             user_agent,
             client,
             healthy: AtomicBool::new(valid_url),
-        }
+        })
     }
 
     fn endpoint_url(&self) -> String {
@@ -164,6 +173,10 @@ struct SseDelta {
 
 #[derive(Deserialize)]
 struct SseToolCallDelta {
+    // Some gateways omit `index` on tool-call deltas. Default to 0 (the
+    // single/first tool call) instead of dropping the whole chunk: a
+    // dropped chunk silently loses the tool call the model intended.
+    #[serde(default)]
     index: usize,
     id: Option<String>,
     function: Option<SseFunctionDelta>,
@@ -420,6 +433,18 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 // Receiver dropped
                                 return;
                             }
+                        } else {
+                            // Never silently drop a chunk: a malformed chunk
+                            // usually means the provider sent a shape we do
+                            // not understand, and a dropped tool-call chunk
+                            // looks exactly like a model that "says nothing".
+                            // Warn with a truncated preview so a stalled
+                            // tool call is diagnosable.
+                            tracing::warn!(
+                                "Dropping malformed SSE chunk from provider ({} bytes): {:.200}",
+                                data.len(),
+                                data
+                            );
                         }
                     }
                 }
@@ -453,7 +478,8 @@ mod tests {
             None,
             HashMap::new(),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             p1.endpoint_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -465,7 +491,8 @@ mod tests {
             None,
             HashMap::new(),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             p2.endpoint_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -477,7 +504,8 @@ mod tests {
             None,
             HashMap::new(),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             p3.endpoint_url(),
             "https://api.openai.com/v1/chat/completions"
@@ -492,7 +520,8 @@ mod tests {
             None,
             HashMap::new(),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(default_provider.user_agent, DEFAULT_USER_AGENT);
         assert!(default_provider.user_agent.starts_with("PurrCode-AI/"));
 
@@ -504,7 +533,8 @@ mod tests {
             None,
             HashMap::new(),
             Some(custom_ua.to_string()),
-        );
+        )
+        .unwrap();
         assert_eq!(custom_provider.user_agent, custom_ua);
 
         // An invalid header value (control character) must resolve to the
@@ -516,7 +546,8 @@ mod tests {
             None,
             HashMap::new(),
             Some("Bad\u{1}UA".to_string()),
-        );
+        )
+        .unwrap();
         assert_eq!(invalid_provider.user_agent, DEFAULT_USER_AGENT);
     }
 
@@ -582,6 +613,37 @@ mod tests {
         assert_eq!(
             calls[0].function.as_ref().unwrap().arguments.as_deref(),
             Some("{\"path\":\"foo.rs\"}")
+        );
+    }
+
+    #[test]
+    fn test_sse_tool_call_delta_without_index_defaults_to_zero() {
+        // Some gateways omit `index` on tool-call deltas. The chunk must
+        // still parse (as the single/first tool call) instead of failing
+        // the whole chunk and silently dropping the tool call.
+        let tc_json = r#"{
+            "id": "chat-3",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let tc_chunk: SseChunk = serde_json::from_str(tc_json).unwrap();
+        let delta = tc_chunk.choices[0].delta.as_ref().unwrap();
+        let calls = delta.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, 0);
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().name.as_deref(),
+            Some("read")
         );
     }
 }

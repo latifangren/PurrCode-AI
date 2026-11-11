@@ -1,6 +1,6 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (96 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (98 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
 - **Timestamp Audit:** `2026-11-12 04:49:00 +07:00`
 
@@ -120,6 +120,12 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - N2: `build_pinned_client` fail-closed (mengembalikan `Result`, error dipropagasi, bukan fallback client polos tanpa pinning); R2: helper `next_hop_url` (validasi target hop sebelum diikuti) + unit test hop redirect ke loopback ditolak.
   - R1: tabel §1 AUDIT_STATUS "83 unit/integration tests" dikoreksi ke 96.
   - Capabilities jujur: `network`/`filesystem` di-parse dari `plugin.yaml` dan dicatat sebagai deklarasi sandbox v0.3; hanya `secrets` yang ditegakkan di v0.1. `ProcessPlugin::new` memberi `tracing::warn!`; `PluginManager::unenforced_capabilities()`; CLI mencatat audit entry `plugin_capability_unenforced` + `purrcode-ai plugin list` menampilkan peringatan `⚠`; klaim "default-deny" di `AGENTS.md`/`CLAUDE.md`/`ARCHITECTURE.md` dikualifikasi ke `secrets` saja. Smoke test live: baris `⚠` tampil di `plugin list` dan 1 entry audit tercatat.
+- [x] **9.8 Ronde autonomous batch 2b 2026-11-12 (temuan checker batch 2a F1/F2/N1b + SSE parser) — hint `--yolo` jujur + konstruktor provider fallible + chunk SSE tidak lagi dibuang diam-diam (`crates/purrcode-provider/`, `crates/purrcode-cli/`, `docs/`)**
+  - F1: header `purrcode_orchestrator` di §3 AUDIT_STATUS "(7 tests)" dikoreksi ke 8 (test dedup batch 2a). F2: `CliApprovalRequester` membawa field `yolo` — penolakan non-TTY saat `--yolo` sudah dipakai kini menjelaskan aturan policy yang tidak bisa di-override `--yolo` (mis. write di luar workspace); unit test `test_cli_approval_requester_denies_without_tty`.
+  - N1b: fallback `.unwrap_or_else(|_| reqwest::Client::new())` dihapus — dari source reqwest 0.12.28, `Client::new()` adalah `build().expect(...)`, jadi kegagalan builder bukan-UA akan PANIC. `OpenAiCompatibleProvider::new` dan `ProviderRegistry::from_config` kini mengembalikan `Result`; call-site produksi memakai `?`, `run_doctor` melaporkan sebagai diagnosis. Tidak ada lagi `Client::new()` di jalur provider.
+  - SSE: `SseToolCallDelta.index` kini `#[serde(default)]` — gateway yang menghilangkan `index` tetap di-parse sebagai tool call pertama (unit test `test_sse_tool_call_delta_without_index_defaults_to_zero`); chunk yang tetap gagal di-parse dicatat `tracing::warn!` dengan preview 200 karakter, bukan dibuang diam-diam.
+  - TERBUKA (F3): failover top-level belum ada — `FallbackRouter` hanya di loop child; model sesi 500 → hard error by design. Menutupnya butuh keputusan desain sumber rantai fallback model sesi (tidak ada field `fallback` di `ModelConfig`).
+  - Hasil ukur: check 0 warning, test 98/98, clippy `-D warnings` bersih, fmt bersih, release 4.629.616 byte (4,41 MiB) ELF dynamic GNU stripped.
   - Light fixes: dedup heading `## Summary` di `result.md`; range fuzzy `edit` berakhir sebelum newline baris terakhir (LF + CRLF); kartu hasil tool TUI menampilkan 4 baris pertama + marker `… (N more lines)` (diuji via TestBackend).
   - Koreksi rumusan UA di docs: "yang diblokir hanya UA `reqwest/*`" diganti "binary lama tidak mengirim header User-Agent sama sekali".
   - Hasil ukur: `cargo test --workspace` 96/96, `cargo build --release` 4.629.032 byte (4,41 MiB).

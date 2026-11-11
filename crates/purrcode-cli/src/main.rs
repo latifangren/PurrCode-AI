@@ -296,7 +296,7 @@ async fn main() -> Result<()> {
     // 4. Default interactive mode: launch Ratatui TUI connected to AgentLoop / Meowstro
     let target_model = resolve_target_model_or_exit(args.model, &config);
 
-    let registry = ProviderRegistry::from_config(&config);
+    let registry = ProviderRegistry::from_config(&config)?;
     let (provider_name, wire_model, _provider_cfg, _model_cfg) =
         match config.resolve_model(&target_model) {
             Some(resolved) => resolved,
@@ -674,16 +674,29 @@ fn resolve_target_model_or_exit(model_override: Option<String>, config: &Config)
     }
 }
 
-struct CliApprovalRequester;
+/// Non-TTY approval requester for `-p` / `exec` runs. `yolo` is remembered
+/// so the denial hint is truthful: with `--yolo` already on, a denial comes
+/// from a policy rule `--yolo` cannot override (e.g. an outside-workspace
+/// write), not from a missing flag.
+struct CliApprovalRequester {
+    yolo: bool,
+}
 
 #[async_trait::async_trait]
 impl purrcode_core::ApprovalRequester for CliApprovalRequester {
     async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
         if !std::io::stdin().is_terminal() {
-            eprintln!(
-                "⚠️  [Approval Denied]: Tool '{}' requires approval. Run in terminal or pass --yolo.",
-                tool
-            );
+            if self.yolo {
+                eprintln!(
+                    "⚠️  [Approval Denied]: Tool '{}' requires approval, but --yolo is already on — this denial comes from a policy rule --yolo cannot override (e.g. an outside-workspace write). Run in a terminal to approve it interactively.",
+                    tool
+                );
+            } else {
+                eprintln!(
+                    "⚠️  [Approval Denied]: Tool '{}' requires approval. Run in terminal or pass --yolo.",
+                    tool
+                );
+            }
             return false;
         }
 
@@ -715,7 +728,7 @@ async fn run_one_shot(
     workspace_root: &Path,
 ) -> Result<()> {
     let target_model = resolve_target_model_or_exit(model_override, config);
-    let registry = ProviderRegistry::from_config(config);
+    let registry = ProviderRegistry::from_config(config)?;
 
     let (provider_name, wire_model, _provider_cfg, _model_cfg) =
         match config.resolve_model(&target_model) {
@@ -807,7 +820,8 @@ async fn run_one_shot(
         is_dry_run: false,
     };
 
-    let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> = Arc::new(CliApprovalRequester);
+    let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> =
+        Arc::new(CliApprovalRequester { yolo });
     let registry_arc = Arc::new(registry);
     let meowstro = if use_orchestrator {
         Some(MeowstroOrchestrator::with_complete_options(
@@ -936,7 +950,15 @@ fn run_doctor(config: &Config, workspace_root: &std::path::Path) {
             "   Create '~/.purrcode/purrcode.jsonc' or run 'purrcode-ai onboard' to configure your endpoint."
         );
     } else {
-        let reg = ProviderRegistry::from_config(config);
+        // `doctor` reports problems instead of failing on them: a provider
+        // whose HTTP client cannot be built is diagnosed here, not hidden.
+        let reg = match ProviderRegistry::from_config(config) {
+            Ok(r) => r,
+            Err(e) => {
+                println!("⚠️  Failed to build provider clients: {e}");
+                ProviderRegistry::new()
+            }
+        };
         println!("Configured Providers ({}):", config.providers.len());
         for (name, p) in &config.providers {
             let eff_url = p.base_url.as_deref().unwrap_or("(none)");
@@ -1035,5 +1057,22 @@ mod tests {
             let model = resolve_target_model_or_exit(None, &config);
             assert_eq!(model, "my-provider:alpha-coder");
         }
+    }
+
+    #[tokio::test]
+    async fn test_cli_approval_requester_denies_without_tty() {
+        use purrcode_core::ApprovalRequester;
+        // Under `cargo test` stdin is not a TTY, so both variants deny
+        // (the `yolo` variant only changes the hint, never the decision).
+        assert!(
+            !CliApprovalRequester { yolo: false }
+                .request_approval("write", "Run tool 'write'", None)
+                .await
+        );
+        assert!(
+            !CliApprovalRequester { yolo: true }
+                .request_approval("write", "Run tool 'write'", None)
+                .await
+        );
     }
 }

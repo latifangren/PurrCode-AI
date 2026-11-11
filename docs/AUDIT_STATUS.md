@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 04:49:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 05:02:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.629.032 byte stripped dynamic ELF di Linux, diukur pada build rilis branch `dev-muse`), keduanya jauh di bawah pagu target $\le 25$ MB
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.629.616 byte stripped dynamic ELF di Linux, diukur pada build rilis branch `dev-muse`), keduanya jauh di bawah pagu target $\le 25$ MB
 - **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross` (target rilis CI/distribusi — build saat ini masih dynamic GNU; bukti build musl menunggu workplan P1 item 13) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (96 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (98 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,7 +19,7 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 96 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 98 unit/integration tests hermetis lintas platform. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
 | **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (96 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (98 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-12 04:49:00 +07:00` (96/96 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per `2026-11-12 05:02:00 +07:00` (98/98 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api` (4 tests):**
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
@@ -64,7 +64,7 @@ Hasil pengujian otomatis per `2026-11-12 04:49:00 +07:00` (96/96 lolos di Linux;
    - `tui::tests::test_approval_key_action_edit_keys` (Pemetaan tombol edit `e` di kartu approval)
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
    - `tui::render::tests::test_tool_result_card_shows_first_lines_and_more_marker` (Kartu hasil tool TUI: 4 baris pertama + marker `… (N more lines)`, via TestBackend)
-4. **`purrcode_ai` (CLI binary) (7 tests):**
+4. **`purrcode_ai` (CLI binary) (8 tests):**
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
    - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
@@ -72,6 +72,7 @@ Hasil pengujian otomatis per `2026-11-12 04:49:00 +07:00` (96/96 lolos di Linux;
    - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
    - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
    - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
+   - `tests::test_cli_approval_requester_denies_without_tty` (Requester non-TTY menolak di kedua varian `yolo`; hint `yolo` tidak lagi menyesatkan)
 5. **`purrcode_config` (9 tests):**
    - `jsonc::tests::test_clean_jsonc_comments`, `jsonc::tests::test_strip_trailing_commas`
    - `loader::tests::test_expand_env_vars`, `loader::tests::test_parse_example_file`, `loader::tests::test_hierarchical_merge`
@@ -87,7 +88,7 @@ Hasil pengujian otomatis per `2026-11-12 04:49:00 +07:00` (96/96 lolos di Linux;
    - `tests::test_markdown_memory_remember_recall_and_forget`
    - `tests::test_markdown_memory_load_context_sections` (Integrasi SOUL/USER/MEMORY/.purrcode)
    - `tests::test_truncate_chars_utf8_safety` (Pemotongan batas karakter UTF-8 aman)
-8. **`purrcode_orchestrator` (7 tests):**
+8. **`purrcode_orchestrator` (8 tests):**
    - `shadow::tests::test_parse_shadow_verdicts_and_triggers`
    - `shadow::tests::test_shadow_enforcement_across_modes`
    - `shadow::tests::test_strict_shadow_user_approval_with_preview` (Verifikasi penyerahan diff preview saat persetujuan Carrier)
@@ -103,12 +104,13 @@ Hasil pengujian otomatis per `2026-11-12 04:49:00 +07:00` (96/96 lolos di Linux;
    - `tests::test_parse_plugin_yaml_records_network_and_filesystem` (Deklarasi `network`/`filesystem` di-parse & dicatat, tidak ditegakkan di v0.1)
    - `tests::test_unenforced_capabilities_reports_declared_only` (Helper `unenforced_capabilities` hanya melaporkan yang dideklarasikan)
    - `tests::test_plugin_manager_dispatch_pre_tool_use_veto`
-10. **`purrcode_provider` (6 tests):**
+10. **`purrcode_provider` (7 tests):**
     - `router::tests::test_policy_refusal_stops_fallback_chain`
     - `router::tests::test_technical_error_fails_over_to_next_candidate_and_cooldown` (Failover otomatis saat error teknis & cooldown)
     - `openai::tests::test_openai_provider_endpoint_url_resolution`
     - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
     - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
+    - `openai::tests::test_sse_tool_call_delta_without_index_defaults_to_zero` (Chunk tool-call tanpa `index` tetap di-parse sebagai tool call pertama, bukan dibuang diam-diam)
     - `openai::tests::test_user_agent_resolution_default_and_custom` (Default UA jujur `PurrCode-AI/0.1` vs UA kustom dari config; UA invalid → kembali ke default, bukan client tanpa UA)
 11. **`purrcode_service` (4 tests):**
     - `tests::test_service_unit_generators`
@@ -208,7 +210,7 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Temuan baru (terbuka):** (a) User-Agent default `reqwest` di-block Cloudflare gateway ini (HTTP 403, error 1010 "browser signature") — curl/Python lolos; bridge mengirim UA browser agar tes jalan. Perlu allowlist di Cloudflare atau opsi custom User-Agent di provider. **Koreksi 2026-11-12:** binary lama ternyata TIDAK mengirim header User-Agent sama sekali — reqwest 0.12 `Client::new()` tidak menyuntik UA — dan WAF kemungkinan menolak request tanpa UA itu, bukan literal `reqwest/*`; default jujur PurrCode lolos live (Tes D). (b) **`purrcode-ai -p` tanpa `--orchestrator` TIDAK menjalankan Meowstro** — yang jalan agent generik dengan semua tool (preset `tabby`/`carrier`/`oyen` semua mencantumkan `write`/`edit`/`bash`), tapi audit melabelinya "meowstro" (`main.rs:816`, `loop_runner` pakai `m.agent_loop()` hanya bila `--orchestrator`). Jalur read-only Meowstro (`meowstro.rs:116-155`) hanya aktif dengan flag itu. Verifikasi ronde lalu yang memakai `-p` tanpa flag ini tidak menguji jalur orchestrator — pengujian delegasi wajib memakai `--orchestrator`.
 14. **Ronde autonomous 2026-11-12: `--orchestrator` default, User-Agent configurable, TOCTOU SSRF tertutup (PRD §4.5.6, F10, F12):**
     - **`--orchestrator` default (PRD §4.5.6):** `cli::use_orchestrator(orchestrator, direct)` — orchestrator default untuk `-p`, `exec`, dan TUI; `--direct` opt-out ke agent generik semua-tool; `--orchestrator` eksplisit menang bila keduanya dikasih. Audit kini melabeli jujur (`cli::agent_role_for`: `"meowstro"` vs `"agent"`). Diuji unit (`test_use_orchestrator_defaults_to_orchestrator`, `test_agent_role_for_is_honest`) + live via Magpie (Tes E: `-p` polos → Meowstro `task` → Tinker `write` + verifikasi; Tes F: `--direct` → `agent tool_call write` langsung).
-    - **User-Agent (F12):** `ProviderConfig.user_agent` (opsional) + default jujur `PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)` di `OpenAiCompatibleProvider` (client builder `.user_agent(...)`; bila UA tidak valid, builder gagal dan fallback memakai client polos — celah ini ditemukan verifikasi independen dan ditutup batch 2a, lihat item 15). Diuji unit (`test_user_agent_resolution_default_and_custom`) + live via bridge pass-through `127.0.0.1:3458`: UA Chrome config → 200, **default PurrCode UA → 200 juga** (kontrol negatif gagal dengan hasil terbaik: yang diblokir Cloudflare ternyata request TANPA header User-Agent sama sekali — binary lama tidak mengirim UA — bukan literal `reqwest/*`) — provider `magpie` di example TIDAK memakai UA browser.
+    - **User-Agent (F12):** `ProviderConfig.user_agent` (opsional) + default jujur `PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)` di `OpenAiCompatibleProvider` (client builder `.user_agent(...)`; bila UA tidak valid, builder gagal dan fallback memakai client polos — celah ini ditemukan verifikasi independen, ditutup batch 2a via validasi (item 15), lalu fallback-nya dihapus sepenuhnya (item 16): kegagalan builder kini error di startup). Diuji unit (`test_user_agent_resolution_default_and_custom`) + live via bridge pass-through `127.0.0.1:3458`: UA Chrome config → 200, **default PurrCode UA → 200 juga** (kontrol negatif gagal dengan hasil terbaik: yang diblokir Cloudflare ternyata request TANPA header User-Agent sama sekali — binary lama tidak mengirim UA — bukan literal `reqwest/*`) — provider `magpie` di example TIDAK memakai UA browser.
     - **TOCTOU SSRF tertutup (F10):** `webfetch.rs` — `resolve_validated_addrs` (resolve sekali → validasi semua IP → fail-closed bila DNS gagal) + `build_pinned_client` (reqwest `.resolve_to_addrs`, terverifikasi dari source reqwest 0.12.28) + `get_pinned` (redirect manual max 5 hop, re-validasi + re-pin tiap hop). `websearch` memakai helper yang sama. Set IP yang diblokir tidak berubah. Pola dari zeroclaw (`resolve_to_addrs`, per-hop re-validation).
     - **Riset referensi:** subagent read-only atas clone lokal (codex, pi, opencode, picoclaw, zeroclaw, hermes, dll) — Q1 (UA: pola pi/codex + override picoclaw), Q2 (norma industri = single agent default; PurrCode sengaja menyimpang atas keputusan eksplisit user + PRD yang mengikat), Q3 (pinning zeroclaw), Q4 (egress allowlist zeroclaw + Rule opencode, untuk item 18).
     - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **90/90 lolos, 0 failed**, clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.623.400 byte (4,41 MiB), ELF dynamic GNU, stripped.
@@ -222,6 +224,14 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Koreksi rumusan UA di docs:** `purrcode.jsonc.example` (komentar magpie), workplan item 16, AUDIT_STATUS item 13(a) dan item 14 — "yang diblokir hanya UA `reqwest/*`" diganti rumusan yang benar: binary lama tidak mengirim header User-Agent sama sekali; WAF kemungkinan menolak request tanpa UA itu.
     - **Smoke test live (sendiri, sebelum commit):** plugin `net-plug` (deklarasi network + filesystem) di workspace uji → `purrcode-ai plugin list` menampilkan baris `⚠`; run `-p` via mock SSE lokal → audit log berisi tepat 1 entry `plugin_capability_unenforced`.
     - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **96/96 lolos, 0 failed** (90 + 6 baru: redirect-hop, fuzzy-newline, dedup Summary, 2 plugin, kartu TUI), clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.629.032 byte (4,41 MiB), ELF dynamic GNU, stripped.
+16. **Ronde autonomous batch 2b 2026-11-12: temuan checker batch 2a (F1/F2/N1b) + SSE parser tidak lagi diam-diam membuang chunk (workplan item 21):**
+    - **F1 — angka usang §3:** header `purrcode_orchestrator` di §3 tertulis "(7 tests)" padahal daftarnya 8 nama (test dedup ditambahkan batch 2a tanpa menaikkan header) — dikoreksi ke 8.
+    - **F2 — hint `--yolo` menyesatkan (`crates/purrcode-cli/src/main.rs`):** `CliApprovalRequester` kini membawa field `yolo`; saat stdin bukan TTY dan `--yolo` SUDAH dipakai, pesannya jujur — penolakan berasal dari aturan policy yang tidak bisa di-override `--yolo` (mis. write di luar workspace), bukan dari flag yang kurang. Unit test `test_cli_approval_requester_denies_without_tty` membuktikan kedua varian menolak di non-TTY.
+    - **N1b — fallback `Client::new()` dihapus (`crates/purrcode-provider/src/openai.rs`, `lib.rs`):** fallback lama `.unwrap_or_else(|_| reqwest::Client::new())` bukan degradasi yang aman — dari source reqwest 0.12.28, `Client::new()` adalah `build().expect("Client::new()")`, jadi kegagalan builder karena alasan bukan-UA akan PANIC, bukan berjalan tanpa UA. `OpenAiCompatibleProvider::new` kini mengembalikan `Result` (gagal membangun client HTTP = `PurrError::Provider`, error startup yang jelas) dan `ProviderRegistry::from_config` mengembalikan `Result` — 2 call-site produksi memakai `?`, `run_doctor` melaporkan kegagalan sebagai diagnosis (bukan crash). Klaim "tidak pernah tanpa UA" kini benar secara harfiah: tidak ada lagi `Client::new()` di jalur provider.
+    - **SSE parser — chunk malformed tidak lagi diam-diam dibuang (`openai.rs`):** (a) `SseToolCallDelta.index` kini `#[serde(default)]` — gateway yang menghilangkan `index` pada tool-call delta tetap di-parse sebagai tool call pertama (index 0) alih-alih menggagalkan seluruh chunk (unit test `test_sse_tool_call_delta_without_index_defaults_to_zero`). (b) Chunk yang tetap gagal di-parse kini dicatat `tracing::warn!` dengan preview 200 karakter — sebelumnya `if let Ok(parsed)` membuangnya tanpa jejak, sehingga tool call yang hilang terlihat persis seperti model yang "tidak berkata apa-apa".
+    - **TERBUKA — F3 (failover top-level belum ada, klarifikasi re-checker):** `FallbackRouter` hanya dibangun di loop child (`task.rs:312`, dari `fallback_candidates` preset model per-role); panggilan pertama model sesi yang 500 → hard error by design, bukan failover. Menutup ini butuh keputusan desain — dari mana rantai fallback model sesi berasal (tidak ada field `fallback` di `ModelConfig` saat ini) — dicatat sebagai item kerja terpisah, bukan diklaim tertutup di sini.
+    - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **98/98 lolos, 0 failed** (96 + 2 baru: SSE index-default, CLI approval requester), clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.629.616 byte (4,41 MiB), ELF dynamic GNU, stripped.
+    - **Catatan proses (perintah user 2026-11-12 04:54 WIB):** batch ini TIDAK disertai laporan verifikasi gabungan — kedua checker batch 2a sudah menutup klaim batch 2a (6/6 build + re-check 96/96), dan temuan mereka (F1/F2/N1b + observasi SSE) langsung menjadi daftar perbaikan ini. Verifikasi independen per batch tetap jalan diam-diam; laporan hanya di ujung v0.1.
 
 ---
 
