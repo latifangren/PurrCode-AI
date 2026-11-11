@@ -1,8 +1,8 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (83 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (90 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
-- **Timestamp Audit:** `2026-11-12 04:12:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 04:27:00 +07:00`
 
 Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksak yang memverifikasinya di `cargo test --workspace`.
 
@@ -108,4 +108,10 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - Test PATH Windows benar-benar portabel: helper `windows_join` + 2 unit test (`execution::bash::tests::test_windows_join_uses_backslash_for_windows_paths`, `execution::bash::tests::test_windows_join_keeps_host_separator_for_unix_paths`); `test_resolve_windows_shell_detects_path_bash` kini lolos di Linux.
   - Deterministik langkah-3 `resolve_model` (`model::tests::test_resolve_model_bare_name_is_deterministic_across_providers`).
   - Pemetaan tombol approval TUI diekstrak ke fungsi murni `approval_key_action` + 4 unit test (`tui::tests::test_approval_key_action_approve_keys`, `tui::tests::test_approval_key_action_reject_keys`, `tui::tests::test_approval_key_action_edit_keys`, `tui::tests::test_approval_key_action_other_keys_ignored`).
-  - Kejujuran dokumen: angka test 76 → 83 dengan hasil ukur sendiri, "3.7 MB" telanjang dikualifikasi, byte rilis diperbarui (4.617.256 byte = 4,40 MiB), "Bulletproof" dihapus, musl sebagai target (bukan fakta), dan direktori root `src/` yang kosong dihapus. Workplan branch: `docs/dev-muse-workplan.md`.
+  - Kejujuran dokumen: angka test 76 → 83 dengan hasil ukur sendiri, "3.7 MB" telanjang dikualifikasi, byte rilis diperbarui saat itu (4.617.256 byte = 4,40 MiB), "Bulletproof" dihapus, musl sebagai target (bukan fakta), dan direktori root `src/` yang kosong dihapus. Workplan branch: `docs/dev-muse-workplan.md`.
+- [x] **9.6 Ronde autonomous 2026-11-12 (item 15–17) — `--orchestrator` default + User-Agent + TOCTOU (`crates/purrcode-cli/`, `crates/purrcode-config/`, `crates/purrcode-provider/`, `crates/purrcode-tools/`, `docs/`)**
+  - `--orchestrator` default (`-p`/`exec`/TUI) + `--direct` opt-out + label audit jujur (`cli::use_orchestrator`, `cli::agent_role_for` + 2 unit test).
+  - User-Agent configurable (`ProviderConfig.user_agent`) + default jujur `PurrCode-AI/0.1` + 1 unit test; live via Magpie: UA Chrome → 200, default PurrCode UA → 200 (yang diblokir Cloudflare hanya UA `reqwest/*`).
+  - TOCTOU SSRF tertutup: `resolve_validated_addrs` + `build_pinned_client` (`.resolve_to_addrs`) + `get_pinned` (redirect manual, re-pin per hop) + 4 unit test; `websearch` memakai helper yang sama.
+  - Riset referensi (subagent read-only): pola UA pi/codex/picoclaw, norma one-shot (PurrCode menyimpang atas keputusan user + PRD), pinning zeroclaw, capabilities zeroclaw/opencode.
+  - Hasil ukur: `cargo test --workspace` 90/90, `cargo build --release` 4.623.400 byte (4,41 MiB).

@@ -30,11 +30,37 @@
 Untuk pengujian development, PurrCode memakai model **`antigravity/gemini-3.8-flash-tiered`** dari gateway Magpie milik user di PC-nya (Cloudflare tunnel `https://magpie.raevtar.dev/v1`, 66 model). Terverifikasi live dari VM ini: completion 200 ("OK", 7,8 dtk), tool call 200 (`calc` a=2 b=2, 20,5 dtk). Lebih cepat dari `group/cheap-first` (22,7 dtk) — tetap lambat per langkah (model reasoning + tunnel/proxy).
 
 - Wiring: provider `magpie` di `purrcode.jsonc.example` (base_url literal — endpoint publik milik user; `"api_key": "${MAGPIE_API_KEY}"` dari env saja, jangan pernah tulis key ke repo) + preset `model-presets/magpie.jsonc` (semua role → model yang sama) + embedded di `crates/purrcode-config/src/preset_model.rs` + assert di `test_bundled_model_presets_load`.
-- Cara pakai: `export MAGPIE_API_KEY='<key>'` lalu `purrcode-ai --orchestrator -m magpie:antigravity/gemini-3.8-flash-tiered -p "..."` dengan `model_preset: "magpie"` di config (atau `-m` eksplisit untuk sesi). **Tanpa `--orchestrator`, `-p` menjalankan agent generik dengan semua tool, bukan Meowstro** (lihat temuan di bawah).
+- Cara pakai: `export MAGPIE_API_KEY='<key>'` lalu `purrcode-ai -m magpie:antigravity/gemini-3.8-flash-tiered -p "..."` dengan `model_preset: "magpie"` di config (atau `-m` eksplisit untuk sesi). Sejak commit ronde autonomous 2026-11-12, `--orchestrator` adalah default (Meowstro + The Clowder); `--direct` memakai agent generik semua-tool sebagai opt-out.
 - Terverifikasi live dari VM ini (2026-11-12): completion "OK" 7,8 dtk, tool call `calc` 20,5 dtk, binary `-p` baca file 25,5 dtk, delegasi `--orchestrator --yolo` end-to-end ~157 dtk (Meowstro `task` → Tinker `write` + `read` + `bash od` verifikasi).
 - **Keterbatasan lingkungan:** binary membuat HTTPS langsung; VM ini hanya keluar lewat proxy egress → tes dari VM memakai bridge lokal `127.0.0.1:3457` (passthrough `/tmp/magpie_bridge.py`, bukan bagian repo). Di PC user binary langsung nyambung.
-- **Temuan baru (terbuka):** (a) UA default `reqwest` di-block Cloudflare gateway ini (403, error 1010) — perlu allowlist atau opsi custom User-Agent di provider. (b) **`-p` tanpa `--orchestrator` bukan Meowstro** — agent generik + semua tool, audit tetap melabeli "meowstro" (`main.rs:816`); jalur read-only Meowstro hanya aktif dengan flag itu. Pengujian delegasi wajib pakai `--orchestrator`.
+- **Temuan baru (terbuka):** (a) UA default `reqwest` di-block Cloudflare gateway ini (403, error 1010) — **terselesaikan 2026-11-12:** default jujur PurrCode (`PurrCode-AI/0.1 ...`) lolos live (Tes D, tanpa `user_agent` → 200); yang diblokir ternyata hanya UA `reqwest/*`, bukan semua UA non-browser. Opsi `user_agent` tetap ada untuk gateway yang lebih ketat. (b) **`-p` tanpa `--orchestrator` bukan Meowstro** — agent generik + semua tool, audit tetap melabeli "meowstro" (`main.rs:816`); jalur read-only Meowstro hanya aktif dengan flag itu. Pengujian delegasi wajib pakai `--orchestrator`.
 - Hanya model itu yang dites live; 65 model gateway lain belum dites satu-satu. Context window 1.048.576 adalah klaim gateway.
+
+## Ronde autonomous (2026-11-12 04:16 WIB — perintah user)
+
+User memerintahkan (04:16 WIB): kerjakan keduanya (default `--orchestrator` + User-Agent), full autonomous, sampai benar-benar jalan dan normal semua sesuai PRD, pakai referensi proyek lain, jangan ngarang/nebak, clone repo referensi bila perlu, utamakan open source (OMP, Hermes Agent, dll).
+
+- **Scope: PRD v0.1 (F1–F14) + dua fix yang disetujui.** v0.2 (Telegram F15–F18), v0.3 (cron F19, sandbox OS F21, install-approval), v0.4 (WebUI F23–F25) di luar scope ronde ini — tetap didokumentasikan jujur sebagai belum ada.
+- **Aturan:** setiap klaim fungsi harus diuji live atau unit test; pola dari referensi dikutip dengan file:line, bukan tebakan; commit lokal di `dev-muse` per batch, verifikasi independen 2 checker per batch; push tetap butuh persetujuan eksplisit per aksi.
+- **Referensi:** 13 repo sudah ter-clone di `references/` (opencode, codex, oh-my-pi, pi, slim, oh-my-openagent, deepseek-harness, hermes-agent, openhuman, picoclaw, zeroclaw, Muse); riset pola UA/orchestrator/SSRF/capabilities dijalankan subagent riset read-only (hasilnya jadi masukan implementasi, bukan pengganti baca kode sendiri).
+- **Item ronde ini:**
+
+| # | Item | Catatan |
+|---|---|---|
+| 15 | `--orchestrator` jadi default (`-p` + TUI), `--direct` opt-out, label audit jujur | PRD §4.5.6 menuntut penegakan harness-level: Meowstro read-only + delegasi. Sebelum fix ini default `-p` menjalankan agent generik semua-tool yang salah dilabeli "meowstro". `--orchestrator` tetap diterima (eksplisit, tanpa efek tambahan); `--orchestrator` menang bila keduanya dikasih. |
+| 16 | User-Agent configurable di provider config + default jujur | `ProviderConfig.user_agent` (opsional); bila kosong → default `PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)`. **Hasil live 2026-11-12 (koreksi temuan awal):** Cloudflare gateway ini memblokir UA default `reqwest` (403, error 1010), TAPI default jujur PurrCode **lolos** (Tes D: tanpa `user_agent` → 200). Jadi provider `magpie` di example TIDAK memakai UA browser — default jujur sudah cukup; opsi `user_agent` tetap ada untuk gateway yang lebih ketat. `headers["User-Agent"]` per-request tetap menang atas default client bila diset. |
+| 17 | TOCTOU SSRF — pin IP hasil resolusi saat connect | P1 item 8, naik ke ronde ini. Lihat P1 untuk detail. |
+| 18 | Tegakkan `capabilities.network`/`filesystem` atau hapus klaimnya | P1 item 9, naik ke ronde ini. |
+| 19 | Light fixes (result.md `##` ganda, fuzzy-edit newline, TUI first-line) | P1 item 10–12. |
+| 20 | Musl build sungguhan + CI workflow | P1 item 13, naik ke ronde ini (bukti build statis nyata, bukan klaim). |
+
+**Kriteria keluar ronde:** semua item 15–20 selesai dengan bukti ukur (unit test + live test bila memungkinkan dari VM ini), suite hijau, `AUDIT_STATUS.md` diperbarui per batch, dan verifikasi independen 2 checker menutup batch.
+
+**Hasil riset referensi (subagent read-only, 2026-11-12 04:19 WIB)** — pola dari clone lokal `references/` (codex, opencode, oh-my-pi, pi, slim, oh-my-openagent, deepseek-harness, hermes-agent, openhuman, picoclaw, zeroclaw; lisensi dicatat, pola saja, bukan salinan kode):
+- **Q1 User-Agent:** pola pi/codex — satu `user_agent()` bersama yang tak bisa dimatikan (`pi/<ver> (<platform>; <runtime>; <arch>)`, `codex/<ver>`) + override config ala picoclaw (`user_agent` key, default `PicoClaw/<Version>`). Fix 16 mengikuti pola ini (default jujur `PurrCode-AI/0.1 ...` + `user_agent` config). Hermes mencatat WAF yang menolak UA sebagai failure mode yang dikenal (`auxiliary_client.py:888`).
+- **Q2 default one-shot:** norma industri UNANIM — single general agent sebagai default one-shot; orchestrator hanya opt-in (flag/config, ala opencode `--agent` / slim `default_agent`). **PurrCode sengaja menyimpang dari norma ini atas keputusan eksplisit user (04:16 WIB) + PRD §1/§4.5.6 yang mengikat** (Meowstro adalah arsitektur intinya, bukan mode). Bagian yang disepakati norma: label audit harus jujur + kedua mode didokumentasikan — keduanya sudah dikerjakan di fix 15.
+- **Q3 SSRF pinning:** zeroclaw adalah pola acuan — `to_socket_addrs()` → validasi semua IP hasil resolve (non-global incl. `100.64/10`, `198.18/15`, semua `169.254/16`) → pin dengan reqwest `.resolve_to_addrs(host, addrs)` + `.no_proxy()` → redirect same-host ≤10 dengan re-validasi per hop. Item 17 memakai pola ini.
+- **Q4 capabilities:** zeroclaw — `egress_hosts` allowlist per plugin + deny-by-default di boundary dispatch (`egress_host_matches`); opencode — `Rule { action, resource, effect }` allow/deny/ask, last-match-wins, fallback deny-all. Item 18 memakai gabungan ini (tanpa WASM — PurrCode tidak punya plugin host WASM).
 
 ## P1 — Berikutnya
 

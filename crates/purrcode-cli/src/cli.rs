@@ -19,9 +19,17 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Run with Meowstro orchestrator + The Clowder subagents
+    /// Run with Meowstro orchestrator + The Clowder subagents (default; use
+    /// --direct for a single general agent with all tools instead)
     #[arg(long)]
     pub orchestrator: bool,
+
+    /// Run as a single general agent with all tools (no Meowstro orchestrator).
+    /// Default is orchestrator mode (Meowstro read-only + delegation); --direct
+    /// is the opt-out for quick single-agent runs. --orchestrator wins if both
+    /// flags are given.
+    #[arg(long)]
+    pub direct: bool,
 
     /// Automatically approve all tool actions without prompting (YOLO mode)
     #[arg(long)]
@@ -49,6 +57,42 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+/// Whether the Meowstro orchestrator runs (PRD §4.5.6). Orchestrator is the
+/// default; `--direct` opts out to a single general agent; explicit
+/// `--orchestrator` wins if both flags are given.
+pub fn use_orchestrator(orchestrator: bool, direct: bool) -> bool {
+    orchestrator || !direct
+}
+
+/// The audit label for the agent that actually ran. The generic single
+/// agent is not Meowstro and must not be recorded as one.
+pub fn agent_role_for(use_orchestrator: bool) -> &'static str {
+    if use_orchestrator {
+        "meowstro"
+    } else {
+        "agent"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_use_orchestrator_defaults_to_orchestrator() {
+        assert!(use_orchestrator(false, false));
+        assert!(use_orchestrator(true, false));
+        assert!(use_orchestrator(true, true));
+        assert!(!use_orchestrator(false, true));
+    }
+
+    #[test]
+    fn test_agent_role_for_is_honest() {
+        assert_eq!(agent_role_for(true), "meowstro");
+        assert_eq!(agent_role_for(false), "agent");
+    }
 }
 
 #[derive(Subcommand, Debug)]

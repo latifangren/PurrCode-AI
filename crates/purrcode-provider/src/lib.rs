@@ -41,6 +41,7 @@ impl ProviderRegistry {
                     base_url.clone(),
                     provider_cfg.api_key.clone(),
                     provider_cfg.headers.clone(),
+                    provider_cfg.user_agent.clone(),
                 );
                 registry.register(provider_name.clone(), Arc::new(provider));
             }

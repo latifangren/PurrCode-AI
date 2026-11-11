@@ -56,6 +56,13 @@
     // exposed via Cloudflare tunnel. Key ONLY from env ${MAGPIE_API_KEY}
     // (or ~/.purrcode/credentials) — never write it into this file.
     // Model preset for it: model-presets/magpie.jsonc.
+    // NOTE (2026-11-12, verified live): this gateway's Cloudflare WAF
+    // rejects the reqwest default User-Agent (HTTP 403, error 1010
+    // "browser signature") — but the honest PurrCode default UA passes
+    // (proven live: a request with no "user_agent" set succeeded). So
+    // this provider sets NO user_agent; the default is used. If another
+    // gateway is stricter, set "user_agent" here (a browser UA), or a
+    // per-request "User-Agent" in "headers" (which wins over both).
     "magpie": {
       "api": "openai-completions",
       "base_url": "https://magpie.raevtar.dev/v1",

@@ -15,9 +15,18 @@ pub struct OpenAiCompatibleProvider {
     pub base_url: String,
     pub api_key: Option<String>,
     pub headers: HashMap<String, String>,
+    /// The User-Agent actually sent (custom value from config, or the
+    /// PurrCode default). Stored for observability and unit tests.
+    pub user_agent: String,
     client: reqwest::Client,
     healthy: AtomicBool,
 }
+
+/// Honest default User-Agent identifying this product. Gateways with a
+/// strict WAF that rejects non-browser agents need an explicit browser UA
+/// in the provider config instead (see `purrcode.jsonc.example`).
+pub const DEFAULT_USER_AGENT: &str =
+    "PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)";
 
 impl OpenAiCompatibleProvider {
     pub fn new(
@@ -25,18 +34,27 @@ impl OpenAiCompatibleProvider {
         base_url: impl Into<String>,
         api_key: Option<String>,
         headers: HashMap<String, String>,
+        user_agent: Option<String>,
     ) -> Self {
         let mut url = base_url.into();
         if url.ends_with('/') {
             url.pop();
         }
         let valid_url = !url.trim().is_empty() && reqwest::Url::parse(&url).is_ok();
+        let user_agent = user_agent.unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
+        // If the configured UA is not a valid header value, fall back to a
+        // plain client rather than failing construction.
+        let client = reqwest::Client::builder()
+            .user_agent(user_agent.clone())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             name: name.into(),
             base_url: url,
             api_key,
             headers,
-            client: reqwest::Client::new(),
+            user_agent,
+            client,
             healthy: AtomicBool::new(valid_url),
         }
     }
@@ -418,8 +436,13 @@ mod tests {
 
     #[test]
     fn test_openai_provider_endpoint_url_resolution() {
-        let p1 =
-            OpenAiCompatibleProvider::new("test1", "http://localhost:11434", None, HashMap::new());
+        let p1 = OpenAiCompatibleProvider::new(
+            "test1",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            None,
+        );
         assert_eq!(
             p1.endpoint_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -430,6 +453,7 @@ mod tests {
             "http://localhost:11434/v1",
             None,
             HashMap::new(),
+            None,
         );
         assert_eq!(
             p2.endpoint_url(),
@@ -441,11 +465,36 @@ mod tests {
             "https://api.openai.com/v1/",
             None,
             HashMap::new(),
+            None,
         );
         assert_eq!(
             p3.endpoint_url(),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn test_user_agent_resolution_default_and_custom() {
+        let default_provider = OpenAiCompatibleProvider::new(
+            "default-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            None,
+        );
+        assert_eq!(default_provider.user_agent, DEFAULT_USER_AGENT);
+        assert!(default_provider.user_agent.starts_with("PurrCode-AI/"));
+
+        let custom_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+            AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+        let custom_provider = OpenAiCompatibleProvider::new(
+            "custom-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            Some(custom_ua.to_string()),
+        );
+        assert_eq!(custom_provider.user_agent, custom_ua);
     }
 
     #[test]

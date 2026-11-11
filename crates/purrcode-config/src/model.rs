@@ -47,6 +47,13 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
+    /// Optional HTTP User-Agent sent to this provider. When absent, the
+    /// PurrCode default (DEFAULT_USER_AGENT in purrcode-provider) is used.
+    /// Some gateways (e.g. behind a strict Cloudflare WAF) reject
+    /// non-browser user agents — set a browser UA here for those endpoints.
+    #[serde(default)]
+    pub user_agent: Option<String>,
+
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
 }
@@ -158,6 +165,7 @@ mod tests {
             base_url: None,
             api_key: None,
             headers: HashMap::new(),
+            user_agent: None,
             models,
         }
     }

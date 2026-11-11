@@ -48,6 +48,7 @@ mod tests {
                 base_url: None,
                 api_key: None,
                 headers: HashMap::new(),
+                user_agent: None,
                 models,
             },
         );

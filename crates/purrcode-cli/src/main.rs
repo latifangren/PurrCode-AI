@@ -46,6 +46,14 @@ async fn main() -> Result<()> {
 
     let args = Cli::parse();
 
+    // Orchestrator is the default (PRD §4.5.6: Meowstro read-only + delegation,
+    // enforced at harness level). `--direct` opts out to a single general
+    // agent with all tools; explicit `--orchestrator` wins if both are given.
+    let use_orchestrator = cli::use_orchestrator(args.orchestrator, args.direct);
+    // Audit labels must say which agent actually ran: the generic single
+    // agent is not Meowstro.
+    let agent_role = cli::agent_role_for(use_orchestrator);
+
     // 1. Load configuration
     let mut config = match &args.config {
         Some(path) => ConfigLoader::load_from_file(path)?,
@@ -215,7 +223,7 @@ async fn main() -> Result<()> {
                     exec_prompt,
                     args.model,
                     args.json,
-                    args.orchestrator,
+                    use_orchestrator,
                     args.yolo,
                     &config,
                     &workspace_root,
@@ -243,7 +251,7 @@ async fn main() -> Result<()> {
             prompt,
             args.model,
             args.json,
-            args.orchestrator,
+            use_orchestrator,
             args.yolo,
             &config,
             &workspace_root,
@@ -410,7 +418,7 @@ async fn main() -> Result<()> {
     let _ = audit_logger.log_entry(AuditEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         session_id: session_id.clone(),
-        agent: "meowstro".to_string(),
+        agent: agent_role.to_string(),
         event: "session_start".to_string(),
         tool: None,
         decision: "allow".to_string(),
@@ -419,7 +427,7 @@ async fn main() -> Result<()> {
 
     let registry_arc = Arc::new(registry);
     let session_dir = session_store.session_dir(&session_id);
-    let meowstro = if args.orchestrator {
+    let meowstro = if use_orchestrator {
         Some(MeowstroOrchestrator::with_complete_options(
             provider.clone(),
             wire_model,
@@ -452,7 +460,7 @@ async fn main() -> Result<()> {
 
     let tool_context = ToolContext {
         session_id: session_id.clone(),
-        agent_role: "meowstro".to_string(),
+        agent_role: agent_role.to_string(),
         workspace_root: workspace_root.clone(),
         is_dry_run: false,
     };
@@ -464,7 +472,7 @@ async fn main() -> Result<()> {
     let memory = MarkdownMemory::new(&purrcode_dir);
     let mem_context = memory.load_context(Some(&workspace_root)).await;
 
-    let mut system_prompt = if args.orchestrator {
+    let mut system_prompt = if use_orchestrator {
         MeowstroOrchestrator::system_prompt(&skills_index)
     } else {
         let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
@@ -740,10 +748,14 @@ async fn run_one_shot(
     let session_store = SessionStore::new(&purrcode_dir);
     let session_dir = session_store.session_dir(&session_id);
 
+    // Audit labels must say which agent actually ran: the generic single
+    // agent is not Meowstro.
+    let agent_role = cli::agent_role_for(use_orchestrator);
+
     let _ = audit_logger.log_entry(AuditEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         session_id: session_id.clone(),
-        agent: "meowstro".to_string(),
+        agent: agent_role.to_string(),
         event: "one_shot_start".to_string(),
         tool: None,
         decision: "allow".to_string(),
@@ -752,7 +764,7 @@ async fn run_one_shot(
 
     let tool_context = ToolContext {
         session_id: session_id.clone(),
-        agent_role: "meowstro".to_string(),
+        agent_role: agent_role.to_string(),
         workspace_root: workspace_root.to_path_buf(),
         is_dry_run: false,
     };
@@ -928,6 +940,7 @@ mod tests {
             base_url: None,
             api_key: None,
             headers: HashMap::new(),
+            user_agent: None,
             models: HashMap::new(),
         };
         p_cfg.models.insert(
@@ -961,6 +974,7 @@ mod tests {
             base_url: None,
             api_key: None,
             headers: HashMap::new(),
+            user_agent: None,
             models: HashMap::new(),
         };
         p1.models.insert(

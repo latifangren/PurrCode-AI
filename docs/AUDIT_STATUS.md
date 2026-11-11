@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 04:12:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 04:27:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.617.256 byte stripped dynamic ELF di Linux, diukur pada build rilis branch `dev-muse`), keduanya jauh di bawah pagu target $\le 25$ MB
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.623.400 byte stripped dynamic ELF di Linux, diukur pada build rilis branch `dev-muse`), keduanya jauh di bawah pagu target $\le 25$ MB
 - **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross` (target rilis CI/distribusi — build saat ini masih dynamic GNU; bukti build musl menunggu workplan P1 item 13) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (83 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (90 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (83 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (90 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-12 04:12:00 +07:00` (83/83 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per `2026-11-12 04:27:00 +07:00` (90/90 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api` (4 tests):**
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
@@ -63,12 +63,14 @@ Hasil pengujian otomatis per `2026-11-12 04:12:00 +07:00` (83/83 lolos di Linux;
    - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
    - `tui::tests::test_approval_key_action_edit_keys` (Pemetaan tombol edit `e` di kartu approval)
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
-4. **`purrcode_ai` (CLI binary) (5 tests):**
+4. **`purrcode_ai` (CLI binary) (7 tests):**
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
    - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
    - `tests::test_resolve_target_model_deterministic_priority` (Resolusi deterministik prioritas model sesi)
    - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
+   - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
+   - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
 5. **`purrcode_config` (9 tests):**
    - `jsonc::tests::test_clean_jsonc_comments`, `jsonc::tests::test_strip_trailing_commas`
    - `loader::tests::test_expand_env_vars`, `loader::tests::test_parse_example_file`, `loader::tests::test_hierarchical_merge`
@@ -97,18 +99,19 @@ Hasil pengujian otomatis per `2026-11-12 04:12:00 +07:00` (83/83 lolos di Linux;
    - `tests::test_parse_plugin_yaml_with_declared_secrets`
    - `tests::test_parse_plugin_yaml_missing_name_rejected`
    - `tests::test_plugin_manager_dispatch_pre_tool_use_veto`
-10. **`purrcode_provider` (5 tests):**
+10. **`purrcode_provider` (6 tests):**
     - `router::tests::test_policy_refusal_stops_fallback_chain`
     - `router::tests::test_technical_error_fails_over_to_next_candidate_and_cooldown` (Failover otomatis saat error teknis & cooldown)
     - `openai::tests::test_openai_provider_endpoint_url_resolution`
     - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
     - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
+    - `openai::tests::test_user_agent_resolution_default_and_custom` (Default UA jujur `PurrCode-AI/0.1` vs UA kustom dari config)
 11. **`purrcode_service` (4 tests):**
     - `tests::test_service_unit_generators`
     - `tests::test_systemd_unit_dependencies_and_restart_policy`
     - `tests::test_openrc_init_shebang_and_network_dependency`
     - `tests::test_windows_task_script_generator` (Generator skrip PowerShell Task Scheduler Windows)
-12. **`purrcode_tools` (28 tests):**
+12. **`purrcode_tools` (32 tests):**
     - `execution::bash::tests::test_smart_truncate_output`
     - `execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate` (Deteksi otomatis Git Bash di Windows)
     - `execution::bash::tests::test_resolve_windows_shell_detects_path_bash` (Deteksi bash.exe di PATH lingkungan lintas platform)
@@ -118,6 +121,10 @@ Hasil pengujian otomatis per `2026-11-12 04:12:00 +07:00` (83/83 lolos di Linux;
     - `fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows` (Normalisasi prefix verbatim `\\?\` dan case-insensitivity Windows)
     - `web::webfetch::tests::test_utf8_safe_truncation`
     - `web::webfetch::tests::test_ssrf_blocking`
+    - `web::webfetch::tests::test_resolve_redirect` (Join Location redirect absolut/relatif)
+    - `web::webfetch::tests::test_resolve_validated_addrs_ip_literal` (Resolve + validasi IP literal: loopback/benchmarking ditolak, publik lolos)
+    - `web::webfetch::tests::test_dns_lookup_fail_closed` (DNS gagal → fetch ditolak, bukan dilanjutkan tanpa verifikasi)
+    - `web::webfetch::tests::test_get_pinned_rejects_private_destination` (Fetch ter-pin menolak target loopback sebelum socket dibuka)
     - `web::websearch::tests::test_extract_snippets_and_encode`
     - `web::websearch::tests::test_websearch_propagates_network_error`
     - `coordination::ask::tests::test_ask_empty_options`
@@ -161,7 +168,7 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
    - Subagent Tinker dapat membuat skill baru (`create`), menambal instruksi skill yang sudah ada (`patch` dengan preview unified diff), menghapus skill override dan me-restore fallback embedded (`delete`), serta melihat katalog lengkap (`list`).
    - Meowstro bertindak sebagai orchestrator read-only yang menginjeksi daftar skill ringkas ke prompt sistem dan membaca detail instruksi via `read_skill`.
 7. **Kedalaman Unit Tests di Seluruh Crate:**
-   - Setiap crate di workspace kini memiliki unit tests komprehensif (total 83 tests, 100% lolos di Linux; Windows belum dijalankan dari VM ini).
+   - Setiap crate di workspace kini memiliki unit tests komprehensif (total 90 tests, 100% lolos di Linux; Windows belum dijalankan dari VM ini).
 8. **Verifikasi Lanjutan Commit 37b9b8a (Muse Spark Audit Resolution):**
    - **Hermetisitas Pengujian SSRF:** Menghapus resolusi DNS soket sinkron (`to_socket_addrs`) dari `validate_destination_for_tool` yang sebelumnya memicu false positive di lingkungan dengan reverse/transparent proxy (seperti isolasi VM Muse yang memetakan domain publik ke range `198.18.0.0/15`). Validasi DNS asinkron tetap aktif di runtime via `validate_dns_lookup_async_for_tool`, sementara unit test `test_ssrf_blocking` kini menguji vektor IP dan DNS-rebinding secara offline dan 100% deterministik.
    - **Penyaluran `workspace_root` Menyeluruh:** Menyalurkan parameter `workspace_root` ke `ToolRegistryExt::with_defaults_and_options`, `MeowstroOrchestrator::with_complete_options`, dan `run_one_shot`, sehingga skill projek di `<workspace_root>/.purrcode/skills/` terdeteksi secara konsisten saat flag `-w, --workspace` digunakan.
@@ -178,21 +185,27 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Windows Task Scheduler Service Installer (`crates/purrcode-service/src/lib.rs`):** Menambahkan fungsi `generate_windows_task_script` yang menghasilkan skrip otomatisasi PowerShell untuk mendaftarkan PurrCode AI gateway daemon sebagai *Scheduled Task* Windows (`Register-ScheduledTask`) dengan trigger `@AtLogOn` dan restart otomatis jika gagal. Subcommand `purrcode-ai service install` di Windows otomatis menghasilkan skrip ini.
     - **Guard Codepage UTF-8 Konsol Windows (`crates/purrcode-cli/src/main.rs`):** Menginisialisasi konsol Windows ke codepage 65001 (`SetConsoleOutputCP(65001)` dan `SetConsoleCP(65001)`) pada saat startup, menjamin rendering Unicode, emoji, dan karakter grafis kotak TUI tampil jernih tanpa mojibake di CMD / PowerShell konvensional.
 11. **Resolusi Verifikasi Lanjutan Commit 26e2061 (Muse Spark Linux VM Audit Resolution):**
-    - **Cross-Platform PATH Splitter di Unit Test (`crates/purrcode-tools/src/execution/bash.rs`):** Commit `c56d3b7` memperbaiki pembacaan PATH mock Windows agar memecah `;` secara toleran — tetapi itu TIDAK menyelesaikan regresi test `test_resolve_windows_shell_detects_path_bash` di Linux: `PathBuf::join("bash.exe")` di Linux menyisipkan `/` sehingga kandidat `C:\msys64\usr\bin/bash.exe` tidak cocok dengan path yang diharapkan. Perbaikan sesungguhnya dilakukan di branch `dev-muse` via helper `windows_join` (membangun path bergaya Windows dengan pemisah `\` eksplisit di semua platform) + 2 unit test baru; suite kini 83/83 hijau di Linux. Klaim "76/76 hijau di Linux dan Windows" dihapus sampai ada bukti uji Windows sungguhan.
+    - **Cross-Platform PATH Splitter di Unit Test (`crates/purrcode-tools/src/execution/bash.rs`):** Commit `c56d3b7` memperbaiki pembacaan PATH mock Windows agar memecah `;` secara toleran — tetapi itu TIDAK menyelesaikan regresi test `test_resolve_windows_shell_detects_path_bash` di Linux: `PathBuf::join("bash.exe")` di Linux menyisipkan `/` sehingga kandidat `C:\msys64\usr\bin/bash.exe` tidak cocok dengan path yang diharapkan. Perbaikan sesungguhnya dilakukan di branch `dev-muse` via helper `windows_join` (membangun path bergaya Windows dengan pemisah `\` eksplisit di semua platform) + 2 unit test baru; suite kini 90/90 hijau di Linux. Klaim "76/76 hijau di Linux dan Windows" dihapus sampai ada bukti uji Windows sungguhan.
     - **Deterministik Resolusi Model Sesi (`crates/purrcode-cli/src/main.rs`):** Mengurutkan daftar provider dan model secara leksikografis serta memprioritaskan model dengan penamaan `primary`, `default`, atau `main`. Mengeliminasi bug nondeterministik di mana iterasi acak `HashMap::keys().next()` memilih model sesi yang berbeda-beda setiap kali binary dijalankan tanpa flag `-m`.
     - **Penyempurnaan Ergonomi Dialog Approval TUI (`crates/purrcode-channel`):** Menambahkan dukungan tombol `y`/`Y`/`Enter` untuk menyetujui aksi (melengkapi tombol `a`/`A`) dan `n`/`N` untuk menolak (melengkapi `t`/`T`/`Esc`). Menyesuaikan tinggi kontainer card approval dari 8 ke 10 baris agar baris petunjuk aksi `[a]/[y] Approve / [t]/[n] Reject / [e] Edit` tidak terpotong saat preview diff ditampilkan.
 12. **Resolusi Verifikasi Lanjutan Commit c56d3b7 (branch `dev-muse`, Skyla AI sebagai implementor):**
     - **Test PATH Windows benar-benar portabel (`crates/purrcode-tools/src/execution/bash.rs`):** Helper baru `windows_join` membangun path kandidat Windows dengan pemisah `\` eksplisit (bukan `PathBuf::join` yang memakai separator host) + 2 unit test baru (`test_windows_join_uses_backslash_for_windows_paths`, `test_windows_join_keeps_host_separator_for_unix_paths`). `test_resolve_windows_shell_detects_path_bash` kini lolos di Linux.
     - **Deterministik langkah-3 `resolve_model` (`crates/purrcode-config/src/model.rs`):** Pencarian nama model telanjang kini mengiterasi provider dalam urutan leksikografis (bukan `HashMap`), + unit test `test_resolve_model_bare_name_is_deterministic_across_providers` (20 iterasi, dua provider berbagi key yang sama → selalu provider leksikografis terkecil).
     - **Pemetaan tombol approval TUI teruji (`crates/purrcode-channel/src/tui/mod.rs`):** Match inline di `run_loop` diekstrak ke fungsi murni `approval_key_action` (enum `ApprovalKeyAction`: Approve / Reject / CancelForEdit) + 4 unit test baru. Perilaku live tidak berubah (`a`/`y`/`Enter` approve, `t`/`n`/`Esc` reject, `e` edit, tombol lain diabaikan).
-    - **Kejujuran dokumen:** Semua klaim "76 lolos, 0 failed" / "100% passing di Windows & Linux" / "76/76 hijau" diganti angka hasil ukur sendiri (83/83 di Linux); "3.7 MB" telanjang dikualifikasi sebagai `.exe` Windows yang belum terverifikasi; angka byte eksak diperbarui ke build rilis branch ini (4.617.256 byte = 4,40 MiB); "7 bahasa" Weilin0723 di §2 dikoreksi ke 6; "Bulletproof" dihapus; `AGENTS.md`/`CLAUDE.md` tidak lagi menyatakan musl sebagai fakta (musl tetap target distribusi); klaim "user approved it at install" di `AGENTS.md` dikoreksi ke scope v0.3; "~140 MB" Weilin0723 diganti "tidak terverifikasi".
+    - **Kejujuran dokumen:** Semua klaim "76 lolos, 0 failed" / "100% passing di Windows & Linux" / "76/76 hijau" diganti angka hasil ukur sendiri (83/83 di Linux saat commit cde37f9; angka terbaru lihat header dokumen dan item 14); "3.7 MB" telanjang dikualifikasi sebagai `.exe` Windows yang belum terverifikasi; angka byte eksak diperbarui ke build rilis branch ini saat itu (4.617.256 byte = 4,40 MiB; angka terbaru lihat header dokumen dan item 14); "7 bahasa" Weilin0723 di §2 dikoreksi ke 6; "Bulletproof" dihapus; `AGENTS.md`/`CLAUDE.md` tidak lagi menyatakan musl sebagai fakta (musl tetap target distribusi); klaim "user approved it at install" di `AGENTS.md` dikoreksi ke scope v0.3; "~140 MB" Weilin0723 diganti "tidak terverifikasi".
     - **Pembersihan:** Direktori root `src/` yang kosong (0 entri sejak 10 Nov) dihapus.
-    - **Hasil ukur branch ini:** `cargo check` lolos 0 warning, `cargo test --workspace` **83/83 lolos, 0 failed**, `cargo clippy --workspace --all-targets -- -D warnings` lolos, `cargo fmt --check` bersih, `cargo build --release` → 4.617.256 byte (4,40 MiB), ELF dynamic GNU, stripped.
+    - **Hasil ukur saat commit 7c64b2e:** `cargo check` lolos 0 warning, `cargo test --workspace` **83/83 lolos, 0 failed**, `cargo clippy --workspace --all-targets -- -D warnings` lolos, `cargo fmt --check` bersih, `cargo build --release` → 4.617.256 byte (4,40 MiB), ELF dynamic GNU, stripped. Angka terbaru lihat header dokumen dan item 14.
 13. **Provider Dev-Testing Magpie (`purrcode.jsonc.example`, `model-presets/magpie.jsonc`, `crates/purrcode-config/src/preset_model.rs`):**
-    - Provider `magpie` (custom OpenAI-compatible, `https://magpie.raevtar.dev/v1`, `"api_key": "${MAGPIE_API_KEY}"` dari env saja) + preset `magpie` (semua role → `magpie:antigravity/gemini-3.8-flash-tiered`) + embedded di `preset_model.rs` + assert di `test_bundled_model_presets_load`. Test suite tetap 83/83.
+    - Provider `magpie` (custom OpenAI-compatible, `https://magpie.raevtar.dev/v1`, `"api_key": "${MAGPIE_API_KEY}"` dari env saja) + preset `magpie` (semua role → `magpie:antigravity/gemini-3.8-flash-tiered`) + embedded di `preset_model.rs` + assert di `test_bundled_model_presets_load`. Test suite tetap 90/90.
     - Terverifikasi live dari VM ini (2026-11-12): `/v1/models` 200 (66 model), completion 200 ("OK", 7,8 dtk), tool call 200 (`calc` a=2 b=2, 20,5 dtk); binary `-p` baca file via model asli (25,5 dtk); delegasi `--orchestrator --yolo` end-to-end (Meowstro `task` → Tinker `write` + `read` + `bash od` verifikasi, ~157 dtk, file berisi tepat "hi from magpie").
     - **Keterbatasan lingkungan (bukan bug wiring):** binary membuat HTTPS langsung; VM ini hanya bisa keluar lewat proxy egress → pengujian dari VM memakai bridge lokal `127.0.0.1:3457` (passthrough, `/tmp/magpie_bridge.py`, bukan bagian repo). Di PC user binary langsung nyambung.
     - **Temuan baru (terbuka):** (a) User-Agent default `reqwest` di-block Cloudflare gateway ini (HTTP 403, error 1010 "browser signature") — curl/Python lolos; bridge mengirim UA browser agar tes jalan. Perlu allowlist di Cloudflare atau opsi custom User-Agent di provider. (b) **`purrcode-ai -p` tanpa `--orchestrator` TIDAK menjalankan Meowstro** — yang jalan agent generik dengan semua tool (preset `tabby`/`carrier`/`oyen` semua mencantumkan `write`/`edit`/`bash`), tapi audit melabelinya "meowstro" (`main.rs:816`, `loop_runner` pakai `m.agent_loop()` hanya bila `--orchestrator`). Jalur read-only Meowstro (`meowstro.rs:116-155`) hanya aktif dengan flag itu. Verifikasi ronde lalu yang memakai `-p` tanpa flag ini tidak menguji jalur orchestrator — pengujian delegasi wajib memakai `--orchestrator`.
+14. **Ronde autonomous 2026-11-12: `--orchestrator` default, User-Agent configurable, TOCTOU SSRF tertutup (PRD §4.5.6, F10, F12):**
+    - **`--orchestrator` default (PRD §4.5.6):** `cli::use_orchestrator(orchestrator, direct)` — orchestrator default untuk `-p`, `exec`, dan TUI; `--direct` opt-out ke agent generik semua-tool; `--orchestrator` eksplisit menang bila keduanya dikasih. Audit kini melabeli jujur (`cli::agent_role_for`: `"meowstro"` vs `"agent"`). Diuji unit (`test_use_orchestrator_defaults_to_orchestrator`, `test_agent_role_for_is_honest`) + live via Magpie (Tes E: `-p` polos → Meowstro `task` → Tinker `write` + verifikasi; Tes F: `--direct` → `agent tool_call write` langsung).
+    - **User-Agent (F12):** `ProviderConfig.user_agent` (opsional) + default jujur `PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)` di `OpenAiCompatibleProvider` (client builder `.user_agent(...)`, fallback client bila UA tidak valid). Diuji unit (`test_user_agent_resolution_default_and_custom`) + live via bridge pass-through `127.0.0.1:3458`: UA Chrome config → 200, **default PurrCode UA → 200 juga** (kontrol negatif gagal dengan hasil terbaik: yang diblokir Cloudflare ternyata hanya UA `reqwest/*`, bukan semua UA non-browser) — provider `magpie` di example TIDAK memakai UA browser.
+    - **TOCTOU SSRF tertutup (F10):** `webfetch.rs` — `resolve_validated_addrs` (resolve sekali → validasi semua IP → fail-closed bila DNS gagal) + `build_pinned_client` (reqwest `.resolve_to_addrs`, terverifikasi dari source reqwest 0.12.28) + `get_pinned` (redirect manual max 5 hop, re-validasi + re-pin tiap hop). `websearch` memakai helper yang sama. Set IP yang diblokir tidak berubah. Pola dari zeroclaw (`resolve_to_addrs`, per-hop re-validation).
+    - **Riset referensi:** subagent read-only atas clone lokal (codex, pi, opencode, picoclaw, zeroclaw, hermes, dll) — Q1 (UA: pola pi/codex + override picoclaw), Q2 (norma industri = single agent default; PurrCode sengaja menyimpang atas keputusan eksplisit user + PRD yang mengikat), Q3 (pinning zeroclaw), Q4 (egress allowlist zeroclaw + Rule opencode, untuk item 18).
+    - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **90/90 lolos, 0 failed**, clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.623.400 byte (4,41 MiB), ELF dynamic GNU, stripped.
 
 ---
 

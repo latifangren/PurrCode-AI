@@ -222,6 +222,7 @@ pub async fn run_interactive_onboard() -> Result<()> {
                 Some(format!("${{{}}}", env_var_name))
             },
             headers: HashMap::new(),
+            user_agent: None,
             models: models_map,
         },
     );
@@ -387,6 +388,7 @@ mod tests {
                 base_url: Some("https://endpoint.invalid/v1?param=\"quoted\"\\escaped".to_string()),
                 api_key: Some("${CUSTOM_API_KEY}".to_string()),
                 headers: HashMap::new(),
+                user_agent: None,
                 models: HashMap::new(),
             },
         );

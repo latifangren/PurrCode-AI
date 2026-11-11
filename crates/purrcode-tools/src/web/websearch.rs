@@ -6,7 +6,6 @@ use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolRe
 use serde::Deserialize;
 
 pub struct WebsearchTool {
-    client: reqwest::Client,
     endpoint_base: String,
 }
 
@@ -17,11 +16,6 @@ impl WebsearchTool {
 
     pub fn with_endpoint(endpoint_base: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .user_agent("PurrCode-AI/0.1.0")
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
             endpoint_base: endpoint_base.into(),
         }
     }
@@ -83,17 +77,10 @@ impl Tool for WebsearchTool {
         })?;
 
         super::webfetch::validate_destination_for_tool(&parsed_url, "websearch")?;
-        super::webfetch::validate_dns_lookup_async_for_tool(&parsed_url, "websearch").await?;
 
-        let resp = self
-            .client
-            .get(&search_url)
-            .send()
-            .await
-            .map_err(|e| PurrError::Tool {
-                tool: "websearch".to_string(),
-                message: format!("Web search HTTP request failed: {e}"),
-            })?;
+        // Resolve → validate → pin → request (shared with webfetch): the
+        // connect uses the validated IPs, closing the DNS-rebinding gap.
+        let resp = super::webfetch::get_pinned(&parsed_url, "websearch").await?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -191,7 +178,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_websearch_propagates_network_error() {
-        // Point to an unreachable port on loopback to verify network failure returns Err, not Ok
+        // Loopback is rejected by the SSRF guard before any socket is
+        // opened, so the tool still returns Err (not Ok) for this target.
         let tool = WebsearchTool::with_endpoint("http://127.0.0.1:9/search");
         let ctx = ToolContext {
             session_id: "test".to_string(),
