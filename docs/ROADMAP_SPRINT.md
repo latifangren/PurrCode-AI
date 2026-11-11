@@ -136,6 +136,10 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - D3: child cap 15 → 25 langkah (task.rs:622, = default parent loop); baris hasil task tidak lagi menunjuk path `result.md` yang tidak bisa dibaca orchestrator (record-only, summary inline). Konfinemen tidak dilonggarkan.
   - TERBUKA (dicatat jujur, bukan diklaim): D5 `--json` hanya delta teks (tanpa event tool_call/session); D6 bash stateless (export tidak bertahan antar panggilan); F3 failover top-level.
   - Hasil ukur: check 0 warning, test 99/99, clippy `-D warnings` bersih, fmt bersih, release 4.630.000 byte (4,41 MiB) ELF dynamic GNU stripped.
+- [x] **9.11 Batch 2d: perbaikan temuan verifikasi batch 2c — dead-model fallback + 3 koreksi dokumen (workplan item 24) — `crates/purrcode-orchestrator/`, `docs/`**
+  - F1 (moderate): `resolve_provider_and_model` — bila tidak ada kandidat fallback ter-resolve, child kini jalan di provider + model SESI (`self.provider`, `self.model`), bukan id model preset (`ollama:qwen2.5-coder:7b`) yang dikirim ke provider sesi (provider ketat 404, label salah). Regression test `test_unresolved_role_model_falls_back_to_session_model` (`Arc::ptr_eq` provider sesi).
+  - F1–F3 re-checker (dokumen): angka musl 98/98 → 100/100; anchor D5 main.rs:892 → :902; gloss ganda baris §3 dirapikan.
+  - Hasil ukur: check 0 warning, test 100/100, clippy `-D warnings` bersih, fmt bersih, release GNU 4.630.000 byte; suite musl 100/100, rilis musl 4.756.640 byte static-pie.
   - Light fixes: dedup heading `## Summary` di `result.md`; range fuzzy `edit` berakhir sebelum newline baris terakhir (LF + CRLF); kartu hasil tool TUI menampilkan 4 baris pertama + marker `… (N more lines)` (diuji via TestBackend).
   - Koreksi rumusan UA di docs: "yang diblokir hanya UA `reqwest/*`" diganti "binary lama tidak mengirim header User-Agent sama sekali".
   - Hasil ukur: `cargo test --workspace` 96/96, `cargo build --release` 4.629.032 byte (4,41 MiB).

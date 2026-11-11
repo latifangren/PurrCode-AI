@@ -313,7 +313,18 @@ impl TaskTool {
                 return (Arc::new(router), first_wire);
             }
         }
-        (self.provider.clone(), spec.model.clone())
+        // No fallback candidate resolved to a configured provider (or no
+        // routing info at all): fall back to the SESSION provider + SESSION
+        // model — the documented dead-model fallback (preset → frontmatter →
+        // session model). The previous code returned `spec.model` here, which
+        // is the role's *preset* model id (e.g. `ollama:qwen2.5-coder:7b`)
+        // wired to the session provider: a strict provider 404s on the
+        // foreign id, and the task-result label names a model that never ran.
+        // (Checker finding F1, batch 2c verification, 2026-11-12.) An
+        // explicit `task()` model naming an unconfigured provider falls
+        // through here the same way rather than sending a foreign id to the
+        // session provider.
+        (self.provider.clone(), self.model.clone())
     }
 
     fn build_role_tools(&self, role: &str, workspace_root: Option<&Path>) -> ToolRegistry {
@@ -769,7 +780,8 @@ impl Tool for TaskTool {
 mod tests {
     use super::*;
     use purrcode_api::provider::{CompletionRequest, MessageRole, StreamChunk};
-    use purrcode_config::{AgentModelSpec, ModelTarget};
+    use purrcode_config::{AgentModelSpec, Config, ModelTarget};
+    use purrcode_provider::ProviderRegistry;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -857,6 +869,68 @@ mod tests {
         );
         assert_eq!(exp.model, "override-model");
         assert_eq!(exp.fallback_candidates, vec!["override-model".to_string()]);
+    }
+
+    #[test]
+    fn test_unresolved_role_model_falls_back_to_session_model() {
+        // Preset names a provider (ollama) that is NOT configured anywhere:
+        // the fallback chain resolves to nothing, so the child must run on
+        // the SESSION provider + SESSION model — not on the preset's raw
+        // model id wired to the wrong provider (which a strict provider
+        // would reject with an unknown-model error, and which mislabels
+        // the task result). Regression test for checker finding F1 (batch 2c).
+        let temp_dir =
+            std::env::temp_dir().join(format!("purr_orch_test_{}", uuid::Uuid::new_v4()));
+        let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
+        let mut agents = HashMap::new();
+        agents.insert(
+            "tinker".to_string(),
+            AgentModelSpec {
+                model: ModelTarget::Single("ollama:qwen2.5-coder:7b".to_string()),
+                variant: None,
+                temperature: None,
+                options: None,
+                fallback: vec![],
+            },
+        );
+        let preset = ModelPreset {
+            schema: "model-preset/v1".to_string(),
+            name: "test".to_string(),
+            description: String::new(),
+            extends: None,
+            agents,
+        };
+        let spec = resolve_role_model_spec(
+            "tinker",
+            None,
+            Some(&preset),
+            "session-model",
+            Path::new("."),
+        );
+        assert_eq!(spec.model, "ollama:qwen2.5-coder:7b");
+
+        // Registry holds ONLY the session (mock) provider; config holds NO
+        // providers at all, so no preset candidate can resolve.
+        let mut preg = ProviderRegistry::new();
+        preg.register("mock".to_string(), provider.clone());
+        let task_tool = TaskTool::with_full_options(
+            reg,
+            provider.clone(),
+            "session-model",
+            &temp_dir,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .with_provider_routing(Config::default(), Arc::new(preg));
+        let (child_provider, child_model) = task_tool.resolve_provider_and_model(&spec);
+        assert_eq!(child_model, "session-model");
+        assert!(Arc::ptr_eq(&child_provider, &provider));
     }
 
     #[tokio::test]
