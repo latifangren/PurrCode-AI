@@ -283,4 +283,77 @@ mod tests {
         assert!(!app.is_generating);
         assert_eq!(app.items.len(), 3);
     }
+
+    #[tokio::test]
+    async fn test_tui_app_approval_flow() {
+        let mut app = TuiApp::new("test-model", "tabby", "sess-123");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = ApprovalRequest {
+            tool_name: "bash".to_string(),
+            description: "rm -rf temp".to_string(),
+            diff_preview: Some("$ rm -rf temp".to_string()),
+            tx,
+        };
+
+        app.handle_event(TuiEvent::ApprovalRequested(req));
+        assert!(app.pending_approval.is_some());
+
+        // Resolve approval affirmatively
+        let pending = app.pending_approval.take().unwrap();
+        let _ = pending.tx.send(true);
+        let result = rx.await.unwrap();
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_tui_app_ask_prompt_flow() {
+        let mut app = TuiApp::new("test-model", "tabby", "sess-123");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = AskPromptRequest {
+            question: "Which approach?".to_string(),
+            options: vec![
+                AskOptionItem {
+                    id: "1".to_string(),
+                    label: "Option A".to_string(),
+                    description: Some("First option".to_string()),
+                },
+                AskOptionItem {
+                    id: "2".to_string(),
+                    label: "Option B".to_string(),
+                    description: Some("Second option".to_string()),
+                },
+            ],
+            selected_idx: 0,
+            tx,
+        };
+
+        app.handle_event(TuiEvent::AskRequested(req));
+        assert!(app.pending_ask.is_some());
+
+        let pending = app.pending_ask.take().unwrap();
+        let _ = pending.tx.send(Some("Option A".to_string()));
+        let result = rx.await.unwrap();
+        assert_eq!(result, Some("Option A".to_string()));
+    }
+
+    #[test]
+    fn test_tui_app_cursor_movement_and_editing() {
+        let mut app = TuiApp::new("test-model", "tabby", "sess-123");
+        app.insert_char('a');
+        app.insert_char('b');
+        app.insert_char('c');
+        assert_eq!(app.input, "abc");
+        assert_eq!(app.cursor_pos, 3);
+
+        app.move_cursor_left();
+        assert_eq!(app.cursor_pos, 2);
+
+        app.backspace();
+        assert_eq!(app.input, "ac");
+        assert_eq!(app.cursor_pos, 1);
+
+        app.delete();
+        assert_eq!(app.input, "a");
+        assert_eq!(app.cursor_pos, 1);
+    }
 }

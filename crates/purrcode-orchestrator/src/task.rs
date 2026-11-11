@@ -419,7 +419,7 @@ impl Tool for TaskTool {
         // 1. Resolve or allocate stable continuation ID + load prior conversation history
         let (subagent_id, mut history) = {
             let mut reg = self.registry.lock().await;
-            let id = reg.get_or_create(args.id.clone(), &args.role, &args.brief);
+            let id = reg.get_or_create(args.id.clone(), &args.role, &args.brief)?;
             let hist = reg.take_history(&id);
             (id, hist)
         };

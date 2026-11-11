@@ -35,11 +35,11 @@ docs contradicts your instinct, the docs win until the user changes them.
 
 | Agent | Role | Tool set (enforced at runtime, not by prompt) |
 |---|---|---|
-| Meowstro | Orchestrator, the user's representative | `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task` — **never `write`, `edit`, `bash`** |
+| Meowstro | Orchestrator, the user's representative | `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill` — **never `write`, `edit`, `bash`, `manage_skill`** |
 | Whisker | Explorer (absorbs Librarian) | read-only (`read`, `grep`, `glob`, `find`) + `webfetch`, `websearch` |
 | Sphinx | Oracle | read-only (`read`, `grep`, `glob`, `find`) + `ask` |
 | Calico | Designer (UI/TUI) | `read`, `write`, `edit`, `grep`, `glob`, `find` (no `bash`) |
-| Tinker | Fixer — the only full implementer | all v0.1 implementation tools (no `task`) |
+| Tinker | Fixer — the only full implementer | all v0.1 implementation tools (including `manage_skill`, no `task`) |
 | Tuxeshadow | Shadow Auditor — independent plan/risk critic | read-only (`read`, `grep`, `glob`, `find`) + `ask` (no `task`, no `write`/`edit`/`bash`) |
 | Clowder | Council, 2–3 seats, different models | read-only (`read`, `grep`, `glob`, `find`) |
 
@@ -133,21 +133,26 @@ any mode. Cron jobs never run `oyen`/`yolo`.
   < 3s on a 2 GB STB. Offline-first where possible (local + Ollama without
   internet).
 
-## 8. Skills
+## 8. Skills & Self-Improvement
 
 Bundled v0.1 (8, written from scratch, patterns from Muse Code's 28 skills
 and `anthropics/skills`' 19): `plan`, `review`, `git`, `debug`, `scaffold`,
 `frontend-design`, `webapp-testing`, `doctor`. Format: `SKILL.md` +
 frontmatter (`name`, `description`) — the description is a **routing
 contract** (what loads / must-not-load the skill). Only descriptions load at
-startup; full bodies load on demand. Discovery: `.purrcode/skills/` →
-`~/.purrcode/skills/` → bundled. Do not bundle all 28 — each description
-costs ~100 tokens of startup context.
+startup; full bodies load on demand via `read_skill`. Discovery precedence:
+`.purrcode/skills/` (project) → `~/.purrcode/skills/` (user global) → bundled.
+Do not bundle all 28 — each description costs ~100 tokens of startup context.
+
+**Procedural Memory & Self-Improvement:**
+Tinker can dynamically synthesize, patch (with unified diff preview), or delete
+skills at runtime using the `manage_skill` tool without recompilation. Deleting
+an overridden bundled skill safely restores the embedded fallback.
 
 ## 9. Decisions live here
 
 - Current decisions: `docs/PRD.md` §7, `docs/ARCHITECTURE.md` §11,
-  `docs/DESIGN.md` ADRs (§9–§13).
+  `docs/DESIGN.md` ADRs (§9–§13), `docs/AUDIT_STATUS.md`.
 - When a decision changes: update the docs + record an ADR
   (`docs/DECISIONS.md` once implementation starts). Never leave a stale
   decision standing next to new code.
@@ -158,3 +163,11 @@ costs ~100 tokens of startup context.
      endpoints (custom baseUrl, apiKey, models, routing groups ala opencode & omp
      config). Agent refuses to run silently without configured model and prompts
      user to configure or run onboard.
+  4. Procedural skills can be dynamically synthesized/managed at runtime by
+     Tinker via `manage_skill` (inspired by Hermes Agent & Muse AI).
+  5. Fail-closed SSRF protection with async DNS resolution and Carrier-Grade
+     NAT/benchmarking IP blocks across all network tools (`webfetch`, `websearch`).
+  6. Coding ergonomics parity with Claude Code & Codex (fuzzy whitespace/CRLF
+     `edit` matching, `grep` context lines `-C`, `bash` smart output truncation).
+  7. Explicit workspace root override flag `-w, --workspace <path>` supported
+     across CLI, TUI, and subcommands.

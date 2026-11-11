@@ -60,4 +60,23 @@ mod tests {
         assert!(openrc.contains("command_args=\"gateway\""));
         assert!(!ServiceInstaller::status_report().is_empty());
     }
+
+    #[test]
+    fn test_systemd_unit_dependencies_and_restart_policy() {
+        let unit = ServiceInstaller::generate_systemd_unit();
+        assert!(unit.contains("[Unit]"));
+        assert!(unit.contains("After=network.target"));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("RestartSec=5s"));
+        assert!(unit.contains("[Install]"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+    }
+
+    #[test]
+    fn test_openrc_init_shebang_and_network_dependency() {
+        let init = ServiceInstaller::generate_openrc_init();
+        assert!(init.starts_with("#!/sbin/openrc-run"));
+        assert!(init.contains("pidfile=\"/run/purrcode-ai.pid\""));
+        assert!(init.contains("need net"));
+    }
 }

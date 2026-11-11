@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(short = 'm', long)]
     pub model: Option<String>,
 
+    /// Explicit workspace root directory (defaults to current working directory)
+    #[arg(short = 'w', long)]
+    pub workspace: Option<PathBuf>,
+
     /// Path to custom configuration file
     #[arg(short = 'c', long)]
     pub config: Option<PathBuf>,

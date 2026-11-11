@@ -13,7 +13,7 @@ pub use execution::BashTool;
 pub use fs::{EditTool, ReadTool, WriteTool};
 pub use purrcode_api::tool::ToolRegistry;
 pub use search::{FindTool, GlobTool, GrepTool};
-pub use skill::{ReadSkillTool, SkillManager};
+pub use skill::{ManageSkillTool, ReadSkillTool, SkillManager};
 pub use web::{WebfetchTool, WebsearchTool};
 
 use std::sync::Arc;
@@ -50,9 +50,9 @@ impl ToolRegistryExt for ToolRegistry {
         let mut skill_mgr = SkillManager::new();
         let ws_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         skill_mgr.discover_all(&ws_root);
-        let _ = registry.register(Arc::new(ReadSkillTool::new(Arc::new(Mutex::new(
-            skill_mgr,
-        )))));
+        let shared_skill_mgr = Arc::new(Mutex::new(skill_mgr));
+        let _ = registry.register(Arc::new(ReadSkillTool::new(Arc::clone(&shared_skill_mgr))));
+        let _ = registry.register(Arc::new(ManageSkillTool::new(shared_skill_mgr)));
 
         registry
     }

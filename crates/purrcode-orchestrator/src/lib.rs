@@ -96,15 +96,15 @@ impl SubagentRegistry {
         }
     }
 
-    pub fn get_or_create(&mut self, id: Option<String>, role: &str, brief: &str) -> String {
+    pub fn get_or_create(&mut self, id: Option<String>, role: &str, brief: &str) -> Result<String> {
         let now = chrono::Utc::now().to_rfc3339();
         if let Some(existing_id) = id {
             if let Some(rec) = self.records.get_mut(&existing_id) {
                 rec.status = "running".to_string();
                 rec.updated_at = now;
                 rec.brief = brief.to_string();
-                let _ = self.persist_record(&existing_id);
-                return existing_id;
+                self.persist_record(&existing_id)?;
+                return Ok(existing_id);
             }
             if let Some(sdir) = self.session_dir.clone() {
                 let rec_path = sdir.join("subagents").join(format!("{}.json", existing_id));
@@ -114,8 +114,8 @@ impl SubagentRegistry {
                         rec.status = "running".to_string();
                         rec.updated_at = now;
                         rec.brief = brief.to_string();
-                        let _ = self.persist_record(&existing_id);
-                        return existing_id;
+                        self.persist_record(&existing_id)?;
+                        return Ok(existing_id);
                     }
                 }
             }
@@ -137,9 +137,9 @@ impl SubagentRegistry {
             brief: brief.to_string(),
         };
         self.records.insert(new_id.clone(), record);
-        let _ = self.persist_record(&new_id);
-        let _ = self.persist_workgraph();
-        new_id
+        self.persist_record(&new_id)?;
+        self.persist_workgraph()?;
+        Ok(new_id)
     }
 
     pub fn take_history(&mut self, id: &str) -> Vec<ChatMessage> {

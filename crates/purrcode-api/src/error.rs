@@ -49,3 +49,26 @@ pub enum PurrError {
 }
 
 pub type Result<T> = std::result::Result<T, PurrError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_purr_error_formatting() {
+        let err = PurrError::ToolNotInPreset {
+            tool: "bash".to_string(),
+            agent: "meowstro".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Tool not in preset: tool 'bash' is not permitted for agent 'meowstro'"
+        );
+
+        let io_err = PurrError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file missing",
+        ));
+        assert!(io_err.to_string().contains("file missing"));
+    }
+}

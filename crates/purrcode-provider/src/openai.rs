@@ -411,3 +411,105 @@ impl ModelProvider for OpenAiCompatibleProvider {
         Ok(rx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openai_provider_endpoint_url_resolution() {
+        let p1 =
+            OpenAiCompatibleProvider::new("test1", "http://localhost:11434", None, HashMap::new());
+        assert_eq!(
+            p1.endpoint_url(),
+            "http://localhost:11434/v1/chat/completions"
+        );
+
+        let p2 = OpenAiCompatibleProvider::new(
+            "test2",
+            "http://localhost:11434/v1",
+            None,
+            HashMap::new(),
+        );
+        assert_eq!(
+            p2.endpoint_url(),
+            "http://localhost:11434/v1/chat/completions"
+        );
+
+        let p3 = OpenAiCompatibleProvider::new(
+            "test3",
+            "https://api.openai.com/v1/",
+            None,
+            HashMap::new(),
+        );
+        assert_eq!(
+            p3.endpoint_url(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_sse_chunk_deserialization_reasoning_variants() {
+        // 1. DeepSeek style: reasoning_content
+        let ds_json = r#"{
+            "id": "chat-1",
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "Pondering the solution..."
+                }
+            }]
+        }"#;
+        let ds_chunk: SseChunk = serde_json::from_str(ds_json).unwrap();
+        let delta = ds_chunk.choices[0].delta.as_ref().unwrap();
+        assert_eq!(
+            delta.reasoning_content.as_deref(),
+            Some("Pondering the solution...")
+        );
+
+        // 2. Ollama style: thought
+        let ollama_json = r#"{
+            "id": "chat-2",
+            "choices": [{
+                "delta": {
+                    "thought": "Thinking step by step..."
+                }
+            }]
+        }"#;
+        let ollama_chunk: SseChunk = serde_json::from_str(ollama_json).unwrap();
+        let delta2 = ollama_chunk.choices[0].delta.as_ref().unwrap();
+        assert_eq!(delta2.thought.as_deref(), Some("Thinking step by step..."));
+    }
+
+    #[test]
+    fn test_sse_chunk_deserialization_tool_call_delta() {
+        let tc_json = r#"{
+            "id": "chat-3",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_123",
+                        "function": {
+                            "name": "edit",
+                            "arguments": "{\"path\":\"foo.rs\"}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let tc_chunk: SseChunk = serde_json::from_str(tc_json).unwrap();
+        let delta = tc_chunk.choices[0].delta.as_ref().unwrap();
+        let calls = delta.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, 0);
+        assert_eq!(calls[0].id.as_deref(), Some("call_123"));
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().name.as_deref(),
+            Some("edit")
+        );
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().arguments.as_deref(),
+            Some("{\"path\":\"foo.rs\"}")
+        );
+    }
+}

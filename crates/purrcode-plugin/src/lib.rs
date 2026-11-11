@@ -340,4 +340,89 @@ command: ./my-plugin
         let p = ProcessPlugin::new(manifest, "./my-plugin");
         assert!(!p.is_secret_allowed("OPENAI_API_KEY"));
     }
+
+    struct MockPlugin {
+        manifest: PluginManifest,
+        should_veto: bool,
+    }
+
+    #[async_trait]
+    impl Plugin for MockPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+
+        async fn on_session_start(&self, _session_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn pre_tool_use(&self, _tool: &str, _arguments: &Value) -> Result<bool> {
+            Ok(!self.should_veto)
+        }
+
+        async fn post_tool_use(&self, _tool: &str, _result: &Value) -> Result<()> {
+            Ok(())
+        }
+
+        async fn on_session_stop(&self, _session_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plugin_manager_dispatch_pre_tool_use_veto() {
+        let manifest = PluginManifest {
+            name: "veto-guard".to_string(),
+            version: "0.1.0".to_string(),
+            description: None,
+            transport: PluginTransport::Process,
+            capabilities: PluginCapabilities {
+                network: Vec::new(),
+                filesystem: Vec::new(),
+                secrets: Vec::new(),
+            },
+        };
+
+        let mut mgr = PluginManager::new();
+        mgr.register(Arc::new(MockPlugin {
+            manifest,
+            should_veto: true,
+        }));
+
+        let allowed = mgr
+            .dispatch_pre_tool_use("bash", &serde_json::json!({}))
+            .await;
+        assert!(
+            !allowed,
+            "Plugin must veto tool execution when returning false"
+        );
+    }
+
+    #[test]
+    fn test_parse_plugin_yaml_with_declared_secrets() {
+        let yaml = r#"
+name: secret-reader
+version: 1.0.0
+transport: process
+command: ./runner
+secrets: ["OPENAI_API_KEY", "DEEPSEEK_API_KEY"]
+"#;
+        let (manifest, cmd) = parse_plugin_yaml_str(yaml).unwrap();
+        assert_eq!(cmd.as_deref(), Some("./runner"));
+        let p = ProcessPlugin::new(manifest, "./runner");
+        assert!(p.is_secret_allowed("OPENAI_API_KEY"));
+        assert!(p.is_secret_allowed("DEEPSEEK_API_KEY"));
+        assert!(!p.is_secret_allowed("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn test_parse_plugin_yaml_missing_name_rejected() {
+        let yaml = r#"
+version: 1.0.0
+transport: process
+command: ./runner
+"#;
+        let res = parse_plugin_yaml_str(yaml);
+        assert!(res.is_err());
+    }
 }

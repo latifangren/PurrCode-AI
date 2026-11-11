@@ -156,11 +156,15 @@ impl Tool for WebfetchTool {
 }
 
 pub fn validate_destination(url: &Url) -> Result<()> {
+    validate_destination_for_tool(url, "webfetch")
+}
+
+pub fn validate_destination_for_tool(url: &Url, tool_name: &str) -> Result<()> {
     match url.scheme() {
         "http" | "https" => {}
         other => {
             return Err(PurrError::Tool {
-                tool: "webfetch".to_string(),
+                tool: tool_name.to_string(),
                 message: format!(
                     "Blocked scheme '{}': only http and https are allowed.",
                     other
@@ -173,7 +177,7 @@ pub fn validate_destination(url: &Url) -> Result<()> {
         Some(h) => h.to_lowercase(),
         None => {
             return Err(PurrError::Tool {
-                tool: "webfetch".to_string(),
+                tool: tool_name.to_string(),
                 message: "Missing host in URL".to_string(),
             });
         }
@@ -181,7 +185,7 @@ pub fn validate_destination(url: &Url) -> Result<()> {
 
     if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
         return Err(PurrError::Tool {
-            tool: "webfetch".to_string(),
+            tool: tool_name.to_string(),
             message: format!("Access to local domain '{}' is blocked for security.", host),
         });
     }
@@ -190,7 +194,7 @@ pub fn validate_destination(url: &Url) -> Result<()> {
     if let Ok(ip) = clean_host.parse::<IpAddr>() {
         if is_private_or_restricted_ip(ip) {
             return Err(PurrError::Tool {
-                tool: "webfetch".to_string(),
+                tool: tool_name.to_string(),
                 message: format!(
                     "Access to private/loopback/metadata IP '{}' is blocked for security.",
                     ip
@@ -204,13 +208,17 @@ pub fn validate_destination(url: &Url) -> Result<()> {
     // residual TOCTOU between DNS check and socket connect is mitigated by re-validating on every redirect hop).
     let port = url.port_or_known_default().unwrap_or(80);
     if let Ok(addrs) = (clean_host, port).to_socket_addrs() {
-        validate_resolved_ips(&host, addrs.map(|a| a.ip()))?;
+        validate_resolved_ips_for_tool(&host, addrs.map(|a| a.ip()), tool_name)?;
     }
 
     Ok(())
 }
 
 pub async fn validate_dns_lookup_async(url: &Url) -> Result<()> {
+    validate_dns_lookup_async_for_tool(url, "webfetch").await
+}
+
+pub async fn validate_dns_lookup_async_for_tool(url: &Url, tool_name: &str) -> Result<()> {
     let Some(host) = url.host_str() else {
         return Ok(());
     };
@@ -220,16 +228,24 @@ pub async fn validate_dns_lookup_async(url: &Url) -> Result<()> {
     }
     let port = url.port_or_known_default().unwrap_or(80);
     if let Ok(addrs) = tokio::net::lookup_host((clean_host, port)).await {
-        validate_resolved_ips(clean_host, addrs.map(|a| a.ip()))?;
+        validate_resolved_ips_for_tool(clean_host, addrs.map(|a| a.ip()), tool_name)?;
     }
     Ok(())
 }
 
 pub fn validate_resolved_ips(host: &str, ips: impl IntoIterator<Item = IpAddr>) -> Result<()> {
+    validate_resolved_ips_for_tool(host, ips, "webfetch")
+}
+
+pub fn validate_resolved_ips_for_tool(
+    host: &str,
+    ips: impl IntoIterator<Item = IpAddr>,
+    tool_name: &str,
+) -> Result<()> {
     for ip in ips {
         if is_private_or_restricted_ip(ip) {
             return Err(PurrError::Tool {
-                tool: "webfetch".to_string(),
+                tool: tool_name.to_string(),
                 message: format!(
                     "DNS resolution for host '{}' returned restricted/private IP '{}' (DNS-rebinding blocked).",
                     host, ip
@@ -243,11 +259,19 @@ pub fn validate_resolved_ips(host: &str, ips: impl IntoIterator<Item = IpAddr>) 
 fn is_private_or_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ipv4) => {
+            let oct = ipv4.octets();
             ipv4.is_loopback() // 127.0.0.0/8
                 || ipv4.is_private() // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
                 || ipv4.is_link_local() // 169.254.0.0/16 (includes cloud metadata 169.254.169.254)
                 || ipv4.is_broadcast()
                 || ipv4 == Ipv4Addr::UNSPECIFIED // 0.0.0.0
+                || (oct[0] == 100 && (oct[1] & 0xc0) == 64) // 100.64.0.0/10 (Carrier Grade NAT)
+                || (oct[0] == 198 && (oct[1] & 0xfe) == 18) // 198.18.0.0/15 (Benchmarking)
+                || (oct[0] == 192 && oct[1] == 0 && oct[2] == 2) // 192.0.2.0/24 (TEST-NET-1)
+                || (oct[0] == 198 && oct[1] == 51 && oct[2] == 100) // 198.51.100.0/24 (TEST-NET-2)
+                || (oct[0] == 203 && oct[1] == 0 && oct[2] == 113) // 203.0.113.0/24 (TEST-NET-3)
+                || ipv4.is_multicast()
+                || oct[0] >= 240 // 240.0.0.0/4 (Reserved)
         }
         IpAddr::V6(ipv6) => {
             ipv6.is_loopback() // ::1

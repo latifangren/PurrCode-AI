@@ -53,6 +53,16 @@ pub async fn validate_endpoint_connectivity(base_url: &str, api_key: Option<&str
         ))
     })?;
 
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        || resp.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        return Err(PurrError::Config(format!(
+            "Endpoint '{}' rejected authentication with HTTP {} (check your API key)",
+            base_url,
+            resp.status()
+        )));
+    }
+
     if resp.status().is_server_error() {
         return Err(PurrError::Config(format!(
             "Endpoint '{}' returned server error HTTP {}",

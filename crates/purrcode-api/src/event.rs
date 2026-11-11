@@ -66,3 +66,39 @@ pub enum SubagentStatus {
     Failed,
     Interrupted,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_event_serialization_roundtrip() {
+        let event = AgentEvent::ToolCallStarted {
+            call_id: "call_123".to_string(),
+            tool: "edit".to_string(),
+            arguments: serde_json::json!({"path": "sample.rs"}),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"ToolCallStarted\""));
+        assert!(json.contains("\"tool\":\"edit\""));
+
+        let deserialized: AgentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            AgentEvent::ToolCallStarted { call_id, tool, .. } => {
+                assert_eq!(call_id, "call_123");
+                assert_eq!(tool, "edit");
+            }
+            _ => panic!("Expected ToolCallStarted event"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_status_serde() {
+        let status = SubagentStatus::Running;
+        let serialized = serde_json::to_string(&status).unwrap();
+        assert_eq!(serialized, "\"running\"");
+        let deserialized: SubagentStatus = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, SubagentStatus::Running);
+    }
+}

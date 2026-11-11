@@ -77,6 +77,14 @@ impl Tool for WebsearchTool {
 
         let search_url = format!("{}?q={}", self.endpoint_base, encode_query(&args.query));
 
+        let parsed_url = reqwest::Url::parse(&search_url).map_err(|e| PurrError::Tool {
+            tool: "websearch".to_string(),
+            message: format!("Malformed search URL: {e}"),
+        })?;
+
+        super::webfetch::validate_destination_for_tool(&parsed_url, "websearch")?;
+        super::webfetch::validate_dns_lookup_async_for_tool(&parsed_url, "websearch").await?;
+
         let resp = self
             .client
             .get(&search_url)

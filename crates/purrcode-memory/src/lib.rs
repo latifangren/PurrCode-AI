@@ -256,4 +256,45 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
+
+    #[tokio::test]
+    async fn test_markdown_memory_load_context_sections() {
+        let temp_dir = std::env::temp_dir().join(format!("purr_mem_ctx_{}", uuid::Uuid::new_v4()));
+        let proj_dir = temp_dir.join("proj");
+        let purr_proj = proj_dir.join(".purrcode");
+        tokio::fs::create_dir_all(&purr_proj).await.unwrap();
+
+        let mem = MarkdownMemory::new(&temp_dir);
+
+        tokio::fs::write(
+            mem.soul_file(),
+            "You are PurrCode, helpful cat assistant.\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(mem.user_file(), "Prefers concise terminal output.\n")
+            .await
+            .unwrap();
+        tokio::fs::write(mem.memory_file(), "# Memory\n- fact A\n")
+            .await
+            .unwrap();
+        tokio::fs::write(purr_proj.join("MEMORY.md"), "# Project Memory\n- fact B\n")
+            .await
+            .unwrap();
+
+        let context = mem.load_context(Some(&proj_dir)).await;
+        assert!(context.contains("### Persona & Soul (SOUL.md)"));
+        assert!(context.contains("### User Information & Preferences (USER.md)"));
+        assert!(context.contains("### Curated Memory (MEMORY.md)"));
+        assert!(context.contains("### Project Memory (.purrcode/MEMORY.md)"));
+
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[test]
+    fn test_truncate_chars_utf8_safety() {
+        let multi_byte = "🐾 PurrCode 🐾 🐱";
+        let truncated = truncate_chars(multi_byte, 5);
+        assert_eq!(truncated, "🐾 Pur");
+    }
 }

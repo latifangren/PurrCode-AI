@@ -22,7 +22,7 @@ use purrcode_service::ServiceInstaller;
 use purrcode_tools::mcp::McpManager;
 use purrcode_tools::{AskOption, AskRequester, ToolRegistry, ToolRegistryExt};
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -43,7 +43,17 @@ async fn main() -> Result<()> {
         config.model_preset = Some(mp_override.clone());
     }
 
-    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let workspace_root = if let Some(ref ws) = args.workspace {
+        if ws.is_absolute() {
+            ws.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(ws)
+        }
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
     let purrcode_dir = onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
     // 2. Dispatch subcommands if present
@@ -179,6 +189,7 @@ async fn main() -> Result<()> {
                     args.orchestrator,
                     args.yolo,
                     &config,
+                    &workspace_root,
                 )
                 .await?;
                 return Ok(());
@@ -206,6 +217,7 @@ async fn main() -> Result<()> {
             args.orchestrator,
             args.yolo,
             &config,
+            &workspace_root,
         )
         .await?;
         return Ok(());
@@ -611,6 +623,7 @@ async fn run_one_shot(
     use_orchestrator: bool,
     yolo: bool,
     config: &Config,
+    workspace_root: &Path,
 ) -> Result<()> {
     let target_model = resolve_target_model_or_exit(model_override, config);
     let registry = ProviderRegistry::from_config(config);
@@ -642,10 +655,9 @@ async fn run_one_shot(
         }
     };
 
-    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let purrcode_dir = onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
-    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, &workspace_root) {
+    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, workspace_root) {
         Ok(p) => p,
         Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
     };
@@ -656,14 +668,14 @@ async fn run_one_shot(
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
     let mut plugin_mgr = PluginManager::new();
-    plugin_mgr.discover_all(&workspace_root);
+    plugin_mgr.discover_all(workspace_root);
     let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
 
     let model_preset_name = config
         .model_preset
         .clone()
         .unwrap_or_else(|| "free".to_string());
-    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, &workspace_root).ok();
+    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, workspace_root).ok();
 
     let mut tool_registry = ToolRegistry::with_defaults();
     if !mode_preset.tools.is_empty() {
@@ -695,7 +707,7 @@ async fn run_one_shot(
     let tool_context = ToolContext {
         session_id: session_id.clone(),
         agent_role: "meowstro".to_string(),
-        workspace_root: workspace_root.clone(),
+        workspace_root: workspace_root.to_path_buf(),
         is_dry_run: false,
     };
 
@@ -733,11 +745,11 @@ async fn run_one_shot(
     let mut stdout = std::io::stdout();
 
     let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
-    skill_mgr.discover_all(&workspace_root);
+    skill_mgr.discover_all(workspace_root);
     let skills_index = skill_mgr.format_prompt_index();
 
     let memory = MarkdownMemory::new(&purrcode_dir);
-    let mem_context = memory.load_context(Some(&workspace_root)).await;
+    let mem_context = memory.load_context(Some(workspace_root)).await;
 
     let mut system_prompt = if use_orchestrator {
         MeowstroOrchestrator::system_prompt(&skills_index)

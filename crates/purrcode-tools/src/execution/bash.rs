@@ -14,6 +14,7 @@ struct BashArgs {
     command: String,
     workdir: Option<String>,
     timeout_ms: Option<u64>,
+    max_lines: Option<usize>,
 }
 
 #[async_trait]
@@ -21,14 +22,15 @@ impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "bash".to_string(),
-            description: "Execute a shell command with timeout and working directory support"
+            description: "Execute a shell command with timeout and smart output truncation to guard context window"
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "Shell command to execute" },
                     "workdir": { "type": "string", "description": "Optional working directory relative to workspace root" },
-                    "timeout_ms": { "type": "integer", "description": "Execution timeout in milliseconds (default: 30000)" }
+                    "timeout_ms": { "type": "integer", "description": "Execution timeout in milliseconds (default: 30000)" },
+                    "max_lines": { "type": "integer", "description": "Maximum output lines before smart head/tail truncation (default: 200)" }
                 },
                 "required": ["command"]
             }),
@@ -104,12 +106,17 @@ impl Tool for BashTool {
                     combined = format!("(command exited with code {})", exit_code);
                 }
 
+                let max_lines_limit = args.max_lines.unwrap_or(200);
+                let (truncated_output, was_truncated) =
+                    smart_truncate_output(&combined, max_lines_limit, 48_000);
+
                 Ok(ToolResult {
-                    output: combined,
+                    output: truncated_output,
                     diff_preview: None,
                     metadata: Some(serde_json::json!({
                         "exit_code": exit_code,
-                        "timed_out": false
+                        "timed_out": false,
+                        "truncated": was_truncated
                     })),
                 })
             }
@@ -126,5 +133,75 @@ impl Tool for BashTool {
                 })),
             }),
         }
+    }
+}
+
+pub fn smart_truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= max_lines && text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+
+    let head_count = (max_lines * 6) / 10;
+    let tail_count = max_lines.saturating_sub(head_count);
+
+    if lines.len() > max_lines && head_count + tail_count < lines.len() {
+        let omitted = lines.len() - (head_count + tail_count);
+        let head_part = lines[..head_count].join("\n");
+        let tail_part = lines[lines.len() - tail_count..].join("\n");
+        let mut truncated = format!(
+            "{head_part}\n\n[... output truncated: {omitted} lines omitted to preserve context window ...]\n\n{tail_part}"
+        );
+        if truncated.len() > max_bytes {
+            truncated = format!(
+                "{}\n\n[... output truncated at byte limit ...]",
+                safe_truncate_str(&truncated, max_bytes)
+            );
+        }
+        (truncated, true)
+    } else if text.len() > max_bytes {
+        let truncated = format!(
+            "{}\n\n[... output truncated: exceeded {max_bytes} bytes ...]",
+            safe_truncate_str(text, max_bytes)
+        );
+        (truncated, true)
+    } else {
+        (text.to_string(), false)
+    }
+}
+
+fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut idx = max_bytes;
+        while idx > 0 && !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smart_truncate_output() {
+        let mut lines = Vec::new();
+        for i in 1..=100 {
+            lines.push(format!("line {i}"));
+        }
+        let full = lines.join("\n");
+
+        // Truncate to 10 lines
+        let (res, truncated) = smart_truncate_output(&full, 10, 10_000);
+        assert!(truncated);
+        assert!(res.contains("line 1"));
+        assert!(res.contains("line 6"));
+        assert!(
+            res.contains("[... output truncated: 90 lines omitted to preserve context window ...]")
+        );
+        assert!(res.contains("line 100"));
     }
 }
