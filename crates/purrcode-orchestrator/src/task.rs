@@ -129,16 +129,25 @@ fn read_agent_frontmatter_model(role: &str, workspace_root: &Path) -> Option<Str
 }
 
 /// Validates and formats `result.md` according to the schema in `docs/SUBAGENTS.md` §2.2.
+/// Rejects unformed or empty subagent summaries to prevent blank handoffs.
 pub fn format_validated_result_markdown(
     subagent_id: &str,
     role: &str,
     status: &str,
     raw_summary: &str,
-) -> String {
-    let has_changed = raw_summary.contains("Changed Files");
-    let has_verified = raw_summary.contains("Verified Evidence");
-    let has_failures = raw_summary.contains("Failures") || raw_summary.contains("Blockers");
-    let has_unverified = raw_summary.contains("Unverified Items");
+) -> Result<String> {
+    let trimmed = raw_summary.trim();
+    if trimmed.is_empty() {
+        return Err(PurrError::Subagent {
+            id: subagent_id.to_string(),
+            message: "Subagent completed execution but returned an empty summary report (no deliverables or findings)".to_string(),
+        });
+    }
+
+    let has_changed = trimmed.contains("Changed Files");
+    let has_verified = trimmed.contains("Verified Evidence");
+    let has_failures = trimmed.contains("Failures") || trimmed.contains("Blockers");
+    let has_unverified = trimmed.contains("Unverified Items");
 
     let mut out = format!(
         "# Result Report: {}\n- **Status:** {}\n- **Role:** {}\n- **Timestamp:** {}\n",
@@ -161,8 +170,8 @@ pub fn format_validated_result_markdown(
         out.push_str("- **Unverified Items:** None reported.\n");
     }
 
-    out.push_str(&format!("\n## Summary\n{}\n", raw_summary.trim()));
-    out
+    out.push_str(&format!("\n## Summary\n{}\n", trimmed));
+    Ok(out)
 }
 
 pub struct TaskTool {
@@ -634,7 +643,7 @@ impl Tool for TaskTool {
 
         // 6. Write validated result.md
         let result_entry =
-            format_validated_result_markdown(&subagent_id, &args.role, "completed", &child_result);
+            format_validated_result_markdown(&subagent_id, &args.role, "completed", &child_result)?;
         tokio::fs::write(&result_file, result_entry.as_bytes())
             .await
             .map_err(|e| PurrError::Subagent {
@@ -879,5 +888,25 @@ mod tests {
         assert!(temp_dir.join("workgraph.json").exists());
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_format_validated_result_markdown_rejects_empty_and_normalizes() {
+        // Empty summary is rejected
+        let err = format_validated_result_markdown("sub_1", "tinker", "completed", "   \n\t  ");
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), PurrError::Subagent { .. }));
+
+        // Valid summary with missing sections gets normalized with standard placeholders
+        let raw = "Refactored payment gateway handler in src/payment.rs";
+        let res = format_validated_result_markdown("sub_1", "tinker", "completed", raw).unwrap();
+        assert!(res.contains("# Result Report: sub_1"));
+        assert!(res.contains("- **Status:** completed"));
+        assert!(res.contains("- **Role:** tinker"));
+        assert!(res.contains("- **Changed Files:** (see summary below)"));
+        assert!(res.contains("- **Verified Evidence:** (see summary below)"));
+        assert!(res.contains("- **Failures / Blockers:** None reported."));
+        assert!(res.contains("- **Unverified Items:** None reported."));
+        assert!(res.contains("## Summary\nRefactored payment gateway handler in src/payment.rs"));
     }
 }

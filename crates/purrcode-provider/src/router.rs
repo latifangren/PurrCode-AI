@@ -155,6 +155,30 @@ mod tests {
         }
     }
 
+    struct MockTechnicalErrorProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for MockTechnicalErrorProvider {
+        fn provider_name(&self) -> &str {
+            "mock-technical-error"
+        }
+        fn is_healthy(&self) -> bool {
+            true
+        }
+        async fn stream_completion(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(PurrError::Provider {
+                provider: "mock-technical-error".to_string(),
+                message: "Connection timed out".to_string(),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn test_policy_refusal_stops_fallback_chain() {
         let c1 = Arc::new(AtomicUsize::new(0));
@@ -179,5 +203,38 @@ mod tests {
         assert_eq!(c1.load(Ordering::SeqCst), 1);
         // Second provider MUST NOT be called when first returns ProviderRefusal
         assert_eq!(c2.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_technical_error_fails_over_to_next_candidate_and_cooldown() {
+        let c1 = Arc::new(AtomicUsize::new(0));
+        let c2 = Arc::new(AtomicUsize::new(0));
+
+        let p1: Arc<dyn ModelProvider> = Arc::new(MockTechnicalErrorProvider { calls: c1.clone() });
+        let p2: Arc<dyn ModelProvider> = Arc::new(MockOkProvider { calls: c2.clone() });
+
+        let router = FallbackRouter::new("chain", vec![(p1, "m1".into()), (p2, "m2".into())])
+            .with_cooldown(Duration::from_secs(60));
+        let req = CompletionRequest {
+            model: "m1".to_string(),
+            messages: Vec::new(),
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+            stop: None,
+        };
+
+        // First attempt: p1 fails with timeout, router falls over to p2, which succeeds
+        let res = router.stream_completion(req.clone()).await;
+        assert!(res.is_ok());
+        assert_eq!(c1.load(Ordering::SeqCst), 1);
+        assert_eq!(c2.load(Ordering::SeqCst), 1);
+
+        // Second attempt: p1 is in cooldown, so router immediately routes to p2
+        let res2 = router.stream_completion(req).await;
+        assert!(res2.is_ok());
+        assert_eq!(c1.load(Ordering::SeqCst), 1); // c1 not called again
+        assert_eq!(c2.load(Ordering::SeqCst), 2); // c2 called again
     }
 }

@@ -1,9 +1,9 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-11 20:55:00 +07:00`
+- **Timestamp Audit:** `2026-11-11 22:05:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Bahasa Implementasi:** Rust (Single Static musl Binary `purrcode-ai`)
-- **Status Kompilasi:** ✅ `cargo test --workspace` (65 tests lolos, 0 failed di seluruh 12 crate)
+- **Bahasa Implementasi:** Rust (Single Static musl Binary `purrcode-ai` untuk target Linux release; PE/ELF native untuk platform host)
+- **Status Kompilasi:** ✅ `cargo test --workspace` (68 tests lolos, 0 failed di seluruh 12 crate)
 - **Status Linter:** ✅ `cargo clippy --workspace -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -18,9 +18,9 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **100%** | **Selesai & Terverifikasi (Production Ready)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 65 unit/integration tests. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **100%** | **Selesai & Terverifikasi (Production Ready)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 68 unit/integration tests hermetis. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
-| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Cron Siap** | Tool dynamic skill synthesis (`manage_skill`), per-skill concurrency mutex, shadow auditor (Tuxeshadow), dan runner cron job sudah aktif. |
+| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
 | **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~38%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills). |
 
@@ -40,9 +40,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (59 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (68 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-11 20:20:00 +07:00` (100% passing):
+Hasil pengujian otomatis per `2026-11-11 22:05:00 +07:00` (100% passing):
 
 1. **`purrcode_api` (4 tests):**
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
@@ -60,7 +60,7 @@ Hasil pengujian otomatis per `2026-11-11 20:20:00 +07:00` (100% passing):
 4. **`purrcode_ai` (CLI binary) (3 tests):**
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
-   - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 401/403 guard)
+   - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
 5. **`purrcode_config` (8 tests):**
    - `jsonc::tests::test_clean_jsonc_comments`, `jsonc::tests::test_strip_trailing_commas`
    - `loader::tests::test_expand_env_vars`, `loader::tests::test_parse_example_file`, `loader::tests::test_hierarchical_merge`
@@ -75,18 +75,21 @@ Hasil pengujian otomatis per `2026-11-11 20:20:00 +07:00` (100% passing):
    - `tests::test_markdown_memory_remember_recall_and_forget`
    - `tests::test_markdown_memory_load_context_sections` (Integrasi SOUL/USER/MEMORY/.purrcode)
    - `tests::test_truncate_chars_utf8_safety` (Pemotongan batas karakter UTF-8 aman)
-8. **`purrcode_orchestrator` (4 tests):**
+8. **`purrcode_orchestrator` (6 tests):**
    - `shadow::tests::test_parse_shadow_verdicts_and_triggers`
    - `shadow::tests::test_shadow_enforcement_across_modes`
+   - `shadow::tests::test_strict_shadow_user_approval_with_preview` (Verifikasi penyerahan diff preview saat persetujuan Carrier)
    - `task::tests::test_per_role_model_preset_resolution_and_precedence`
    - `task::tests::test_subagent_chain_handoff_and_resume_by_id`
+   - `task::tests::test_format_validated_result_markdown_rejects_empty_and_normalizes` (Penolakan ringkasan subagent kosong & normalisasi)
 9. **`purrcode_plugin` (4 tests):**
    - `tests::test_parse_plugin_yaml_and_default_deny_secrets`
    - `tests::test_parse_plugin_yaml_with_declared_secrets`
    - `tests::test_parse_plugin_yaml_missing_name_rejected`
    - `tests::test_plugin_manager_dispatch_pre_tool_use_veto`
-10. **`purrcode_provider` (4 tests):**
+10. **`purrcode_provider` (5 tests):**
     - `router::tests::test_policy_refusal_stops_fallback_chain`
+    - `router::tests::test_technical_error_fails_over_to_next_candidate_and_cooldown` (Failover otomatis saat error teknis & cooldown)
     - `openai::tests::test_openai_provider_endpoint_url_resolution`
     - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
     - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
@@ -138,6 +141,11 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
    - Meowstro bertindak sebagai orchestrator read-only yang menginjeksi daftar skill ringkas ke prompt sistem dan membaca detail instruksi via `read_skill`.
 7. **Kedalaman Unit Tests di Seluruh Crate:**
    - Setiap crate di workspace kini memiliki unit tests komprehensif (total 65 tests, 100% pass).
+8. **Verifikasi Lanjutan Commit 37b9b8a (Muse Spark Audit Resolution):**
+   - **Hermetisitas Pengujian SSRF:** Menghapus resolusi DNS soket sinkron (`to_socket_addrs`) dari `validate_destination_for_tool` yang sebelumnya memicu false positive di lingkungan dengan reverse/transparent proxy (seperti isolasi VM Muse yang memetakan domain publik ke range `198.18.0.0/15`). Validasi DNS asinkron tetap aktif di runtime via `validate_dns_lookup_async_for_tool`, sementara unit test `test_ssrf_blocking` kini menguji vektor IP dan DNS-rebinding secara offline dan 100% deterministik.
+   - **Penyaluran `workspace_root` Menyeluruh:** Menyalurkan parameter `workspace_root` ke `ToolRegistryExt::with_defaults_and_options`, `MeowstroOrchestrator::with_complete_options`, dan `run_one_shot`, sehingga skill projek di `<workspace_root>/.purrcode/skills/` terdeteksi secara konsisten saat flag `-w, --workspace` digunakan.
+   - **Normalisasi Schema `result.md`:** Menegaskan bahwa validasi `result.md` menggunakan pendekatan normalisasi struktural (bukan hard rejection) untuk menyisipkan header standar (`Status`, `Role`, `Timestamp`, `Changed Files`, `Verified Evidence`, `Failures`, `Unverified Items`) jika LLM subagent melewatkannya, demi mencegah hilangnya hasil kerja subagent.
+   - **Klarifikasi Roadmap v0.1 vs v0.3:** Menegaskan batasan ruang lingkup bahwa daemon scheduler cron background dan alur konfirmasi interaktif instalasi plugin dirancang untuk v0.3, sementara generator service unit systemd/openrc dan validasi manifes izin plugin sudah aktif dan teruji di v0.1.
 
 ---
 

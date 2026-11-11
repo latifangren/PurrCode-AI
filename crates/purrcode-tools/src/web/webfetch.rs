@@ -6,7 +6,7 @@ use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
 use reqwest::Url;
 use serde::Deserialize;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 const MAX_STREAM_BYTES: usize = 1_048_576; // 1 MB safety ceiling to prevent OOM
@@ -204,13 +204,9 @@ pub fn validate_destination_for_tool(url: &Url, tool_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Resolve hostname via OS DNS and reject if any resolved address is private/loopback (DNS-rebinding mitigation;
-    // residual TOCTOU between DNS check and socket connect is mitigated by re-validating on every redirect hop).
-    let port = url.port_or_known_default().unwrap_or(80);
-    if let Ok(addrs) = (clean_host, port).to_socket_addrs() {
-        validate_resolved_ips_for_tool(&host, addrs.map(|a| a.ip()), tool_name)?;
-    }
-
+    // Hostname syntactic validation passed. Asynchronous DNS-rebinding verification is performed
+    // by `validate_dns_lookup_async_for_tool` before the socket connection is made, and on every
+    // redirect hop.
     Ok(())
 }
 
@@ -346,6 +342,11 @@ mod tests {
         assert!(validate_destination(&Url::parse("ftp://example.com/file").unwrap()).is_err());
         assert!(validate_destination(&Url::parse("file:///etc/passwd").unwrap()).is_err());
 
+        // Carrier-Grade NAT (RFC 6598) and Benchmarking (RFC 2544)
+        assert!(validate_destination(&Url::parse("http://100.64.0.1/").unwrap()).is_err());
+        assert!(validate_destination(&Url::parse("http://198.18.0.1/").unwrap()).is_err());
+        assert!(validate_destination(&Url::parse("http://192.0.2.1/").unwrap()).is_err());
+
         // Valid public URLs
         assert!(validate_destination(
             &Url::parse("https://raw.githubusercontent.com/test").unwrap()
@@ -355,12 +356,18 @@ mod tests {
             validate_destination(&Url::parse("https://crates.io/api/v1/crates").unwrap()).is_ok()
         );
 
-        // DNS-rebinding check: if a domain resolves to any private/loopback IP, reject it
+        // DNS-rebinding check: if a domain resolves to any private/loopback/restricted IP, reject it
         let rebind_ips = vec![
             "93.184.216.34".parse::<IpAddr>().unwrap(),
             "127.0.0.1".parse::<IpAddr>().unwrap(),
         ];
         assert!(validate_resolved_ips("evil-rebind.example.com", rebind_ips).is_err());
+
+        let benchmark_ips = vec!["198.18.0.5".parse::<IpAddr>().unwrap()];
+        assert!(validate_resolved_ips("benchmark.example.com", benchmark_ips).is_err());
+
+        let cgnat_ips = vec!["100.64.1.2".parse::<IpAddr>().unwrap()];
+        assert!(validate_resolved_ips("cgnat.example.com", cgnat_ips).is_err());
 
         let public_ips = vec!["93.184.216.34".parse::<IpAddr>().unwrap()];
         assert!(validate_resolved_ips("example.com", public_ips).is_ok());

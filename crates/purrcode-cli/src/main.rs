@@ -355,7 +355,8 @@ async fn main() -> Result<()> {
     plugin_mgr.discover_all(&workspace_root);
     let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
 
-    let mut tool_registry = ToolRegistry::with_defaults_and_ask(Some(ask_requester.clone()));
+    let mut tool_registry =
+        ToolRegistry::with_defaults_and_options(Some(ask_requester.clone()), Some(&workspace_root));
     if !mode_preset.tools.is_empty() {
         tool_registry.retain(|name| {
             name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
@@ -405,6 +406,7 @@ async fn main() -> Result<()> {
             Some(steering_queue.clone()),
             Some(cancel_flag.clone()),
             args.yolo,
+            Some(workspace_root.clone()),
         ))
     } else {
         None
@@ -677,7 +679,7 @@ async fn run_one_shot(
         .unwrap_or_else(|| "free".to_string());
     let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, workspace_root).ok();
 
-    let mut tool_registry = ToolRegistry::with_defaults();
+    let mut tool_registry = ToolRegistry::with_defaults_and_options(None, Some(workspace_root));
     if !mode_preset.tools.is_empty() {
         tool_registry.retain(|name| {
             name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
@@ -729,6 +731,7 @@ async fn run_one_shot(
             None,
             None,
             yolo,
+            Some(workspace_root.to_path_buf()),
         ))
     } else {
         None

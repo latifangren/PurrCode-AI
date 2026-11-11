@@ -22,6 +22,10 @@ use tokio::sync::Mutex;
 pub trait ToolRegistryExt {
     fn with_defaults() -> Self;
     fn with_defaults_and_ask(ask_requester: Option<Arc<dyn AskRequester>>) -> Self;
+    fn with_defaults_and_options(
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        workspace_root: Option<&std::path::Path>,
+    ) -> Self;
 }
 
 impl ToolRegistryExt for ToolRegistry {
@@ -30,6 +34,13 @@ impl ToolRegistryExt for ToolRegistry {
     }
 
     fn with_defaults_and_ask(ask_requester: Option<Arc<dyn AskRequester>>) -> Self {
+        Self::with_defaults_and_options(ask_requester, None)
+    }
+
+    fn with_defaults_and_options(
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        workspace_root: Option<&std::path::Path>,
+    ) -> Self {
         let mut registry = Self::new();
         let _ = registry.register(Arc::new(ReadTool));
         let _ = registry.register(Arc::new(WriteTool));
@@ -48,8 +59,10 @@ impl ToolRegistryExt for ToolRegistry {
         let _ = registry.register(Arc::new(WebsearchTool::new()));
 
         let mut skill_mgr = SkillManager::new();
-        let ws_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        skill_mgr.discover_all(&ws_root);
+        let default_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ws_root = workspace_root.unwrap_or(&default_root);
+        skill_mgr.discover_all(ws_root);
         let shared_skill_mgr = Arc::new(Mutex::new(skill_mgr));
         let _ = registry.register(Arc::new(ReadSkillTool::new(Arc::clone(&shared_skill_mgr))));
         let _ = registry.register(Arc::new(ManageSkillTool::new(shared_skill_mgr)));

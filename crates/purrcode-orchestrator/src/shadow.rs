@@ -450,4 +450,77 @@ mod tests {
             .any(|(_, dec, det)| dec == "OVERRIDDEN" && det.contains("⚠ [shadow overridden]")));
         assert!(logged.iter().any(|(_, dec, _)| dec == "OBJECT_SILENT"));
     }
+
+    use async_trait::async_trait;
+    type CapturedApprovalList = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
+
+    struct MockPreviewApprovalRequester {
+        approve: bool,
+        captured: CapturedApprovalList,
+    }
+
+    #[async_trait]
+    impl purrcode_core::ApprovalRequester for MockPreviewApprovalRequester {
+        async fn request_approval(
+            &self,
+            tool: &str,
+            description: &str,
+            preview: Option<&str>,
+        ) -> bool {
+            let mut list = self.captured.lock().unwrap();
+            list.push((
+                tool.to_string(),
+                description.to_string(),
+                preview.map(|s| s.to_string()),
+            ));
+            self.approve
+        }
+    }
+
+    #[tokio::test]
+    async fn test_strict_shadow_user_approval_with_preview() {
+        let entries = Arc::new(Mutex::new(Vec::new()));
+        let sink: Arc<dyn AuditSink> = Arc::new(CaptureSink {
+            entries: entries.clone(),
+        });
+        let provider: Arc<dyn ModelProvider> = Arc::new(DummyProvider);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let requester: Arc<dyn purrcode_core::ApprovalRequester> =
+            Arc::new(MockPreviewApprovalRequester {
+                approve: true,
+                captured: captured.clone(),
+            });
+
+        let strict_auditor = ShadowAuditor::new(provider, "m", GuardrailMode::Strict)
+            .with_audit_sink(sink.clone())
+            .with_approval_requester(requester);
+
+        let objection = ShadowVerdict::Object {
+            reason: "Destructive file removal detected".to_string(),
+        };
+        let preview = "--- a/config.json\n+++ /dev/null\n- { \"keys\": \"secret\" }";
+
+        // User approves the diff preview
+        let res = strict_auditor
+            .enforce_verdict_with_preview(&objection, "session-strict", None, Some(preview))
+            .await;
+
+        assert!(res.is_ok());
+        let msg = res.unwrap().unwrap();
+        assert!(msg.contains("[Tuxeshadow Objection Approved by User]"));
+
+        // Verify the approval requester received the diff preview exactly
+        let req_records = captured.lock().unwrap();
+        assert_eq!(req_records.len(), 1);
+        assert_eq!(req_records[0].0, "tuxeshadow");
+        assert!(req_records[0]
+            .1
+            .contains("Tuxeshadow OBJECTED in Strict mode"));
+        assert_eq!(req_records[0].2.as_deref(), Some(preview));
+
+        // Verify audit sink recorded the approval
+        let logged = entries.lock().unwrap();
+        assert!(logged.iter().any(|(_, dec, _)| dec == "APPROVED_BY_USER"));
+    }
 }

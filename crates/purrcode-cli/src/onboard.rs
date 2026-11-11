@@ -63,6 +63,28 @@ pub async fn validate_endpoint_connectivity(base_url: &str, api_key: Option<&str
         )));
     }
 
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(PurrError::Config(format!(
+            "Endpoint '{}' not found with HTTP 404 (check your base URL path, expected /v1)",
+            base_url
+        )));
+    }
+
+    if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(PurrError::Config(format!(
+            "Endpoint '{}' returned HTTP 429 Too Many Requests (rate limit or quota exceeded)",
+            base_url
+        )));
+    }
+
+    if resp.status().is_client_error() {
+        return Err(PurrError::Config(format!(
+            "Endpoint '{}' returned client error HTTP {}",
+            base_url,
+            resp.status()
+        )));
+    }
+
     if resp.status().is_server_error() {
         return Err(PurrError::Config(format!(
             "Endpoint '{}' returned server error HTTP {}",

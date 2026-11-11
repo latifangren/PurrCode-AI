@@ -81,6 +81,7 @@ impl MeowstroOrchestrator {
             steering_queue,
             cancel_flag,
             yolo,
+            None,
         )
     }
 
@@ -100,13 +101,15 @@ impl MeowstroOrchestrator {
         steering_queue: Option<SteeringQueue>,
         cancel_flag: Option<Arc<AtomicBool>>,
         yolo: bool,
+        workspace_root: Option<PathBuf>,
     ) -> Self {
         let session_path = session_dir.into();
         let registry = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(
             &session_path,
         )));
         let model_str = model.into();
-        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let ws_root = workspace_root
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         // Meowstro toolset: strictly read, grep, glob, find, todo, ask, task (+ read_skill).
         // NEVER write, edit, or bash!
@@ -123,7 +126,7 @@ impl MeowstroOrchestrator {
         let _ = tool_reg.register(Arc::new(ask_tool));
 
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
-        skill_mgr.discover_all(&workspace_root);
+        skill_mgr.discover_all(&ws_root);
         let _ = tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(
             Arc::new(Mutex::new(skill_mgr)),
         )));
