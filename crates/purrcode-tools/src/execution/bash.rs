@@ -173,7 +173,16 @@ where
 
     // 2. Check if bash.exe exists in PATH
     if let Some(path_var) = path_env {
-        for entry in std::env::split_paths(path_var) {
+        let entries: Vec<std::path::PathBuf> = if path_var.contains(';') {
+            path_var
+                .split(';')
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .collect()
+        } else {
+            std::env::split_paths(path_var).collect()
+        };
+        for entry in entries {
             let bash_p = entry.join("bash.exe");
             if file_exists(&bash_p) {
                 return (bash_p, vec!["-c".to_string()], WindowsShellKind::GitBash);

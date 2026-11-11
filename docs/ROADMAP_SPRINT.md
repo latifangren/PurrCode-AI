@@ -1,8 +1,8 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi 100% (74 tests passing di seluruh 12 crate).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (76 tests passing di seluruh 12 crate).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
-- **Timestamp Audit:** `2026-11-12 01:30:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 02:25:00 +07:00`
 
 Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksak yang memverifikasinya di `cargo test --workspace`.
 
@@ -101,3 +101,6 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - Deteksi otomatis Git Bash di Windows dengan fallback transparan ke PowerShell (`execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate`, `execution::bash::tests::test_resolve_windows_shell_detects_path_bash`, `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell`).
   - Normalisasi prefix verbatim Windows `\\?\` dan perbandingan case-insensitive (`fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows`).
   - Guard codepage konsol Windows UTF-8 (`SetConsoleOutputCP(65001)`).
+- [x] **9.4 Resolusi Model Deterministik & TUI Approval Ergonomics (`crates/purrcode-cli/` & `crates/purrcode-channel/`)**
+  - Resolusi model sesi deterministik berurutan leksikografis & prioritas (`tests::test_resolve_target_model_deterministic_priority`, `tests::test_resolve_target_model_deterministic_lexicographical_fallback`).
+  - Dukungan tombol `y`/`Y`/`Enter` dan `n`/`N` pada dialog approval TUI serta layout kartu approval anti-terpotong.

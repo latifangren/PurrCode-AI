@@ -28,7 +28,7 @@ sudah tidak berlaku.
 | sipeed/picoclaw | `bbf6893` (2026-08-19) | Go | MIT | 42 MB | Patokan single-binary Go ringan |
 | zeroclaw-labs/zeroclaw | `6877da5` (2026-11-10) | Rust | Apache-2.0 + MIT | 121 MB | Microkernel + supervised fail-closed + service install |
 | Muse (App + Code) | — (zip user 2026-11-11, Muse Code v1.4.14 menurut ekstraksi) | — | Proprietary / tidak tercantum * | 8,2 MB (ekstrak) | Harness perilaku (6 pilar) + MSP + skill routing |
-| Weilin0723/PurrCode | `156d832` (2026-11-12), v1.0.0 | Rust (34 crates) | Apache-2.0 | ~140 MB | OS Sandboxing (`bwrap`/`sandbox-exec`), Tree-sitter AST, egui Desktop IDE |
+| Weilin0723/PurrCode | `156d832` (2026-11-12), v1.0.0 | Rust (32 crates) | Apache-2.0 | ~140 MB | OS Sandboxing (`bwrap`/`sandbox-exec`), Tree-sitter AST, egui Desktop IDE |
 
 \* **Batas lisensi — baca dulu sebelum meniru:**
 - `Weilin0723/PurrCode` berlisensi **Apache-2.0** — pola arsitektur bebas dipelajari dan diadaptasi secara clean-room ke dalam kode GPL-3.0 PurrCode AI tanpa menyalin kode secara mentah.
@@ -238,8 +238,8 @@ Temuan yang mengubah desain PurrCode:
 
 ### 2.10 Weilin0723/PurrCode — referensi ke-14 (OS Sandboxing, AST Indexing, & egui Desktop IDE)
 
-Sumber: `Weilin0723/PurrCode` (v1.0.0, commit `156d832`, lisensi Apache-2.0, npm `@minaovo/purrcode`) → `references/.tmp/PurrCode/`.
-Workspace Rust monorepo dengan 34 crate, arsitektur enterprise-grade auditable coding agent ("Models propose, PawGate authorizes, Claw executes, Evidence decides").
+Sumber: `Weilin0723/PurrCode` (v1.0.0, commit `156d832`, lisensi Apache-2.0, npm `@minaovo/purrcode`). Analisis dilakukan langsung terhadap repositori publik GitHub (analisis jarak jauh/remote doc analysis, tanpa salinan clone lokal di folder `references/`).
+Workspace Rust monorepo dengan 32 crate, arsitektur enterprise-grade auditable coding agent ("Models propose, PawGate authorizes, Claw executes, Evidence decides").
 
 Temuan dan pola kunci untuk PurrCode AI:
 
@@ -251,7 +251,7 @@ Temuan dan pola kunci untuk PurrCode AI:
    - **Keputusan PurrCode AI:** Pola deteksi runtime `bwrap`/`sandbox-exec` ini diadopsi sebagai referensi implementasi utama untuk **Sprint Sandbox OS di Milestone v0.3**, menggantikan kebutuhan container Docker yang berat.
 
 2. **Code Intelligence Tanpa LSP via Tree-sitter AST:**
-   - Di `crates/whisker-context-engine`, repositori diindeks secara lokal menggunakan **`tree-sitter`** untuk 7 bahasa (Rust, Python, TypeScript, JavaScript, Go, Java, Kotlin) guna mengekstrak simbol (`struct`, `fn`, `impl`, `class`) ke index lokal.
+   - Di `crates/whisker-context-engine`, repositori diindeks secara lokal menggunakan **`tree-sitter`** untuk 6 bahasa (Rust, Python, TypeScript, JavaScript, Go, Java; catatan: Kotlin tidak disertakan) guna mengekstrak simbol (`struct`, `fn`, `impl`, `class`) ke index lokal.
    - **Keputusan PurrCode AI:** Mengadopsi pola AST indexing ini untuk memperkuat subagent **Whisker (Explorer)** di Milestone v0.3, melengkapi tool `grep` dan integrasi CodeGraph.
 
 3. **Native Desktop GUI IDE via `egui` / `eframe`:**
@@ -261,7 +261,7 @@ Temuan dan pola kunci untuk PurrCode AI:
 4. **Komparasi Filosofis & Trade-offs:**
    - *Multi-Agent vs Single-Agent:* PurrCode AI mengadopsi tim multi-agent terisolasi (*The Clowder*) dengan ID kontinuitas stabil dan file handoff untuk mencegah context-drift pada refactoring besar. `Weilin0723/PurrCode` memakai *single-agent* dengan state-machine reducer terpusat.
    - *Zero-Database vs SQLite WAL:* PurrCode AI mempertahankan komitmen **100% Markdown murni** (`MEMORY.md`, `USER.md`, `SOUL.md`) agar human-readable dan portable. `Weilin0723/PurrCode` mengandalkan SQLite database (`rusqlite`) untuk ledger audit dan event store.
-   - *In-Process vs Daemon Requirement:* PurrCode AI berjalan langsung sebagai single static binary (3.7 MB release) tanpa wajib menjalankan daemon latar terlebih dahulu.
+   - *In-Process vs Daemon Requirement:* PurrCode AI berjalan langsung sebagai single standalone binary (~3,7 MB Windows `.exe` / ~4,4 MiB Linux ELF) tanpa wajib menjalankan daemon latar terlebih dahulu.
 
 ## 3. Yang belum terjawab dari referensi (jujur)
 
@@ -274,6 +274,8 @@ Temuan dan pola kunci untuk PurrCode AI:
 6. Muse: provenance ekstraksi binary Muse Code tidak terverifikasi independen;
    tiga file harness ~1,1 MB (~18.500 baris) belum dibaca penuh; internal runtime
    Muse App (source/bobot) tidak teramati dan tidak diklaim.
+7. Weilin0723/PurrCode: dianalisis langsung dari repositori publik GitHub tanpa clone
+   lokal di folder `references/`; benchmark memori dan ukuran rilis riil belum diuji lokal.
 
 ## 4. Keputusan arsitektur yang diturunkan dari analisis ini
 

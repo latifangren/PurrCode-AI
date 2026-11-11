@@ -22,11 +22,11 @@ pub fn render(frame: &mut Frame, app: &TuiApp) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Top status bar
-                Constraint::Min(4),    // Transcript / Messages
-                Constraint::Length(8), // Approval Card Popup
-                Constraint::Length(1), // Subagent / Tool indicator bar
-                Constraint::Length(3), // Input area
+                Constraint::Length(1),  // Top status bar
+                Constraint::Min(4),     // Transcript / Messages
+                Constraint::Length(10), // Approval Card Popup (fits title, tool, diff, actions)
+                Constraint::Length(1),  // Subagent / Tool indicator bar
+                Constraint::Length(3),  // Input area
             ])
             .split(frame.area());
 
@@ -104,13 +104,13 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
     lines.push(Line::from(vec![
         Span::styled("Actions: ", Style::default().fg(TEXT_MUTED)),
         Span::styled(
-            "[a] Approve & Apply  ",
+            "[a]/[y] Approve & Apply  ",
             Style::default()
                 .fg(SUCCESS_GREEN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "[t] Reject / Deny    ",
+            "[t]/[n] Reject / Deny    ",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
         Span::styled("[e] Edit", Style::default().fg(ACCENT_ORANGE)),

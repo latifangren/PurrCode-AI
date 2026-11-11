@@ -118,10 +118,14 @@ fn run_loop<B: ratatui::backend::Backend>(
                     break;
                 }
 
-                // If approval card is active, intercept [a], [t], [e]
+                // If approval card is active, intercept [a]/[y]/Enter, [t]/[n]/Esc, [e]
                 if let Some(req) = app.pending_approval.take() {
                     match key.code {
-                        KeyCode::Char('a') | KeyCode::Char('A') => {
+                        KeyCode::Char('a')
+                        | KeyCode::Char('A')
+                        | KeyCode::Char('y')
+                        | KeyCode::Char('Y')
+                        | KeyCode::Enter => {
                             let _ = req.tx.send(true);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action approved by user.".to_string(),
@@ -129,7 +133,11 @@ fn run_loop<B: ratatui::backend::Backend>(
                             });
                             continue;
                         }
-                        KeyCode::Char('t') | KeyCode::Char('T') | KeyCode::Esc => {
+                        KeyCode::Char('t')
+                        | KeyCode::Char('T')
+                        | KeyCode::Char('n')
+                        | KeyCode::Char('N')
+                        | KeyCode::Esc => {
                             let _ = req.tx.send(false);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action rejected by user.".to_string(),

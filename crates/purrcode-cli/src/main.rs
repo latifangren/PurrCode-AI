@@ -594,15 +594,30 @@ fn resolve_target_model_or_exit(model_override: Option<String>, config: &Config)
     match model_override.or_else(|| config.model.clone()) {
         Some(m) => m,
         None => {
-            let mut found_model = None;
-            for (p_name, p_cfg) in &config.providers {
-                if let Some(m_key) = p_cfg.models.keys().next() {
-                    found_model = Some(format!("{}:{}", p_name, m_key));
-                    break;
+            // Collect all candidates deterministically
+            let mut candidates: Vec<String> = Vec::new();
+            let mut sorted_providers: Vec<_> = config.providers.iter().collect();
+            sorted_providers.sort_by_key(|(name, _)| (*name).clone());
+
+            for (p_name, p_cfg) in sorted_providers {
+                let mut sorted_models: Vec<_> = p_cfg.models.keys().collect();
+                sorted_models.sort();
+                for m_key in sorted_models {
+                    candidates.push(format!("{}:{}", p_name, m_key));
                 }
             }
 
-            match found_model {
+            // Prefer candidates marked primary, default, or main
+            let chosen = candidates
+                .iter()
+                .find(|c| {
+                    let lower = c.to_lowercase();
+                    lower.contains("primary") || lower.contains("default") || lower.contains("main")
+                })
+                .or_else(|| candidates.first())
+                .cloned();
+
+            match chosen {
                 Some(m) => m,
                 None => {
                     eprintln!("Error: No model configured.");
@@ -897,4 +912,76 @@ fn run_doctor(config: &Config, workspace_root: &std::path::Path) {
         }
     }
     println!("--------------------------------------------------");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use purrcode_config::{Config, ModelConfig, ProviderConfig};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_resolve_target_model_deterministic_priority() {
+        let mut config = Config::default();
+        let mut p_cfg = ProviderConfig {
+            api: "openai-completions".to_string(),
+            base_url: None,
+            api_key: None,
+            headers: HashMap::new(),
+            models: HashMap::new(),
+        };
+        p_cfg.models.insert(
+            "secondary-coder".to_string(),
+            ModelConfig {
+                name: Some("Secondary Coder".to_string()),
+                ..Default::default()
+            },
+        );
+        p_cfg.models.insert(
+            "primary-model".to_string(),
+            ModelConfig {
+                name: Some("Primary Model".to_string()),
+                ..Default::default()
+            },
+        );
+        config.providers.insert("custom".to_string(), p_cfg);
+
+        // Run multiple times - must deterministically select "custom:primary-model"
+        for _ in 0..10 {
+            let model = resolve_target_model_or_exit(None, &config);
+            assert_eq!(model, "custom:primary-model");
+        }
+    }
+
+    #[test]
+    fn test_resolve_target_model_deterministic_lexicographical_fallback() {
+        let mut config = Config::default();
+        let mut p1 = ProviderConfig {
+            api: "openai-completions".to_string(),
+            base_url: None,
+            api_key: None,
+            headers: HashMap::new(),
+            models: HashMap::new(),
+        };
+        p1.models.insert(
+            "zebra-coder".to_string(),
+            ModelConfig {
+                name: None,
+                ..Default::default()
+            },
+        );
+        p1.models.insert(
+            "alpha-coder".to_string(),
+            ModelConfig {
+                name: None,
+                ..Default::default()
+            },
+        );
+        config.providers.insert("my-provider".to_string(), p1);
+
+        for _ in 0..10 {
+            let model = resolve_target_model_or_exit(None, &config);
+            assert_eq!(model, "my-provider:alpha-coder");
+        }
+    }
 }
