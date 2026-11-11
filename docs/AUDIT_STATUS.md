@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-11 23:25:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 01:30:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
 - **Ukuran Binary Rilis Terverifikasi:** ✅ **3.7 MB** (`target/release/purrcode-ai.exe`), jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross`; binary development saat ini adalah native host
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (69 tests lolos, 0 failed di seluruh 12 crate)
+- **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross` & Windows Native Standalone Binary (`.exe`)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (74 tests lolos, 0 failed di seluruh 12 crate)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,7 +19,7 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 69 unit/integration tests hermetis. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 74 unit/integration tests hermetis. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
 | **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
@@ -96,11 +96,17 @@ Hasil pengujian otomatis per `2026-11-11 23:25:00 +07:00` (100% passing):
     - `openai::tests::test_openai_provider_endpoint_url_resolution`
     - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
     - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
-11. **`purrcode_service` (3 tests):**
+11. **`purrcode_service` (4 tests):**
     - `tests::test_service_unit_generators`
     - `tests::test_systemd_unit_dependencies_and_restart_policy`
     - `tests::test_openrc_init_shebang_and_network_dependency`
-12. **`purrcode_tools` (22 tests):**
+    - `tests::test_windows_task_script_generator` (Generator skrip PowerShell Task Scheduler Windows)
+12. **`purrcode_tools` (26 tests):**
+    - `execution::bash::tests::test_smart_truncate_output`
+    - `execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate` (Deteksi otomatis Git Bash di Windows)
+    - `execution::bash::tests::test_resolve_windows_shell_detects_path_bash` (Deteksi bash.exe di PATH lingkungan)
+    - `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell` (Fallback aman ke powershell.exe)
+    - `fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows` (Normalisasi prefix verbatim `\\?\` dan case-insensitivity Windows)
     - `web::webfetch::tests::test_utf8_safe_truncation`, `web::webfetch::tests::test_ssrf_blocking`
     - `web::websearch::tests::test_extract_snippets_and_encode`, `web::websearch::tests::test_websearch_propagates_network_error`
     - `coordination::ask::tests::test_ask_empty_options`, `coordination::ask::tests::test_ask_non_interactive`
@@ -117,6 +123,7 @@ Hasil pengujian otomatis per `2026-11-11 23:25:00 +07:00` (100% passing):
     - `fs::edit::tests::test_edit_fuzzy_whitespace_and_crlf_fallback`
     - `fs::edit::tests::test_find_match_range_rejects_ambiguity`
     - `search::glob::tests::test_glob_to_regex`
+    - `search::grep::tests::test_grep_basic_and_context_lines`
     - `search::grep::tests::test_grep_basic_and_context_lines`
     - `execution::bash::tests::test_smart_truncate_output`
 
@@ -154,6 +161,11 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
    - **Pencatatan Status Gagal (`failed`) di Registry:** Jika laporan subagent kosong atau gagal ditulis ke `result.md`, `TaskTool` memanggil `reg.record_failure` sebelum me-return error, sehingga status subagent di disk tersimpan sebagai `"failed"` (bukan tertinggal `"running"`).
    - **Penyaluran `workspace_root` ke Toolset Subagent Child:** `build_role_tools` meneruskan `Some(&ctx.workspace_root)` ke `ToolRegistry::with_defaults_and_options`, sehingga subagent Tinker dapat menemukan skill projek di `<workspace_root>/.purrcode/skills/` saat flag `-w` digunakan.
    - **Pengukuran Ukuran Binary Release Riil:** Kompilasi rilis `cargo build --release` menghasilkan binary ramping berukuran **3.7 MB** (`target/release/purrcode-ai.exe`), membuktikan terpenuhinya target non-fungsional PRD $\le 25$ MB. Ukuran ~128 MB sebelumnya adalah artefak debug unoptimized dengan simbol DWARF/PDB 182 crate.
+10. **Windows Non-WSL Bulletproof Architecture (Paritas Claude Code & Codex CLI):**
+    - **Smart Shell Detector (`crates/purrcode-tools/src/execution/bash.rs`):** Deteksi otomatis instalasi Git Bash di Windows (`C:\Program Files\Git\bin\bash.exe`, dsb., serta `bash.exe` di `%PATH%`). Menjalankan perintah dengan flag `-c` untuk memastikan kompatibilitas penuh skrip POSIX (piping, `grep`, forward-slash paths) dengan fallback transparan ke `powershell.exe -NoProfile -NonInteractive -Command` jika Git Bash tidak ditemukan. Metadata tool mencatat runtime shell aktif (`"shell": "git-bash"` atau `"shell": "powershell"`).
+    - **Normalisasi Prefix Verbatim Windows `\\?\` (`crates/purrcode-tools/src/fs/read.rs`):** Menghapus prefix verbatim `\\?\` dan `\\?\UNC\` yang dihasilkan oleh `std::fs::canonicalize` di Windows via `strip_verbatim_prefix`, serta menerapkan pembandingan path case-insensitive via `path_starts_with_confinement`. Mengeliminasi bug di mana path absolut Windows (misal `F:\project\...`) dianggap melanggar *workspace confinement* terhadap `\\?\F:\project\...`.
+    - **Windows Task Scheduler Service Installer (`crates/purrcode-service/src/lib.rs`):** Menambahkan fungsi `generate_windows_task_script` yang menghasilkan skrip otomatisasi PowerShell untuk mendaftarkan PurrCode AI gateway daemon sebagai *Scheduled Task* Windows (`Register-ScheduledTask`) dengan trigger `@AtLogOn` dan restart otomatis jika gagal. Subcommand `purrcode-ai service install` di Windows otomatis menghasilkan skrip ini.
+    - **Guard Codepage UTF-8 Konsol Windows (`crates/purrcode-cli/src/main.rs`):** Menginisialisasi konsol Windows ke codepage 65001 (`SetConsoleOutputCP(65001)` dan `SetConsoleCP(65001)`) pada saat startup, menjamin rendering Unicode, emoji, dan karakter grafis kotak TUI tampil jernih tanpa mojibake di CMD / PowerShell konvensional.
 
 ---
 

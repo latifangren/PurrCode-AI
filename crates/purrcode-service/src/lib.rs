@@ -36,13 +36,47 @@ depend() {
         .to_string()
     }
 
+    pub fn generate_windows_task_script(target_exe: Option<&str>) -> String {
+        let exe_path = target_exe.unwrap_or(r"C:\Program Files\PurrCode\purrcode-ai.exe");
+        format!(
+            r#"# PurrCode AI - Windows Scheduled Task Setup Script
+# Run this script in PowerShell to install the PurrCode AI gateway daemon:
+
+$TaskName = "PurrCodeAI_Gateway"
+$ExePath = "{exe_path}"
+
+if (-not (Test-Path $ExePath)) {{
+    $Resolved = (Get-Command purrcode-ai.exe -ErrorAction SilentlyContinue).Source
+    if ($Resolved) {{
+        $ExePath = $Resolved
+    }}
+}}
+
+$Action = New-ScheduledTaskAction -Execute $ExePath -Argument "gateway"
+$Trigger = New-ScheduledTaskTrigger -AtLogOn
+$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "PurrCode AI Gateway Background Daemon" -Force
+Write-Host "PurrCode AI Gateway task registered successfully. To run now: Start-ScheduledTask -TaskName '$TaskName'"
+"#
+        )
+    }
+
     pub fn status_report() -> String {
-        if std::path::Path::new("/etc/systemd/system/purrcode-ai.service").exists() {
-            "systemd unit installed at /etc/systemd/system/purrcode-ai.service".to_string()
-        } else if std::path::Path::new("/etc/init.d/purrcode-ai").exists() {
-            "OpenRC init script installed at /etc/init.d/purrcode-ai".to_string()
-        } else {
-            "not installed (run `purrcode-ai service install` to inspect unit)".to_string()
+        #[cfg(windows)]
+        {
+            "Windows host: run `purrcode-ai service install` to generate PowerShell Scheduled Task installer script".to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            if std::path::Path::new("/etc/systemd/system/purrcode-ai.service").exists() {
+                "systemd unit installed at /etc/systemd/system/purrcode-ai.service".to_string()
+            } else if std::path::Path::new("/etc/init.d/purrcode-ai").exists() {
+                "OpenRC init script installed at /etc/init.d/purrcode-ai".to_string()
+            } else {
+                "not installed (run `purrcode-ai service install` to inspect unit)".to_string()
+            }
         }
     }
 }
@@ -78,5 +112,16 @@ mod tests {
         assert!(init.starts_with("#!/sbin/openrc-run"));
         assert!(init.contains("pidfile=\"/run/purrcode-ai.pid\""));
         assert!(init.contains("need net"));
+    }
+
+    #[test]
+    fn test_windows_task_script_generator() {
+        let script =
+            ServiceInstaller::generate_windows_task_script(Some(r"C:\bin\purrcode-ai.exe"));
+        assert!(script.contains("PurrCodeAI_Gateway"));
+        assert!(script.contains(r"C:\bin\purrcode-ai.exe"));
+        assert!(script.contains("Register-ScheduledTask"));
+        assert!(script.contains("New-ScheduledTaskAction"));
+        assert!(script.contains("gateway"));
     }
 }

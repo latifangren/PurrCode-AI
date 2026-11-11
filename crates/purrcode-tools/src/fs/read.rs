@@ -142,28 +142,33 @@ pub fn resolve_confined_path(
     let canonical_root =
         std::fs::canonicalize(&abs_root).unwrap_or_else(|_| normalize_lexical(&abs_root));
 
+    let clean_root = strip_verbatim_prefix(&canonical_root);
+
     let p = Path::new(input_path);
     let candidate = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        canonical_root.join(p)
+        clean_root.join(p)
     };
 
     let normalized_candidate = normalize_lexical(&candidate);
-    if !normalized_candidate.starts_with(&canonical_root) {
+    let clean_candidate = strip_verbatim_prefix(&normalized_candidate);
+
+    if !path_starts_with_confinement(&clean_candidate, &clean_root) {
         return Err(PurrError::Tool {
             tool: tool_name.to_string(),
             message: format!(
                 "Workspace confinement violation: path '{}' resolves outside workspace root '{}'",
                 input_path,
-                canonical_root.display()
+                clean_root.display()
             ),
         });
     }
 
-    if normalized_candidate.exists() {
-        if let Ok(canon_target) = std::fs::canonicalize(&normalized_candidate) {
-            if !canon_target.starts_with(&canonical_root) {
+    if clean_candidate.exists() {
+        if let Ok(canon_target) = std::fs::canonicalize(&clean_candidate) {
+            let clean_target = strip_verbatim_prefix(&canon_target);
+            if !path_starts_with_confinement(&clean_target, &clean_root) {
                 return Err(PurrError::Tool {
                     tool: tool_name.to_string(),
                     message: format!(
@@ -172,11 +177,70 @@ pub fn resolve_confined_path(
                     ),
                 });
             }
-            return Ok(canon_target);
+            return Ok(clean_target);
         }
     }
 
-    Ok(normalized_candidate)
+    Ok(clean_candidate)
+}
+
+/// Strips Windows verbatim prefix `\\?\` or `\\?\UNC\` so paths compare consistently across APIs
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        let mut comps = path.components();
+        if let Some(Component::Prefix(p)) = comps.next() {
+            match p.kind() {
+                Prefix::VerbatimDisk(d) => {
+                    let disk_str = format!("{}:", d as char);
+                    let mut res = PathBuf::from(disk_str);
+                    for comp in comps {
+                        res.push(comp.as_os_str());
+                    }
+                    return res;
+                }
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut res = PathBuf::from(format!(
+                        r"\\{}\{}",
+                        server.to_string_lossy(),
+                        share.to_string_lossy()
+                    ));
+                    for comp in comps {
+                        res.push(comp.as_os_str());
+                    }
+                    return res;
+                }
+                _ => {}
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
+pub fn path_starts_with_confinement(path: &Path, prefix: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let clean_path = strip_verbatim_prefix(path);
+        let clean_prefix = strip_verbatim_prefix(prefix);
+        let p_comps: Vec<_> = clean_path.components().collect();
+        let pref_comps: Vec<_> = clean_prefix.components().collect();
+        if p_comps.len() < pref_comps.len() {
+            return false;
+        }
+        for (a, b) in p_comps.iter().zip(pref_comps.iter()) {
+            let a_str = a.as_os_str().to_string_lossy().to_lowercase();
+            let b_str = b.as_os_str().to_string_lossy().to_lowercase();
+            if a_str != b_str {
+                return false;
+            }
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(prefix)
+    }
 }
 
 pub fn resolve_path(input_path: &str, workspace_root: &Path) -> PathBuf {
@@ -243,5 +307,32 @@ mod tests {
         assert!(res.is_err());
 
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[test]
+    fn test_strip_verbatim_prefix_and_confinement_windows() {
+        #[cfg(windows)]
+        {
+            let verbatim = Path::new(r"\\?\C:\project\src\main.rs");
+            let clean = strip_verbatim_prefix(verbatim);
+            assert_eq!(clean, PathBuf::from(r"C:\project\src\main.rs"));
+
+            let root = Path::new(r"C:\project");
+            assert!(path_starts_with_confinement(verbatim, root));
+            assert!(path_starts_with_confinement(&clean, root));
+
+            // Case insensitivity test on Windows
+            let upper_candidate = Path::new(r"C:\PROJECT\SRC\MAIN.RS");
+            assert!(path_starts_with_confinement(upper_candidate, root));
+        }
+
+        #[cfg(not(windows))]
+        {
+            let unix_path = Path::new("/workspace/src/main.rs");
+            let clean = strip_verbatim_prefix(unix_path);
+            assert_eq!(clean, PathBuf::from("/workspace/src/main.rs"));
+            let root = Path::new("/workspace");
+            assert!(path_starts_with_confinement(unix_path, root));
+        }
     }
 }

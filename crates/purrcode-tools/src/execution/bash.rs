@@ -60,17 +60,25 @@ impl Tool for BashTool {
         let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(30_000).max(1000));
 
         #[cfg(windows)]
-        let mut cmd = {
-            let mut c = tokio::process::Command::new("powershell.exe");
-            c.args(["-NoProfile", "-NonInteractive", "-Command", &args.command]);
-            c
+        let (mut cmd, shell_name) = {
+            let (shell_prog, shell_flags, shell_kind) = detect_windows_shell();
+            let mut c = tokio::process::Command::new(&shell_prog);
+            for flag in &shell_flags {
+                c.arg(flag);
+            }
+            c.arg(&args.command);
+            let name = match shell_kind {
+                WindowsShellKind::GitBash => "git-bash",
+                WindowsShellKind::PowerShell => "powershell",
+            };
+            (c, name)
         };
 
         #[cfg(not(windows))]
-        let mut cmd = {
+        let (mut cmd, shell_name) = {
             let mut c = tokio::process::Command::new("sh");
             c.args(["-c", &args.command]);
-            c
+            (c, "sh")
         };
 
         cmd.current_dir(cwd);
@@ -116,7 +124,8 @@ impl Tool for BashTool {
                     metadata: Some(serde_json::json!({
                         "exit_code": exit_code,
                         "timed_out": false,
-                        "truncated": was_truncated
+                        "truncated": was_truncated,
+                        "shell": shell_name,
                     })),
                 })
             }
@@ -134,6 +143,69 @@ impl Tool for BashTool {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsShellKind {
+    GitBash,
+    PowerShell,
+}
+
+pub fn resolve_windows_shell_from_candidates<F>(
+    custom_candidates: &[&str],
+    path_env: Option<&str>,
+    file_exists: F,
+) -> (std::path::PathBuf, Vec<String>, WindowsShellKind)
+where
+    F: Fn(&std::path::Path) -> bool,
+{
+    // 1. Check known Git Bash locations
+    for candidate in custom_candidates {
+        let p = std::path::Path::new(candidate);
+        if file_exists(p) {
+            return (
+                p.to_path_buf(),
+                vec!["-c".to_string()],
+                WindowsShellKind::GitBash,
+            );
+        }
+    }
+
+    // 2. Check if bash.exe exists in PATH
+    if let Some(path_var) = path_env {
+        for entry in std::env::split_paths(path_var) {
+            let bash_p = entry.join("bash.exe");
+            if file_exists(&bash_p) {
+                return (bash_p, vec!["-c".to_string()], WindowsShellKind::GitBash);
+            }
+        }
+    }
+
+    // 3. Fallback to PowerShell
+    (
+        std::path::PathBuf::from("powershell.exe"),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+        ],
+        WindowsShellKind::PowerShell,
+    )
+}
+
+#[cfg(windows)]
+pub fn detect_windows_shell() -> (std::path::PathBuf, Vec<String>, WindowsShellKind) {
+    let git_bash_candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+    ];
+    resolve_windows_shell_from_candidates(
+        &git_bash_candidates,
+        std::env::var("PATH").ok().as_deref(),
+        |p| p.is_file(),
+    )
 }
 
 pub fn smart_truncate_output(text: &str, max_lines: usize, max_bytes: usize) -> (String, bool) {
@@ -203,5 +275,43 @@ mod tests {
             res.contains("[... output truncated: 90 lines omitted to preserve context window ...]")
         );
         assert!(res.contains("line 100"));
+    }
+
+    #[test]
+    fn test_resolve_windows_shell_detects_git_bash_candidate() {
+        let (prog, args, kind) =
+            resolve_windows_shell_from_candidates(&[r"C:\fake\Git\bin\bash.exe"], None, |p| {
+                p == std::path::Path::new(r"C:\fake\Git\bin\bash.exe")
+            });
+        assert_eq!(kind, WindowsShellKind::GitBash);
+        assert_eq!(prog, std::path::PathBuf::from(r"C:\fake\Git\bin\bash.exe"));
+        assert_eq!(args, vec!["-c"]);
+    }
+
+    #[test]
+    fn test_resolve_windows_shell_detects_path_bash() {
+        let (prog, args, kind) = resolve_windows_shell_from_candidates(
+            &[],
+            Some(r"C:\tools\bin;C:\msys64\usr\bin"),
+            |p| p == std::path::Path::new(r"C:\msys64\usr\bin\bash.exe"),
+        );
+        assert_eq!(kind, WindowsShellKind::GitBash);
+        assert_eq!(
+            prog,
+            std::path::PathBuf::from(r"C:\msys64\usr\bin\bash.exe")
+        );
+        assert_eq!(args, vec!["-c"]);
+    }
+
+    #[test]
+    fn test_resolve_windows_shell_falls_back_to_powershell() {
+        let (prog, args, kind) = resolve_windows_shell_from_candidates(
+            &[r"C:\Program Files\Git\bin\bash.exe"],
+            Some(r"C:\Windows\System32"),
+            |_| false, // Neither candidate nor path exists
+        );
+        assert_eq!(kind, WindowsShellKind::PowerShell);
+        assert_eq!(prog, std::path::PathBuf::from("powershell.exe"));
+        assert_eq!(args, vec!["-NoProfile", "-NonInteractive", "-Command"]);
     }
 }

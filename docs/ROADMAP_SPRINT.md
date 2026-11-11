@@ -1,8 +1,8 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi 100% (69 tests passing di seluruh 12 crate).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi 100% (74 tests passing di seluruh 12 crate).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
-- **Timestamp Audit:** `2026-11-11 23:25:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 01:30:00 +07:00`
 
 Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksak yang memverifikasinya di `cargo test --workspace`.
 
@@ -95,5 +95,9 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - Append-only JSONL, fork, export, dan compaction non-destruktif (`session::tests::test_session_append_fork_and_compact`).
 - [x] **9.1 Plugin Manager & Hook Veto (`crates/purrcode-plugin/` & `crates/purrcode-core/`)**
   - Parser `plugin.yaml` & default-deny secret (`tests::test_parse_plugin_yaml_and_default_deny_secrets`) serta veto `pre_tool_use` di `AgentLoop` (`loop_engine::tests::test_plugin_pre_tool_use_veto_blocks_execution`).
-- [x] **9.2 Service Unit Generators (`crates/purrcode-service/`)**
-  - Generator unit systemd & OpenRC untuk `purrcode-ai gateway` (`tests::test_service_unit_generators`).
+- [x] **9.2 Service Unit Generators & Windows Task Scheduler (`crates/purrcode-service/`)**
+  - Generator unit systemd, OpenRC, dan PowerShell Scheduled Task installer untuk Windows (`tests::test_service_unit_generators`, `tests::test_windows_task_script_generator`).
+- [x] **9.3 Windows Non-WSL Bulletproof Architecture (`crates/purrcode-tools/` & `crates/purrcode-cli/`)**
+  - Deteksi otomatis Git Bash di Windows dengan fallback transparan ke PowerShell (`execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate`, `execution::bash::tests::test_resolve_windows_shell_detects_path_bash`, `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell`).
+  - Normalisasi prefix verbatim Windows `\\?\` dan perbandingan case-insensitive (`fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows`).
+  - Guard codepage konsol Windows UTF-8 (`SetConsoleOutputCP(65001)`).

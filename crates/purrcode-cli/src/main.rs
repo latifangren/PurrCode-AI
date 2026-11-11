@@ -26,8 +26,24 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+#[cfg(windows)]
+fn init_windows_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleOutputCP(code_page_id: u32) -> i32;
+        fn SetConsoleCP(code_page_id: u32) -> i32;
+    }
+    unsafe {
+        let _ = SetConsoleOutputCP(65001);
+        let _ = SetConsoleCP(65001);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(windows)]
+    init_windows_console();
+
     let args = Cli::parse();
 
     // 1. Load configuration
@@ -154,11 +170,24 @@ async fn main() -> Result<()> {
             }
             Commands::Service { action } => {
                 match action.as_str() {
-                    "systemd" | "install" => {
+                    "systemd" => {
                         println!("{}", ServiceInstaller::generate_systemd_unit());
                     }
                     "openrc" => {
                         println!("{}", ServiceInstaller::generate_openrc_init());
+                    }
+                    "windows" | "task" => {
+                        println!("{}", ServiceInstaller::generate_windows_task_script(None));
+                    }
+                    "install" => {
+                        #[cfg(windows)]
+                        {
+                            println!("{}", ServiceInstaller::generate_windows_task_script(None));
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            println!("{}", ServiceInstaller::generate_systemd_unit());
+                        }
                     }
                     _ => {
                         println!("🐾 Service status: {}", ServiceInstaller::status_report());
