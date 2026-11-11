@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
-use purrcode_api::plugin::{Plugin, PluginCapabilities, PluginManifest, PluginTransport};
+use purrcode_api::plugin::{
+    Plugin, PluginCapabilities, PluginHookDispatcher, PluginManifest, PluginTransport,
+};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
@@ -97,6 +99,25 @@ impl PluginManager {
 impl Default for PluginManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl PluginHookDispatcher for PluginManager {
+    async fn dispatch_session_start(&self, session_id: &str) {
+        PluginManager::dispatch_session_start(self, session_id).await;
+    }
+
+    async fn dispatch_pre_tool_use(&self, tool: &str, args: &Value) -> bool {
+        PluginManager::dispatch_pre_tool_use(self, tool, args).await
+    }
+
+    async fn dispatch_post_tool_use(&self, tool: &str, result: &Value) {
+        PluginManager::dispatch_post_tool_use(self, tool, result).await;
+    }
+
+    async fn dispatch_session_stop(&self, session_id: &str) {
+        PluginManager::dispatch_session_stop(self, session_id).await;
     }
 }
 

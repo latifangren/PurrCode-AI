@@ -6,6 +6,7 @@ mod onboard;
 use clap::Parser;
 use cli::{Cli, Commands};
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::tool::{AuditSink, PolicyGate, ToolContext};
 use purrcode_approval::{ApprovalGate, AuditEntry, AuditLogger};
 use purrcode_channel::tui::AskOptionItem;
@@ -49,7 +50,7 @@ async fn main() -> Result<()> {
     if let Some(cmd) = args.command {
         match cmd {
             Commands::Onboard => {
-                onboard::run_interactive_onboard()?;
+                onboard::run_interactive_onboard().await?;
                 return Ok(());
             }
             Commands::Doctor => {
@@ -338,6 +339,10 @@ async fn main() -> Result<()> {
     let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
+    let mut plugin_mgr = PluginManager::new();
+    plugin_mgr.discover_all(&workspace_root);
+    let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
+
     let mut tool_registry = ToolRegistry::with_defaults_and_ask(Some(ask_requester.clone()));
     if !mode_preset.tools.is_empty() {
         tool_registry.retain(|name| {
@@ -350,6 +355,8 @@ async fn main() -> Result<()> {
         .await;
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+    plugin_dispatcher.dispatch_session_start(&session_id).await;
+
     let session_store = Arc::new(SessionStore::new(&purrcode_dir));
     if let (Ok(p_val), Ok(mp_val)) = (
         serde_json::to_value(&mode_preset),
@@ -368,9 +375,10 @@ async fn main() -> Result<()> {
         detail: format!("preset={} yolo={}", config.preset, args.yolo),
     });
 
+    let registry_arc = Arc::new(registry);
     let session_dir = session_store.session_dir(&session_id);
     let meowstro = if args.orchestrator {
-        Some(MeowstroOrchestrator::with_full_options(
+        Some(MeowstroOrchestrator::with_complete_options(
             provider.clone(),
             wire_model,
             &session_dir,
@@ -378,6 +386,10 @@ async fn main() -> Result<()> {
             Some(ask_requester.clone()),
             Some(approval_gate.clone()),
             Some(audit_sink.clone()),
+            Some(plugin_dispatcher.clone()),
+            model_preset.clone(),
+            Some(config.clone()),
+            Some(registry_arc),
             Some(steering_queue.clone()),
             Some(cancel_flag.clone()),
             args.yolo,
@@ -390,6 +402,7 @@ async fn main() -> Result<()> {
         .with_approval_requester(approval_requester)
         .with_policy_gate(policy_gate)
         .with_audit_sink(audit_sink)
+        .with_plugin_dispatcher(plugin_dispatcher.clone())
         .with_steering_queue(steering_queue)
         .with_cancel_flag(cancel_flag.clone())
         .with_yolo(args.yolo);
@@ -501,16 +514,18 @@ async fn main() -> Result<()> {
         }
     });
 
-    let app = purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id)
-        .with_model_preset(model_preset_name);
-    purrcode_channel::TuiRunner::run_with_controls(
+    let app =
+        purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id.clone())
+            .with_model_preset(model_preset_name);
+    let tui_res = purrcode_channel::TuiRunner::run_with_controls(
         app,
         Some(event_rx),
         Some(prompt_tx),
         Some(steer_tx),
         Some(cancel_flag),
-    )?;
-    Ok(())
+    );
+    plugin_dispatcher.dispatch_session_stop(&session_id).await;
+    tui_res
 }
 
 fn confirm_god_mode_if_needed(preset_name: &str) -> Result<()> {
@@ -640,6 +655,16 @@ async fn run_one_shot(
     let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
+    let mut plugin_mgr = PluginManager::new();
+    plugin_mgr.discover_all(&workspace_root);
+    let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
+
+    let model_preset_name = config
+        .model_preset
+        .clone()
+        .unwrap_or_else(|| "free".to_string());
+    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, &workspace_root).ok();
+
     let mut tool_registry = ToolRegistry::with_defaults();
     if !mode_preset.tools.is_empty() {
         tool_registry.retain(|name| {
@@ -652,6 +677,8 @@ async fn run_one_shot(
         .await;
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+    plugin_dispatcher.dispatch_session_start(&session_id).await;
+
     let session_store = SessionStore::new(&purrcode_dir);
     let session_dir = session_store.session_dir(&session_id);
 
@@ -673,8 +700,9 @@ async fn run_one_shot(
     };
 
     let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> = Arc::new(CliApprovalRequester);
+    let registry_arc = Arc::new(registry);
     let meowstro = if use_orchestrator {
-        Some(MeowstroOrchestrator::with_full_options(
+        Some(MeowstroOrchestrator::with_complete_options(
             provider.clone(),
             wire_model,
             &session_dir,
@@ -682,6 +710,10 @@ async fn run_one_shot(
             None,
             Some(approval_gate),
             Some(audit_sink.clone()),
+            Some(plugin_dispatcher.clone()),
+            model_preset,
+            Some(config.clone()),
+            Some(registry_arc),
             None,
             None,
             yolo,
@@ -694,6 +726,7 @@ async fn run_one_shot(
         .with_approval_requester(cli_approver)
         .with_policy_gate(policy_gate)
         .with_audit_sink(audit_sink)
+        .with_plugin_dispatcher(plugin_dispatcher.clone())
         .with_yolo(yolo);
 
     let mut in_reasoning = false;
@@ -768,6 +801,7 @@ async fn run_one_shot(
         println!();
     }
 
+    plugin_dispatcher.dispatch_session_stop(&session_id).await;
     Ok(())
 }
 

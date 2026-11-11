@@ -48,7 +48,8 @@ impl ToolRegistryExt for ToolRegistry {
         let _ = registry.register(Arc::new(WebsearchTool::new()));
 
         let mut skill_mgr = SkillManager::new();
-        skill_mgr.discover_all(&std::path::PathBuf::from("."));
+        let ws_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        skill_mgr.discover_all(&ws_root);
         let _ = registry.register(Arc::new(ReadSkillTool::new(Arc::new(Mutex::new(
             skill_mgr,
         )))));

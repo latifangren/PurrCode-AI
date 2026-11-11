@@ -6,9 +6,9 @@ pub mod task;
 
 pub use meowstro::MeowstroOrchestrator;
 pub use shadow::{parse_shadow_verdict, should_trigger_shadow, ShadowAuditor, ShadowVerdict};
-pub use task::TaskTool;
+pub use task::{format_validated_result_markdown, resolve_role_model_spec, TaskTool};
 
-use purrcode_api::error::Result;
+use purrcode_api::error::{PurrError, Result};
 use purrcode_api::provider::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -103,10 +103,9 @@ impl SubagentRegistry {
                 rec.status = "running".to_string();
                 rec.updated_at = now;
                 rec.brief = brief.to_string();
-                self.persist_record(&existing_id);
+                let _ = self.persist_record(&existing_id);
                 return existing_id;
             }
-            // Also check disk if session_dir has `<existing_id>.json`
             if let Some(sdir) = self.session_dir.clone() {
                 let rec_path = sdir.join("subagents").join(format!("{}.json", existing_id));
                 if rec_path.exists() {
@@ -115,7 +114,7 @@ impl SubagentRegistry {
                         rec.status = "running".to_string();
                         rec.updated_at = now;
                         rec.brief = brief.to_string();
-                        self.persist_record(&existing_id);
+                        let _ = self.persist_record(&existing_id);
                         return existing_id;
                     }
                 }
@@ -138,8 +137,8 @@ impl SubagentRegistry {
             brief: brief.to_string(),
         };
         self.records.insert(new_id.clone(), record);
-        self.persist_record(&new_id);
-        self.persist_workgraph();
+        let _ = self.persist_record(&new_id);
+        let _ = self.persist_workgraph();
         new_id
     }
 
@@ -147,15 +146,16 @@ impl SubagentRegistry {
         self.histories.remove(id).unwrap_or_default()
     }
 
-    pub fn save_history(&mut self, id: &str, messages: Vec<ChatMessage>) {
+    pub fn save_history(&mut self, id: &str, messages: Vec<ChatMessage>) -> Result<()> {
         if let Some(ref sdir) = self.session_dir {
             let sub_dir = sdir.join("subagents").join(id);
-            let _ = std::fs::create_dir_all(&sub_dir);
-            if let Ok(serialized) = serde_json::to_string_pretty(&messages) {
-                let _ = std::fs::write(sub_dir.join("history.json"), serialized.as_bytes());
-            }
+            std::fs::create_dir_all(&sub_dir).map_err(PurrError::Io)?;
+            let serialized = serde_json::to_string_pretty(&messages)?;
+            std::fs::write(sub_dir.join("history.json"), serialized.as_bytes())
+                .map_err(PurrError::Io)?;
         }
         self.histories.insert(id.to_string(), messages);
+        Ok(())
     }
 
     pub fn record_result(&mut self, id: &str, result: &str) -> Result<()> {
@@ -163,11 +163,27 @@ impl SubagentRegistry {
             record.status = "done".to_string();
             record.updated_at = chrono::Utc::now().to_rfc3339();
             record.summary = Some(result.to_string());
-            self.persist_record(id);
-            self.persist_workgraph();
+            self.persist_record(id)?;
+            self.persist_workgraph()?;
             Ok(())
         } else {
-            Err(purrcode_api::PurrError::Subagent {
+            Err(PurrError::Subagent {
+                id: id.to_string(),
+                message: "Subagent record not found".to_string(),
+            })
+        }
+    }
+
+    pub fn record_failure(&mut self, id: &str, status: &str, reason: &str) -> Result<()> {
+        if let Some(record) = self.records.get_mut(id) {
+            record.status = status.to_string();
+            record.updated_at = chrono::Utc::now().to_rfc3339();
+            record.summary = Some(reason.to_string());
+            self.persist_record(id)?;
+            self.persist_workgraph()?;
+            Ok(())
+        } else {
+            Err(PurrError::Subagent {
                 id: id.to_string(),
                 message: "Subagent record not found".to_string(),
             })
@@ -182,20 +198,20 @@ impl SubagentRegistry {
         self.records.values().collect()
     }
 
-    fn persist_record(&self, id: &str) {
+    fn persist_record(&self, id: &str) -> Result<()> {
         if let (Some(ref sdir), Some(rec)) = (&self.session_dir, self.records.get(id)) {
             let sub_dir = sdir.join("subagents");
-            let _ = std::fs::create_dir_all(&sub_dir);
+            std::fs::create_dir_all(&sub_dir).map_err(PurrError::Io)?;
             let json_path = sub_dir.join(format!("{}.json", id));
-            if let Ok(json_str) = serde_json::to_string_pretty(rec) {
-                let _ = std::fs::write(json_path, json_str.as_bytes());
-            }
+            let json_str = serde_json::to_string_pretty(rec)?;
+            std::fs::write(json_path, json_str.as_bytes()).map_err(PurrError::Io)?;
         }
+        Ok(())
     }
 
-    fn persist_workgraph(&self) {
+    fn persist_workgraph(&self) -> Result<()> {
         if let Some(ref sdir) = self.session_dir {
-            let _ = std::fs::create_dir_all(sdir);
+            std::fs::create_dir_all(sdir).map_err(PurrError::Io)?;
             let mut nodes: Vec<WorkgraphNode> = self
                 .records
                 .values()
@@ -208,10 +224,11 @@ impl SubagentRegistry {
                 .collect();
             nodes.sort_by(|a, b| a.id.cmp(&b.id));
             let wg = Workgraph { nodes };
-            if let Ok(json_str) = serde_json::to_string_pretty(&wg) {
-                let _ = std::fs::write(sdir.join("workgraph.json"), json_str.as_bytes());
-            }
+            let json_str = serde_json::to_string_pretty(&wg)?;
+            std::fs::write(sdir.join("workgraph.json"), json_str.as_bytes())
+                .map_err(PurrError::Io)?;
         }
+        Ok(())
     }
 }
 

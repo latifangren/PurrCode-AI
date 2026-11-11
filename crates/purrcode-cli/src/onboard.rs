@@ -7,8 +7,64 @@ use purrcode_config::{Config, ModelConfig, ProviderConfig, MIN_CONTEXT_WINDOW};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-pub fn run_interactive_onboard() -> Result<()> {
+/// Validates that `base_url` is a valid HTTP(S) URL and is reachable over the network.
+pub async fn validate_endpoint_connectivity(base_url: &str, api_key: Option<&str>) -> Result<()> {
+    let mut normalized = base_url.trim().to_string();
+    if normalized.ends_with('/') {
+        normalized.pop();
+    }
+
+    let parsed = reqwest::Url::parse(&normalized).map_err(|e| {
+        PurrError::Config(format!("Invalid endpoint base_url '{}': {}", base_url, e))
+    })?;
+
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(PurrError::Config(format!(
+            "Unsupported scheme '{}' in base_url (expected http or https)",
+            parsed.scheme()
+        )));
+    }
+
+    let probe_url = if normalized.ends_with("/v1") {
+        format!("{}/models", normalized)
+    } else {
+        format!("{}/v1/models", normalized)
+    };
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| PurrError::Config(format!("Failed to build HTTP client: {e}")))?;
+
+    let mut req = client.get(&probe_url);
+    if let Some(key) = api_key {
+        if !key.trim().is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        PurrError::Config(format!(
+            "Endpoint connectivity validation failed for '{}': {}",
+            base_url, e
+        ))
+    })?;
+
+    if resp.status().is_server_error() {
+        return Err(PurrError::Config(format!(
+            "Endpoint '{}' returned server error HTTP {}",
+            base_url,
+            resp.status()
+        )));
+    }
+
+    Ok(())
+}
+
+pub async fn run_interactive_onboard() -> Result<()> {
     println!("🐾 Welcome to PurrCode AI Onboarding.");
     println!(
         "(PurrCode AI has zero hardcoded endpoints or models — configure your provider below)"
@@ -89,6 +145,17 @@ pub fn run_interactive_onboard() -> Result<()> {
     } else {
         "tabby"
     };
+
+    // Validate connectivity to the endpoint before writing configuration
+    validate_endpoint_connectivity(
+        &base_url,
+        if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key.as_str())
+        },
+    )
+    .await?;
 
     let purrcode_dir = get_purrcode_dir()?;
     std::fs::create_dir_all(&purrcode_dir).map_err(PurrError::Io)?;
@@ -248,6 +315,17 @@ fn dirs_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_validate_endpoint_connectivity_rejects_dead_endpoint() {
+        // Unreachable port 9 must fail connectivity validation
+        let res = validate_endpoint_connectivity("http://127.0.0.1:9/v1", None).await;
+        assert!(res.is_err());
+
+        // Malformed URL or non-HTTP scheme must fail
+        let bad_scheme = validate_endpoint_connectivity("ftp://example.com/v1", None).await;
+        assert!(bad_scheme.is_err());
+    }
 
     #[test]
     fn test_save_credential_safe() {

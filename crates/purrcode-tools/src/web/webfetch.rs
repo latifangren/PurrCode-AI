@@ -6,7 +6,7 @@ use purrcode_api::error::{PurrError, Result};
 use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
 use reqwest::Url;
 use serde::Deserialize;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 
 const MAX_STREAM_BYTES: usize = 1_048_576; // 1 MB safety ceiling to prevent OOM
@@ -86,6 +86,7 @@ impl Tool for WebfetchTool {
         })?;
 
         validate_destination(&parsed_url)?;
+        validate_dns_lookup_async(&parsed_url).await?;
 
         let resp = self
             .client
@@ -185,7 +186,8 @@ pub fn validate_destination(url: &Url) -> Result<()> {
         });
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    let clean_host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = clean_host.parse::<IpAddr>() {
         if is_private_or_restricted_ip(ip) {
             return Err(PurrError::Tool {
                 tool: "webfetch".to_string(),
@@ -195,8 +197,46 @@ pub fn validate_destination(url: &Url) -> Result<()> {
                 ),
             });
         }
+        return Ok(());
     }
 
+    // Resolve hostname via OS DNS and reject if any resolved address is private/loopback (DNS-rebinding mitigation;
+    // residual TOCTOU between DNS check and socket connect is mitigated by re-validating on every redirect hop).
+    let port = url.port_or_known_default().unwrap_or(80);
+    if let Ok(addrs) = (clean_host, port).to_socket_addrs() {
+        validate_resolved_ips(&host, addrs.map(|a| a.ip()))?;
+    }
+
+    Ok(())
+}
+
+pub async fn validate_dns_lookup_async(url: &Url) -> Result<()> {
+    let Some(host) = url.host_str() else {
+        return Ok(());
+    };
+    let clean_host = host.trim_start_matches('[').trim_end_matches(']');
+    if clean_host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    if let Ok(addrs) = tokio::net::lookup_host((clean_host, port)).await {
+        validate_resolved_ips(clean_host, addrs.map(|a| a.ip()))?;
+    }
+    Ok(())
+}
+
+pub fn validate_resolved_ips(host: &str, ips: impl IntoIterator<Item = IpAddr>) -> Result<()> {
+    for ip in ips {
+        if is_private_or_restricted_ip(ip) {
+            return Err(PurrError::Tool {
+                tool: "webfetch".to_string(),
+                message: format!(
+                    "DNS resolution for host '{}' returned restricted/private IP '{}' (DNS-rebinding blocked).",
+                    host, ip
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -290,6 +330,16 @@ mod tests {
         assert!(
             validate_destination(&Url::parse("https://crates.io/api/v1/crates").unwrap()).is_ok()
         );
+
+        // DNS-rebinding check: if a domain resolves to any private/loopback IP, reject it
+        let rebind_ips = vec![
+            "93.184.216.34".parse::<IpAddr>().unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap(),
+        ];
+        assert!(validate_resolved_ips("evil-rebind.example.com", rebind_ips).is_err());
+
+        let public_ips = vec!["93.184.216.34".parse::<IpAddr>().unwrap()];
+        assert!(validate_resolved_ips("example.com", public_ips).is_ok());
     }
 
     #[test]

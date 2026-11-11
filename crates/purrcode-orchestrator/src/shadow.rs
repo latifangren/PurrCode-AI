@@ -60,7 +60,7 @@ pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
 /// Determines whether Tuxeshadow's narrow event-driven trigger fires for a delegation (ADR-012):
 /// 1. Mandatory on cron jobs (`is_cron`).
 /// 2. Mandatory on recovery replans after error (`is_replan`).
-/// 3. Destructive / high-risk implementation briefs (`rm`, `delete`, `reset --hard`, `../`, outside workspace).
+/// 3. Destructive / high-risk implementation briefs or explicit plan/diff review.
 pub fn should_trigger_shadow(role: &str, raw_brief: &str, is_cron: bool, is_replan: bool) -> bool {
     if role == "tuxeshadow" || role == "whisker" || role == "sphinx" || role == "clowder" {
         return false;
@@ -81,6 +81,8 @@ pub fn should_trigger_shadow(role: &str, raw_brief: &str, is_cron: bool, is_repl
         "/etc/",
         "overwrite",
         "destructive",
+        "plan_json:",
+        "diff_preview:",
     ];
     risky_markers.iter().any(|m| lower.contains(m))
 }
@@ -88,6 +90,7 @@ pub fn should_trigger_shadow(role: &str, raw_brief: &str, is_cron: bool, is_repl
 pub struct ShadowAuditor {
     provider: Arc<dyn ModelProvider>,
     model: String,
+    reasoning_effort: Option<String>,
     guardrail: GuardrailMode,
     audit_sink: Option<Arc<dyn AuditSink>>,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
@@ -102,10 +105,19 @@ impl ShadowAuditor {
         Self {
             provider,
             model: model.into(),
+            // ADR-012 §7: Tuxeshadow defaults to high reasoning effort
+            reasoning_effort: Some("high".to_string()),
             guardrail,
             audit_sink: None,
             approval_requester: None,
         }
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        if effort.is_some() {
+            self.reasoning_effort = effort;
+        }
+        self
     }
 
     pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
@@ -118,7 +130,7 @@ impl ShadowAuditor {
         self
     }
 
-    /// Evaluates raw brief/artifact with Tuxeshadow (read-only toolset, no `task` tool)
+    /// Evaluates raw brief, plan JSON, and diff artifacts with Tuxeshadow (read-only toolset, no `task` tool)
     pub async fn audit_raw_artifact(
         &self,
         raw_artifact: &str,
@@ -131,8 +143,9 @@ impl ShadowAuditor {
         let _ = reg.register(Arc::new(purrcode_tools::search::FindTool));
         reg.freeze();
 
-        let loop_engine =
-            AgentLoop::new(self.provider.clone(), &self.model, Arc::new(reg)).with_max_steps(5);
+        let loop_engine = AgentLoop::new(self.provider.clone(), &self.model, Arc::new(reg))
+            .with_max_steps(5)
+            .with_reasoning_effort(self.reasoning_effort.clone());
 
         let sys_prompt = include_str!("../../../agents/tuxeshadow.md");
         let shadow_ctx = ToolContext {
@@ -143,7 +156,7 @@ impl ShadowAuditor {
         };
 
         let prompt = format!(
-            "Audit this raw delegation artifact before execution. Reply starting with APPROVE, APPROVE_WITH_NOTES: <notes>, or OBJECT: <reason>.\n\n---\n{}\n---",
+            "Audit this raw delegation artifact (brief, plan JSON, and/or diff) before execution. Reply starting with APPROVE, APPROVE_WITH_NOTES: <notes>, or OBJECT: <reason>.\n\n---\n{}\n---",
             raw_artifact
         );
 
@@ -155,7 +168,7 @@ impl ShadowAuditor {
     }
 
     /// Enforces a `ShadowVerdict` according to the active `GuardrailMode` (ADR-012):
-    /// - `Strict` (`carrier`): `Object` blocks execution unless approved by user.
+    /// - `Strict` (`carrier`): `Object` blocks execution unless approved by user (with raw artifact preview).
     /// - `Default` (`tabby`): `Object` is advisory; if `override_reason` is supplied, logs `⚠ [shadow overridden]` and proceeds; otherwise returns advisory objection.
     /// - `God` (`oyen`): silent audit log only; never blocks.
     pub async fn enforce_verdict(
@@ -163,6 +176,17 @@ impl ShadowAuditor {
         verdict: &ShadowVerdict,
         session_id: &str,
         override_reason: Option<&str>,
+    ) -> Result<Option<String>> {
+        self.enforce_verdict_with_preview(verdict, session_id, override_reason, None)
+            .await
+    }
+
+    pub async fn enforce_verdict_with_preview(
+        &self,
+        verdict: &ShadowVerdict,
+        session_id: &str,
+        override_reason: Option<&str>,
+        raw_preview: Option<&str>,
     ) -> Result<Option<String>> {
         match verdict {
             ShadowVerdict::Approve => {
@@ -242,13 +266,13 @@ impl ShadowAuditor {
                     }
                 }
                 GuardrailMode::Strict => {
-                    // Carrier (Strict): objection blocks unless user explicitly approves
+                    // Carrier (Strict): objection blocks unless user explicitly approves with preview
                     if let Some(ref req) = self.approval_requester {
                         let approved = req
                             .request_approval(
                                 "tuxeshadow",
                                 &format!("Tuxeshadow OBJECTED in Strict mode: {}", reason),
-                                None,
+                                raw_preview.or(Some(reason.as_str())),
                             )
                             .await;
                         if approved {
@@ -388,7 +412,12 @@ mod tests {
         let strict_auditor = ShadowAuditor::new(provider.clone(), "m", GuardrailMode::Strict)
             .with_audit_sink(sink.clone());
         assert!(strict_auditor
-            .enforce_verdict(&objection, "s1", Some("try override"))
+            .enforce_verdict_with_preview(
+                &objection,
+                "s1",
+                Some("try override"),
+                Some("--- a/src/auth.rs\n+++ b/src/auth.rs")
+            )
             .await
             .is_err());
 

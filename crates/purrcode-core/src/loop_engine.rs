@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallDelta, ToolCallRequest,
 };
@@ -31,9 +32,12 @@ pub struct AgentLoop {
     model: String,
     tool_registry: Arc<ToolRegistry>,
     max_steps: usize,
+    temperature: Option<f32>,
+    reasoning_effort: Option<String>,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
     policy_gate: Option<Arc<dyn PolicyGate>>,
     audit_sink: Option<Arc<dyn AuditSink>>,
+    plugin_dispatcher: Option<Arc<dyn PluginHookDispatcher>>,
     is_yolo: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
     steering_queue: Option<SteeringQueue>,
@@ -50,9 +54,12 @@ impl AgentLoop {
             model: model.into(),
             tool_registry,
             max_steps: 25,
+            temperature: Some(0.2),
+            reasoning_effort: None,
             approval_requester: None,
             policy_gate: None,
             audit_sink: None,
+            plugin_dispatcher: None,
             is_yolo: false,
             cancel_flag: None,
             steering_queue: None,
@@ -61,6 +68,18 @@ impl AgentLoop {
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
+        if temperature.is_some() {
+            self.temperature = temperature;
+        }
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 
@@ -76,6 +95,11 @@ impl AgentLoop {
 
     pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
         self.audit_sink = Some(sink);
+        self
+    }
+
+    pub fn with_plugin_dispatcher(mut self, dispatcher: Arc<dyn PluginHookDispatcher>) -> Self {
+        self.plugin_dispatcher = Some(dispatcher);
         self
     }
 
@@ -175,9 +199,9 @@ impl AgentLoop {
                 model: self.model.clone(),
                 messages: messages.clone(),
                 tools: Some(self.tool_registry.list()),
-                temperature: Some(0.2),
+                temperature: self.temperature,
                 max_tokens: None,
-                reasoning_effort: None,
+                reasoning_effort: self.reasoning_effort.clone(),
                 stop: None,
             };
 
@@ -284,99 +308,135 @@ impl AgentLoop {
                     let args_val: serde_json::Value =
                         serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
 
-                    let def = tool.definition();
-                    let outside_ws = is_args_outside_workspace(&args_val, &ctx.workspace_root);
-
-                    // Evaluate via wired PolicyGate (ApprovalGate) or default tier check
-                    let gate_decision = if self.is_yolo && !outside_ws {
-                        ApprovalDecision::Allow
-                    } else if let Some(ref gate) = self.policy_gate {
-                        gate.evaluate_tool(&tool_name, def.tier, outside_ws)
-                    } else if matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec)
-                        || outside_ws
-                    {
-                        ApprovalDecision::Ask
+                    // 1. Dispatch `pre_tool_use` plugin hook (can veto execution)
+                    let plugin_allowed = if let Some(ref pd) = self.plugin_dispatcher {
+                        pd.dispatch_pre_tool_use(&tool_name, &args_val).await
                     } else {
-                        ApprovalDecision::Allow
+                        true
                     };
 
-                    let is_approved = match gate_decision {
-                        ApprovalDecision::Allow => {
-                            self.record_audit(
-                                ctx,
-                                "tool_call",
-                                Some(&tool_name),
-                                "allow",
-                                &args_str,
-                            );
-                            true
-                        }
-                        ApprovalDecision::Deny => {
-                            self.record_audit(
-                                ctx,
-                                "tool_call",
-                                Some(&tool_name),
-                                "deny",
-                                &args_str,
-                            );
-                            false
-                        }
-                        ApprovalDecision::Ask => {
-                            if let Some(ref req) = self.approval_requester {
-                                let mut dry_ctx = ctx.clone();
-                                dry_ctx.is_dry_run = true;
-                                let preview = match tool.execute(args_val.clone(), &dry_ctx).await {
-                                    Ok(dry_res) => dry_res.diff_preview,
-                                    Err(_) => None,
-                                };
-                                let user_ok = req
-                                    .request_approval(
-                                        &tool_name,
-                                        &format!("Run tool '{}'", tool_name),
-                                        preview.as_deref(),
-                                    )
-                                    .await;
-                                self.record_audit(
-                                    ctx,
-                                    "tool_approval",
-                                    Some(&tool_name),
-                                    if user_ok {
-                                        "approved_by_user"
-                                    } else {
-                                        "denied_by_user"
-                                    },
-                                    &args_str,
-                                );
-                                user_ok
-                            } else {
-                                // Supervised fail-closed! If no approval requester is wired, deny destructive actions.
-                                self.record_audit(
-                                    ctx,
-                                    "tool_approval",
-                                    Some(&tool_name),
-                                    "denied_fail_closed",
-                                    &args_str,
-                                );
-                                false
-                            }
-                        }
-                    };
-
-                    if !is_approved {
+                    if !plugin_allowed {
+                        self.record_audit(
+                            ctx,
+                            "plugin_hook",
+                            Some(&tool_name),
+                            "vetoed_by_plugin",
+                            &args_str,
+                        );
                         (
                             format!(
-                                "Action denied by approval policy: execution of '{}' was rejected.",
+                                "Action vetoed by pre_tool_use plugin hook for tool '{}'.",
                                 tool_name
                             ),
                             false,
                         )
                     } else {
-                        match tool.execute(args_val, ctx).await {
-                            Ok(res) => (res.output, true),
-                            Err(e) => (
-                                format!("Error executing tool '{}': {}", tool_name, e),
-                                false,
-                            ),
+                        let def = tool.definition();
+                        let outside_ws = is_args_outside_workspace(&args_val, &ctx.workspace_root);
+
+                        // 2. Evaluate via wired PolicyGate (ApprovalGate) or default tier check
+                        let gate_decision = if self.is_yolo && !outside_ws {
+                            ApprovalDecision::Allow
+                        } else if let Some(ref gate) = self.policy_gate {
+                            gate.evaluate_tool(&tool_name, def.tier, outside_ws)
+                        } else if matches!(def.tier, ApprovalTier::Write | ApprovalTier::Exec)
+                            || outside_ws
+                        {
+                            ApprovalDecision::Ask
+                        } else {
+                            ApprovalDecision::Allow
+                        };
+
+                        let is_approved = match gate_decision {
+                            ApprovalDecision::Allow => {
+                                self.record_audit(
+                                    ctx,
+                                    "tool_call",
+                                    Some(&tool_name),
+                                    "allow",
+                                    &args_str,
+                                );
+                                true
+                            }
+                            ApprovalDecision::Deny => {
+                                self.record_audit(
+                                    ctx,
+                                    "tool_call",
+                                    Some(&tool_name),
+                                    "deny",
+                                    &args_str,
+                                );
+                                false
+                            }
+                            ApprovalDecision::Ask => {
+                                if let Some(ref req) = self.approval_requester {
+                                    let mut dry_ctx = ctx.clone();
+                                    dry_ctx.is_dry_run = true;
+                                    let preview =
+                                        match tool.execute(args_val.clone(), &dry_ctx).await {
+                                            Ok(dry_res) => dry_res.diff_preview,
+                                            Err(_) => None,
+                                        };
+                                    let user_ok = req
+                                        .request_approval(
+                                            &tool_name,
+                                            &format!("Run tool '{}'", tool_name),
+                                            preview.as_deref(),
+                                        )
+                                        .await;
+                                    self.record_audit(
+                                        ctx,
+                                        "tool_approval",
+                                        Some(&tool_name),
+                                        if user_ok {
+                                            "approved_by_user"
+                                        } else {
+                                            "denied_by_user"
+                                        },
+                                        &args_str,
+                                    );
+                                    user_ok
+                                } else {
+                                    // Supervised fail-closed! If no approval requester is wired, deny destructive actions.
+                                    self.record_audit(
+                                        ctx,
+                                        "tool_approval",
+                                        Some(&tool_name),
+                                        "denied_fail_closed",
+                                        &args_str,
+                                    );
+                                    false
+                                }
+                            }
+                        };
+
+                        if !is_approved {
+                            (
+                                    format!(
+                                        "Action denied by approval policy: execution of '{}' was rejected.",
+                                        tool_name
+                                    ),
+                                    false,
+                                )
+                        } else {
+                            let exec_res = match tool.execute(args_val, ctx).await {
+                                Ok(res) => (res.output, true),
+                                Err(e) => (
+                                    format!("Error executing tool '{}': {}", tool_name, e),
+                                    false,
+                                ),
+                            };
+                            if let Some(ref pd) = self.plugin_dispatcher {
+                                pd.dispatch_post_tool_use(
+                                    &tool_name,
+                                    &serde_json::json!({
+                                        "output": exec_res.0,
+                                        "success": exec_res.1
+                                    }),
+                                )
+                                .await;
+                            }
+                            exec_res
                         }
                     }
                 } else {
@@ -415,9 +475,9 @@ impl AgentLoop {
                 model: self.model.clone(),
                 messages: messages.clone(),
                 tools: None,
-                temperature: Some(0.2),
+                temperature: self.temperature,
                 max_tokens: None,
-                reasoning_effort: None,
+                reasoning_effort: self.reasoning_effort.clone(),
                 stop: None,
             };
             if let Ok(mut stream) = self.provider.stream_completion(final_req).await {
@@ -503,15 +563,38 @@ fn is_args_outside_workspace(args: &serde_json::Value, workspace_root: &Path) ->
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(workspace_root)
     };
-    let canon_root = normalize_lexical(&abs_root);
+    let canon_root =
+        std::fs::canonicalize(&abs_root).unwrap_or_else(|_| normalize_lexical(&abs_root));
     let p = Path::new(raw);
-    let candidate = if p.is_absolute() {
-        normalize_lexical(p)
+    let raw_candidate = if p.is_absolute() {
+        p.to_path_buf()
     } else {
-        normalize_lexical(&canon_root.join(p))
+        canon_root.join(p)
     };
 
-    !candidate.starts_with(&canon_root)
+    let normalized = normalize_lexical(&raw_candidate);
+    if !normalized.starts_with(&canon_root) {
+        return true;
+    }
+
+    // Resolve symlinks on existing target or parent directory to prevent symlink escape
+    if normalized.exists() {
+        if let Ok(canon_target) = std::fs::canonicalize(&normalized) {
+            if !canon_target.starts_with(&canon_root) {
+                return true;
+            }
+        }
+    } else if let Some(parent) = normalized.parent() {
+        if parent.exists() {
+            if let Ok(canon_parent) = std::fs::canonicalize(parent) {
+                if !canon_parent.starts_with(&canon_root) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -607,6 +690,17 @@ mod tests {
         ) -> ApprovalDecision {
             ApprovalDecision::Deny
         }
+    }
+
+    struct VetoPluginDispatcher;
+    #[async_trait]
+    impl PluginHookDispatcher for VetoPluginDispatcher {
+        async fn dispatch_session_start(&self, _session_id: &str) {}
+        async fn dispatch_pre_tool_use(&self, _tool: &str, _args: &serde_json::Value) -> bool {
+            false
+        }
+        async fn dispatch_post_tool_use(&self, _tool: &str, _result: &serde_json::Value) {}
+        async fn dispatch_session_stop(&self, _session_id: &str) {}
     }
 
     struct SingleToolTurnProvider {
@@ -727,5 +821,45 @@ mod tests {
         assert!(history
             .iter()
             .any(|m| m.role == MessageRole::Tool && m.content.contains("Action denied")));
+    }
+
+    #[tokio::test]
+    async fn test_plugin_pre_tool_use_veto_blocks_execution() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DryRunMockTool)).unwrap();
+        let decisions = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(CaptureAuditSink {
+            decisions: decisions.clone(),
+        });
+        let provider = Arc::new(SingleToolTurnProvider {
+            step: AtomicBool::new(false),
+        });
+
+        let engine = AgentLoop::new(provider, "m", Arc::new(reg))
+            .with_plugin_dispatcher(Arc::new(VetoPluginDispatcher))
+            .with_audit_sink(sink)
+            .with_yolo(true);
+        let ctx = ToolContext {
+            session_id: "s1".to_string(),
+            agent_role: "tinker".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            is_dry_run: false,
+        };
+
+        let mut history = Vec::new();
+        let _ = engine
+            .run_turn_with_history(&mut history, "write file", None, &ctx, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            decisions.lock().unwrap()[0],
+            (
+                "plugin_hook:write_mock".to_string(),
+                "vetoed_by_plugin".to_string()
+            )
+        );
+        assert!(history
+            .iter()
+            .any(|m| m.role == MessageRole::Tool && m.content.contains("vetoed by pre_tool_use")));
     }
 }

@@ -5,10 +5,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::ModelProvider;
 use purrcode_api::tool::AuditSink;
 use purrcode_approval::ApprovalGate;
+use purrcode_config::{Config, ModelPreset};
 use purrcode_core::{AgentLoop, ApprovalRequester, SteeringQueue};
+use purrcode_provider::ProviderRegistry;
 use purrcode_tools::{AskRequester, ToolRegistry};
 
 use crate::task::TaskTool;
@@ -63,11 +66,47 @@ impl MeowstroOrchestrator {
         cancel_flag: Option<Arc<AtomicBool>>,
         yolo: bool,
     ) -> Self {
+        Self::with_complete_options(
+            provider,
+            model,
+            session_dir,
+            approval_requester,
+            ask_requester,
+            approval_gate,
+            audit_sink,
+            None,
+            None,
+            None,
+            None,
+            steering_queue,
+            cancel_flag,
+            yolo,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_complete_options(
+        provider: Arc<dyn ModelProvider>,
+        model: impl Into<String>,
+        session_dir: impl Into<PathBuf>,
+        approval_requester: Option<Arc<dyn ApprovalRequester>>,
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        approval_gate: Option<Arc<ApprovalGate>>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+        plugin_dispatcher: Option<Arc<dyn PluginHookDispatcher>>,
+        model_preset: Option<ModelPreset>,
+        config: Option<Config>,
+        provider_registry: Option<Arc<ProviderRegistry>>,
+        steering_queue: Option<SteeringQueue>,
+        cancel_flag: Option<Arc<AtomicBool>>,
+        yolo: bool,
+    ) -> Self {
         let session_path = session_dir.into();
         let registry = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(
             &session_path,
         )));
         let model_str = model.into();
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         // Meowstro toolset: strictly read, grep, glob, find, todo, ask, task (+ read_skill).
         // NEVER write, edit, or bash!
@@ -84,12 +123,12 @@ impl MeowstroOrchestrator {
         let _ = tool_reg.register(Arc::new(ask_tool));
 
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
-        skill_mgr.discover_all(&std::path::PathBuf::from("."));
+        skill_mgr.discover_all(&workspace_root);
         let _ = tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(
             Arc::new(Mutex::new(skill_mgr)),
         )));
 
-        let task_tool = TaskTool::with_full_options(
+        let mut task_tool = TaskTool::with_full_options(
             registry.clone(),
             provider.clone(),
             model_str.clone(),
@@ -99,7 +138,16 @@ impl MeowstroOrchestrator {
             approval_gate.clone(),
             audit_sink.clone(),
             yolo,
-        );
+        )
+        .with_model_preset(model_preset);
+
+        if let Some(ref pd) = plugin_dispatcher {
+            task_tool = task_tool.with_plugin_dispatcher(pd.clone());
+        }
+        if let (Some(cfg), Some(preg)) = (config, provider_registry) {
+            task_tool = task_tool.with_provider_routing(cfg, preg);
+        }
+
         let _ = tool_reg.register(Arc::new(task_tool));
         tool_reg.freeze();
 
@@ -113,6 +161,9 @@ impl MeowstroOrchestrator {
         }
         if let Some(sink) = audit_sink {
             agent_loop = agent_loop.with_audit_sink(sink);
+        }
+        if let Some(pd) = plugin_dispatcher {
+            agent_loop = agent_loop.with_plugin_dispatcher(pd);
         }
         if let Some(sq) = steering_queue {
             agent_loop = agent_loop.with_steering_queue(sq);

@@ -1014,6 +1014,7 @@ dependencies = [
  "purrcode-provider",
  "purrcode-service",
  "purrcode-tools",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

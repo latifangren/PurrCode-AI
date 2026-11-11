@@ -35,3 +35,11 @@ pub trait Plugin: Send + Sync {
     async fn post_tool_use(&self, tool: &str, result: &serde_json::Value) -> Result<()>;
     async fn on_session_stop(&self, session_id: &str) -> Result<()>;
 }
+
+#[async_trait]
+pub trait PluginHookDispatcher: Send + Sync {
+    async fn dispatch_session_start(&self, session_id: &str);
+    async fn dispatch_pre_tool_use(&self, tool: &str, args: &serde_json::Value) -> bool;
+    async fn dispatch_post_tool_use(&self, tool: &str, result: &serde_json::Value);
+    async fn dispatch_session_stop(&self, session_id: &str);
+}
