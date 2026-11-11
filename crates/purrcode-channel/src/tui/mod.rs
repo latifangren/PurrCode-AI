@@ -73,6 +73,35 @@ impl TuiRunner {
     }
 }
 
+/// What a key press means while the approval card is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalKeyAction {
+    Approve,
+    Reject,
+    CancelForEdit,
+}
+
+/// Map a key press to its approval-card action: `Some(Approve)` for
+/// `a`/`A`/`y`/`Y`/`Enter`, `Some(Reject)` for `t`/`T`/`n`/`N`/`Esc`,
+/// `Some(CancelForEdit)` for `e`/`E`, `None` for any other key (the card
+/// stays open). Pure function, covered by unit tests.
+fn approval_key_action(code: KeyCode) -> Option<ApprovalKeyAction> {
+    match code {
+        KeyCode::Char('a')
+        | KeyCode::Char('A')
+        | KeyCode::Char('y')
+        | KeyCode::Char('Y')
+        | KeyCode::Enter => Some(ApprovalKeyAction::Approve),
+        KeyCode::Char('t')
+        | KeyCode::Char('T')
+        | KeyCode::Char('n')
+        | KeyCode::Char('N')
+        | KeyCode::Esc => Some(ApprovalKeyAction::Reject),
+        KeyCode::Char('e') | KeyCode::Char('E') => Some(ApprovalKeyAction::CancelForEdit),
+        _ => None,
+    }
+}
+
 fn run_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut TuiApp,
@@ -120,12 +149,8 @@ fn run_loop<B: ratatui::backend::Backend>(
 
                 // If approval card is active, intercept [a]/[y]/Enter, [t]/[n]/Esc, [e]
                 if let Some(req) = app.pending_approval.take() {
-                    match key.code {
-                        KeyCode::Char('a')
-                        | KeyCode::Char('A')
-                        | KeyCode::Char('y')
-                        | KeyCode::Char('Y')
-                        | KeyCode::Enter => {
+                    match approval_key_action(key.code) {
+                        Some(ApprovalKeyAction::Approve) => {
                             let _ = req.tx.send(true);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action approved by user.".to_string(),
@@ -133,11 +158,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                             });
                             continue;
                         }
-                        KeyCode::Char('t')
-                        | KeyCode::Char('T')
-                        | KeyCode::Char('n')
-                        | KeyCode::Char('N')
-                        | KeyCode::Esc => {
+                        Some(ApprovalKeyAction::Reject) => {
                             let _ = req.tx.send(false);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action rejected by user.".to_string(),
@@ -145,7 +166,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                             });
                             continue;
                         }
-                        KeyCode::Char('e') | KeyCode::Char('E') => {
+                        Some(ApprovalKeyAction::CancelForEdit) => {
                             let _ = req.tx.send(false);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action cancelled for manual edits.".to_string(),
@@ -153,7 +174,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                             });
                             continue;
                         }
-                        _ => {
+                        None => {
                             app.pending_approval = Some(req);
                             continue;
                         }
@@ -390,5 +411,72 @@ fn handle_slash_command(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_approval_key_action_approve_keys() {
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('A'),
+            KeyCode::Char('y'),
+            KeyCode::Char('Y'),
+            KeyCode::Enter,
+        ] {
+            assert_eq!(
+                approval_key_action(code),
+                Some(ApprovalKeyAction::Approve),
+                "key {code:?} must approve"
+            );
+        }
+    }
+
+    #[test]
+    fn test_approval_key_action_reject_keys() {
+        for code in [
+            KeyCode::Char('t'),
+            KeyCode::Char('T'),
+            KeyCode::Char('n'),
+            KeyCode::Char('N'),
+            KeyCode::Esc,
+        ] {
+            assert_eq!(
+                approval_key_action(code),
+                Some(ApprovalKeyAction::Reject),
+                "key {code:?} must reject"
+            );
+        }
+    }
+
+    #[test]
+    fn test_approval_key_action_edit_keys() {
+        assert_eq!(
+            approval_key_action(KeyCode::Char('e')),
+            Some(ApprovalKeyAction::CancelForEdit)
+        );
+        assert_eq!(
+            approval_key_action(KeyCode::Char('E')),
+            Some(ApprovalKeyAction::CancelForEdit)
+        );
+    }
+
+    #[test]
+    fn test_approval_key_action_other_keys_ignored() {
+        for code in [
+            KeyCode::Char('q'),
+            KeyCode::Char(' '),
+            KeyCode::Up,
+            KeyCode::Down,
+        ] {
+            assert_eq!(
+                approval_key_action(code),
+                None,
+                "key {code:?} must be ignored"
+            );
+        }
     }
 }

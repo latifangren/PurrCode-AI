@@ -130,13 +130,53 @@ impl Config {
             }
         }
 
-        // 3. Search through all providers for matching model key
-        for (provider_name, provider) in &self.providers {
+        // 3. Search through all providers for matching model key, in
+        // deterministic (lexicographic) provider order. A bare model name
+        // shared by several providers always resolves to the same one.
+        let mut provider_names: Vec<&String> = self.providers.keys().collect();
+        provider_names.sort();
+        for provider_name in provider_names {
+            let provider = &self.providers[provider_name];
             if let Some((m_key, model)) = provider.models.get_key_value(target_model) {
                 return Some((provider_name.as_str(), m_key.as_str(), provider, model));
             }
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_with_model(model_key: &str) -> ProviderConfig {
+        let mut models = HashMap::new();
+        models.insert(model_key.to_string(), ModelConfig::default());
+        ProviderConfig {
+            api: "openai-completions".to_string(),
+            base_url: None,
+            api_key: None,
+            headers: HashMap::new(),
+            models,
+        }
+    }
+
+    #[test]
+    fn test_resolve_model_bare_name_is_deterministic_across_providers() {
+        let mut cfg = Config::default();
+        cfg.providers
+            .insert("zeta".to_string(), provider_with_model("shared-model"));
+        cfg.providers
+            .insert("alpha".to_string(), provider_with_model("shared-model"));
+        // HashMap iteration order is randomized per process; the same
+        // lookup must resolve to the same provider every time.
+        for _ in 0..20 {
+            let (provider, model, _, _) = cfg
+                .resolve_model("shared-model")
+                .expect("shared model must resolve");
+            assert_eq!(provider, "alpha");
+            assert_eq!(model, "shared-model");
+        }
     }
 }

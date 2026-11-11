@@ -29,7 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## High-Level Architecture & Rules
 
 ### 1. Language & License
-- Language: **Rust 1.80+**, compiles into a single static musl binary (`purrcode-ai`), licensed under **GNU GPL-3.0**.
+- Language: **Rust 1.80+**, compiles into a single binary (`purrcode-ai`; musl static is the distribution target — current builds are dynamic GNU, see `docs/AUDIT_STATUS.md`), licensed under **GNU GPL-3.0**.
 - **English Code Rule:** All identifiers, comments, error messages, and log strings MUST be written in English. Documentation may be in Indonesian or English.
 
 ### 2. Workspace Crate Architecture (Strict One-Way Dependency Chain)

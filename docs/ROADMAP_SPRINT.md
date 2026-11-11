@@ -1,8 +1,8 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (76 tests passing di seluruh 12 crate).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (83 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
-- **Timestamp Audit:** `2026-11-12 02:25:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 03:51:00 +07:00`
 
 Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksak yang memverifikasinya di `cargo test --workspace`.
 
@@ -97,10 +97,15 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - Parser `plugin.yaml` & default-deny secret (`tests::test_parse_plugin_yaml_and_default_deny_secrets`) serta veto `pre_tool_use` di `AgentLoop` (`loop_engine::tests::test_plugin_pre_tool_use_veto_blocks_execution`).
 - [x] **9.2 Service Unit Generators & Windows Task Scheduler (`crates/purrcode-service/`)**
   - Generator unit systemd, OpenRC, dan PowerShell Scheduled Task installer untuk Windows (`tests::test_service_unit_generators`, `tests::test_windows_task_script_generator`).
-- [x] **9.3 Windows Non-WSL Bulletproof Architecture (`crates/purrcode-tools/` & `crates/purrcode-cli/`)**
+- [x] **9.3 Windows Non-WSL Architecture (`crates/purrcode-tools/` & `crates/purrcode-cli/`)**
   - Deteksi otomatis Git Bash di Windows dengan fallback transparan ke PowerShell (`execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate`, `execution::bash::tests::test_resolve_windows_shell_detects_path_bash`, `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell`).
   - Normalisasi prefix verbatim Windows `\\?\` dan perbandingan case-insensitive (`fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows`).
   - Guard codepage konsol Windows UTF-8 (`SetConsoleOutputCP(65001)`).
 - [x] **9.4 Resolusi Model Deterministik & TUI Approval Ergonomics (`crates/purrcode-cli/` & `crates/purrcode-channel/`)**
   - Resolusi model sesi deterministik berurutan leksikografis & prioritas (`tests::test_resolve_target_model_deterministic_priority`, `tests::test_resolve_target_model_deterministic_lexicographical_fallback`).
   - Dukungan tombol `y`/`Y`/`Enter` dan `n`/`N` pada dialog approval TUI serta layout kartu approval anti-terpotong.
+- [x] **9.5 Resolusi Verifikasi Lanjutan Commit c56d3b7 — branch `dev-muse` (`crates/purrcode-tools/`, `crates/purrcode-config/`, `crates/purrcode-channel/`, `docs/`)**
+  - Test PATH Windows benar-benar portabel: helper `windows_join` + 2 unit test (`execution::bash::tests::test_windows_join_uses_backslash_for_windows_paths`, `execution::bash::tests::test_windows_join_keeps_host_separator_for_unix_paths`); `test_resolve_windows_shell_detects_path_bash` kini lolos di Linux.
+  - Deterministik langkah-3 `resolve_model` (`model::tests::test_resolve_model_bare_name_is_deterministic_across_providers`).
+  - Pemetaan tombol approval TUI diekstrak ke fungsi murni `approval_key_action` + 4 unit test (`tui::tests::test_approval_key_action_approve_keys`, `tui::tests::test_approval_key_action_reject_keys`, `tui::tests::test_approval_key_action_edit_keys`, `tui::tests::test_approval_key_action_other_keys_ignored`).
+  - Kejujuran dokumen: angka test 76 → 83 dengan hasil ukur sendiri, "3.7 MB" telanjang dikualifikasi, byte rilis diperbarui (4.613.128 byte = 4,40 MiB), "Bulletproof" dihapus, musl sebagai target (bukan fakta), dan direktori root `src/` yang kosong dihapus. Workplan branch: `docs/dev-muse-workplan.md`.
