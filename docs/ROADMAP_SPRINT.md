@@ -1,8 +1,8 @@
 # PurrCode AI — Panduan Eksekusi & Bukti Uji (ROADMAP_SPRINT.md)
 
-- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (90 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
+- **Status Terakhir:** Seluruh Sprint 1 s/d 9 (Milestone v0.1) selesai dan terverifikasi secara mendalam (96 tests lolos di seluruh 12 crate — diukur di Linux, branch `dev-muse`).
 - **Audit Komprehensif:** Lihat `docs/AUDIT_STATUS.md` untuk perbandingan mendalam terhadap Claude Code, Codex, OMP, Hermes Agent, dan Muse.
-- **Timestamp Audit:** `2026-11-12 04:27:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 04:49:00 +07:00`
 
 Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksak yang memverifikasinya di `cargo test --workspace`.
 
@@ -111,7 +111,15 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
   - Kejujuran dokumen: angka test 76 → 83 dengan hasil ukur sendiri, "3.7 MB" telanjang dikualifikasi, byte rilis diperbarui saat itu (4.617.256 byte = 4,40 MiB), "Bulletproof" dihapus, musl sebagai target (bukan fakta), dan direktori root `src/` yang kosong dihapus. Workplan branch: `docs/dev-muse-workplan.md`.
 - [x] **9.6 Ronde autonomous 2026-11-12 (item 15–17) — `--orchestrator` default + User-Agent + TOCTOU (`crates/purrcode-cli/`, `crates/purrcode-config/`, `crates/purrcode-provider/`, `crates/purrcode-tools/`, `docs/`)**
   - `--orchestrator` default (`-p`/`exec`/TUI) + `--direct` opt-out + label audit jujur (`cli::use_orchestrator`, `cli::agent_role_for` + 2 unit test).
-  - User-Agent configurable (`ProviderConfig.user_agent`) + default jujur `PurrCode-AI/0.1` + 1 unit test; live via Magpie: UA Chrome → 200, default PurrCode UA → 200 (yang diblokir Cloudflare hanya UA `reqwest/*`).
+  - User-Agent configurable (`ProviderConfig.user_agent`) + default jujur `PurrCode-AI/0.1` + 1 unit test; live via Magpie: UA Chrome → 200, default PurrCode UA → 200 (koreksi: yang diblokir Cloudflare adalah request TANPA header User-Agent sama sekali — binary lama tidak mengirim UA — bukan literal `reqwest/*`).
   - TOCTOU SSRF tertutup: `resolve_validated_addrs` + `build_pinned_client` (`.resolve_to_addrs`) + `get_pinned` (redirect manual, re-pin per hop) + 4 unit test; `websearch` memakai helper yang sama.
   - Riset referensi (subagent read-only): pola UA pi/codex/picoclaw, norma one-shot (PurrCode menyimpang atas keputusan user + PRD), pinning zeroclaw, capabilities zeroclaw/opencode.
   - Hasil ukur: `cargo test --workspace` 90/90, `cargo build --release` 4.623.400 byte (4,41 MiB).
+- [x] **9.7 Ronde autonomous batch 2a 2026-11-12 (item 18–19 + temuan minor N1/N2/R1/R2) — capabilities jujur + light fixes + koreksi UA (`crates/purrcode-provider/`, `crates/purrcode-tools/`, `crates/purrcode-plugin/`, `crates/purrcode-orchestrator/`, `crates/purrcode-channel/`, `crates/purrcode-cli/`, `docs/`)**
+  - N1: UA invalid di config divalidasi dulu → kembali ke `DEFAULT_USER_AGENT` (tidak pernah ke client tanpa UA); unit test diperluas dengan kasus UA berisi karakter kontrol.
+  - N2: `build_pinned_client` fail-closed (mengembalikan `Result`, error dipropagasi, bukan fallback client polos tanpa pinning); R2: helper `next_hop_url` (validasi target hop sebelum diikuti) + unit test hop redirect ke loopback ditolak.
+  - R1: tabel §1 AUDIT_STATUS "83 unit/integration tests" dikoreksi ke 96.
+  - Capabilities jujur: `network`/`filesystem` di-parse dari `plugin.yaml` dan dicatat sebagai deklarasi sandbox v0.3; hanya `secrets` yang ditegakkan di v0.1. `ProcessPlugin::new` memberi `tracing::warn!`; `PluginManager::unenforced_capabilities()`; CLI mencatat audit entry `plugin_capability_unenforced` + `purrcode-ai plugin list` menampilkan peringatan `⚠`; klaim "default-deny" di `AGENTS.md`/`CLAUDE.md`/`ARCHITECTURE.md` dikualifikasi ke `secrets` saja. Smoke test live: baris `⚠` tampil di `plugin list` dan 1 entry audit tercatat.
+  - Light fixes: dedup heading `## Summary` di `result.md`; range fuzzy `edit` berakhir sebelum newline baris terakhir (LF + CRLF); kartu hasil tool TUI menampilkan 4 baris pertama + marker `… (N more lines)` (diuji via TestBackend).
+  - Koreksi rumusan UA di docs: "yang diblokir hanya UA `reqwest/*`" diganti "binary lama tidak mengirim header User-Agent sama sekali".
+  - Hasil ukur: `cargo test --workspace` 96/96, `cargo build --release` 4.629.032 byte (4,41 MiB).

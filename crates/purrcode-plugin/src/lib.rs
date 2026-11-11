@@ -30,6 +30,32 @@ impl PluginManager {
         &self.plugins
     }
 
+    /// Loaded plugins whose manifest declares network/filesystem
+    /// capabilities. Those are declarations for the v0.3 OS sandbox; in
+    /// v0.1 only `secrets` is enforced. Callers should surface this (audit
+    /// log / plugin list) so a user is not misled into thinking the plugin
+    /// is sandboxed.
+    pub fn unenforced_capabilities(&self) -> Vec<(String, Vec<&'static str>)> {
+        self.plugins
+            .iter()
+            .filter_map(|p| {
+                let caps = &p.manifest().capabilities;
+                let mut kinds = Vec::new();
+                if !caps.network.is_empty() {
+                    kinds.push("network");
+                }
+                if !caps.filesystem.is_empty() {
+                    kinds.push("filesystem");
+                }
+                if kinds.is_empty() {
+                    None
+                } else {
+                    Some((p.manifest().name.clone(), kinds))
+                }
+            })
+            .collect()
+    }
+
     /// Discovers plugins from `~/.purrcode/plugins/` and `.purrcode/plugins/`.
     /// Broken manifests are skipped with a warning rather than crashing startup.
     pub fn discover_all(&mut self, workspace_root: &Path) {
@@ -129,6 +155,19 @@ pub struct ProcessPlugin {
 
 impl ProcessPlugin {
     pub fn new(manifest: PluginManifest, command: impl Into<String>) -> Self {
+        // Honesty note (v0.1): network/filesystem capabilities are
+        // declarations for the v0.3 OS sandbox only. Only `secrets` is
+        // enforced today (env scrubbing); a process plugin runs with full
+        // user rights. Warn here (tracing channel, same as the invalid
+        // manifest warning) and let callers surface it in the audit log
+        // / plugin list via `PluginManager::unenforced_capabilities`.
+        if !manifest.capabilities.network.is_empty() || !manifest.capabilities.filesystem.is_empty()
+        {
+            tracing::warn!(
+                "Plugin '{}' declares network/filesystem capabilities, but they are NOT enforced in v0.1: process plugins run with full user rights. Enforcement comes with the v0.3 OS sandbox.",
+                manifest.name
+            );
+        }
         Self {
             manifest,
             command: command.into(),
@@ -258,6 +297,8 @@ pub fn parse_plugin_yaml_str(content: &str) -> Result<(PluginManifest, Option<St
     let mut transport = PluginTransport::Builtin;
     let mut command = None;
     let mut secrets = Vec::new();
+    let mut network = Vec::new();
+    let mut filesystem = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -284,6 +325,24 @@ pub fn parse_plugin_yaml_str(content: &str) -> Result<(PluginManifest, Option<St
                     secrets.push(s.to_string());
                 }
             }
+        } else if let Some(v) = trimmed.strip_prefix("network:") {
+            // Recorded as a declaration for the v0.3 OS sandbox; NOT
+            // enforced in v0.1 (see `PluginManager::unenforced_capabilities`).
+            let raw_list = v.trim().trim_start_matches('[').trim_end_matches(']');
+            for item in raw_list.split(',') {
+                let s = item.trim().trim_matches('"').trim_matches('\'');
+                if !s.is_empty() {
+                    network.push(s.to_string());
+                }
+            }
+        } else if let Some(v) = trimmed.strip_prefix("filesystem:") {
+            let raw_list = v.trim().trim_start_matches('[').trim_end_matches(']');
+            for item in raw_list.split(',') {
+                let s = item.trim().trim_matches('"').trim_matches('\'');
+                if !s.is_empty() {
+                    filesystem.push(s.to_string());
+                }
+            }
         }
     }
 
@@ -301,8 +360,8 @@ pub fn parse_plugin_yaml_str(content: &str) -> Result<(PluginManifest, Option<St
             description,
             transport,
             capabilities: PluginCapabilities {
-                network: Vec::new(),
-                filesystem: Vec::new(),
+                network,
+                filesystem,
                 secrets,
             },
         },
@@ -424,5 +483,56 @@ command: ./runner
 "#;
         let res = parse_plugin_yaml_str(yaml);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_plugin_yaml_records_network_and_filesystem() {
+        // network/filesystem are declarations for the v0.3 OS sandbox:
+        // parsed and recorded, but NOT enforced in v0.1.
+        let yaml = r#"
+name: net-plugin
+version: 1.0.0
+transport: process
+command: ./runner
+network: ["api.example.com", "*.cdn.example"]
+filesystem: ["/tmp", "/home/user/data"]
+"#;
+        let (manifest, _) = parse_plugin_yaml_str(yaml).unwrap();
+        assert_eq!(manifest.capabilities.network.len(), 2);
+        assert_eq!(manifest.capabilities.filesystem.len(), 2);
+        assert!(manifest.capabilities.secrets.is_empty());
+    }
+
+    #[test]
+    fn test_unenforced_capabilities_reports_declared_only() {
+        let mut mgr = PluginManager::new();
+        let declared = PluginManifest {
+            name: "net-plugin".to_string(),
+            version: "0.1.0".to_string(),
+            description: None,
+            transport: PluginTransport::Process,
+            capabilities: PluginCapabilities {
+                network: vec!["api.example.com".to_string()],
+                filesystem: vec!["/tmp".to_string()],
+                secrets: Vec::new(),
+            },
+        };
+        mgr.register(Arc::new(ProcessPlugin::new(declared, "./runner")));
+        let secrets_only = PluginManifest {
+            name: "secret-reader".to_string(),
+            version: "0.1.0".to_string(),
+            description: None,
+            transport: PluginTransport::Process,
+            capabilities: PluginCapabilities {
+                network: Vec::new(),
+                filesystem: Vec::new(),
+                secrets: vec!["OPENAI_API_KEY".to_string()],
+            },
+        };
+        mgr.register(Arc::new(ProcessPlugin::new(secrets_only, "./runner")));
+        let reports = mgr.unenforced_capabilities();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "net-plugin");
+        assert_eq!(reports[0].1, vec!["network", "filesystem"]);
     }
 }

@@ -39,6 +39,32 @@ fn init_windows_console() {
     }
 }
 
+/// Log one audit entry per loaded plugin that declares network/filesystem
+/// capabilities. Those are NOT enforced in v0.1 (see
+/// `PluginManager::unenforced_capabilities`); the audit entry is the
+/// observable record that the plugin runs with full user rights.
+fn log_unenforced_plugin_capabilities(
+    logger: &AuditLogger,
+    session_id: &str,
+    agent: &str,
+    unenforced: &[(String, Vec<&'static str>)],
+) {
+    for (name, kinds) in unenforced {
+        let _ = logger.log_entry(AuditEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_id: session_id.to_string(),
+            agent: agent.to_string(),
+            event: "plugin_capability_unenforced".to_string(),
+            tool: None,
+            decision: "warn".to_string(),
+            detail: format!(
+                "plugin '{name}' declares {} capabilities, which are NOT enforced in v0.1: process plugins run with full user rights; enforcement comes with the v0.3 OS sandbox",
+                kinds.join(" + ")
+            ),
+        });
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     #[cfg(windows)]
@@ -173,6 +199,13 @@ async fn main() -> Result<()> {
                 for p in pm.plugins() {
                     let m = p.manifest();
                     println!("  - {} v{} ({:?})", m.name, m.version, m.transport);
+                }
+                for (name, kinds) in pm.unenforced_capabilities() {
+                    println!(
+                        "  ⚠ {} declares {} capabilities — NOT enforced in v0.1 (process plugins run with full user rights; enforcement comes with the v0.3 OS sandbox)",
+                        name,
+                        kinds.join(" + ")
+                    );
                 }
                 return Ok(());
             }
@@ -390,6 +423,7 @@ async fn main() -> Result<()> {
 
     let mut plugin_mgr = PluginManager::new();
     plugin_mgr.discover_all(&workspace_root);
+    let unenforced_caps = plugin_mgr.unenforced_capabilities();
     let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
 
     let mut tool_registry =
@@ -406,6 +440,7 @@ async fn main() -> Result<()> {
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
     plugin_dispatcher.dispatch_session_start(&session_id).await;
+    log_unenforced_plugin_capabilities(&audit_logger, &session_id, agent_role, &unenforced_caps);
 
     let session_store = Arc::new(SessionStore::new(&purrcode_dir));
     if let (Ok(p_val), Ok(mp_val)) = (
@@ -723,6 +758,7 @@ async fn run_one_shot(
 
     let mut plugin_mgr = PluginManager::new();
     plugin_mgr.discover_all(workspace_root);
+    let unenforced_caps = plugin_mgr.unenforced_capabilities();
     let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
 
     let model_preset_name = config
@@ -751,6 +787,8 @@ async fn run_one_shot(
     // Audit labels must say which agent actually ran: the generic single
     // agent is not Meowstro.
     let agent_role = cli::agent_role_for(use_orchestrator);
+
+    log_unenforced_plugin_capabilities(&audit_logger, &session_id, agent_role, &unenforced_caps);
 
     let _ = audit_logger.log_entry(AuditEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),

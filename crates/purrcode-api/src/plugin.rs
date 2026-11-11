@@ -4,6 +4,14 @@ use crate::error::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// What a plugin manifest declares it needs.
+///
+/// Honesty note (v0.1): only `secrets` is enforced today — a process plugin
+/// never receives a secret unless it is declared (`scrub_plugin_env`).
+/// `network` and `filesystem` are declarations for the v0.3 OS sandbox
+/// (Landlock/seccomp, PRD F21); in v0.1 they are parsed and recorded but
+/// NOT enforced — a process plugin runs with full user rights. Callers
+/// must surface that (see `PluginManager::unenforced_capabilities`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginCapabilities {
     pub network: Vec<String>,

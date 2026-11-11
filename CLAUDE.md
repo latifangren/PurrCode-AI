@@ -42,7 +42,7 @@ The repository is split into 12 modular crates with a one-way dependency chain:
    - `purrcode-tools`: Core 13 tools (fs: `read`, `write`, `edit`; exec: `bash`; search: `grep`, `glob`, `find`; coord: `ask`, `todo`; web: `webfetch`, `websearch`; skill: `read_skill`, `manage_skill`).
    - `purrcode-memory`: Markdown-based persistent memory (`MEMORY.md`, `USER.md`, `SOUL.md`), zero external DB requirement.
    - `purrcode-approval`: Fail-closed policy gate (`ApprovalGate`), policy tiers, regex path rules, and approval timeout handlers.
-   - `purrcode-plugin`: Plugin manifest loader (`plugin.yaml`), lifecycle hook dispatcher (`pre_tool_use`, `post_tool_use`), and default-deny capability sandboxing.
+   - `purrcode-plugin`: Plugin manifest loader (`plugin.yaml`), lifecycle hook dispatcher (`pre_tool_use`, `post_tool_use`), and default-deny secret scrubbing. `network`/`filesystem` capabilities are declarations for the v0.3 OS sandbox, not enforced in v0.1 (process plugins run with full user rights).
 6. Upper Layer Crates:
    - `purrcode-orchestrator`: The Clowder multi-agent coordinator (`MeowstroOrchestrator`), subagent delegator (`TaskTool`), continuation registry (`SubagentRegistry`), and shadow auditor (`Tuxeshadow`).
    - `purrcode-channel`: TUI interface (Ratatui differential renderer) and multi-channel abstraction.

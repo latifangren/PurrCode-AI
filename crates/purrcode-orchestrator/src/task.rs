@@ -170,7 +170,28 @@ pub fn format_validated_result_markdown(
         out.push_str("- **Unverified Items:** None reported.\n");
     }
 
-    out.push_str(&format!("\n## Summary\n{}\n", trimmed));
+    // The child is instructed (see the `task()` brief in this file and
+    // docs/SUBAGENTS.md §2.2) to start its summary with a `## Summary`
+    // heading. If it did, strip that heading line instead of appending a
+    // second one — otherwise `result.md` contains the heading twice.
+    let body: String = trimmed
+        .lines()
+        .next()
+        .filter(|first| first.trim_start().eq_ignore_ascii_case("## summary"))
+        .map_or_else(
+            || trimmed.to_string(),
+            |_| {
+                trimmed
+                    .lines()
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_string()
+            },
+        );
+
+    out.push_str(&format!("\n## Summary\n{}\n", body));
     Ok(out)
 }
 
@@ -958,6 +979,21 @@ mod tests {
         assert!(res.contains("- **Failures / Blockers:** None reported."));
         assert!(res.contains("- **Unverified Items:** None reported."));
         assert!(res.contains("## Summary\nRefactored payment gateway handler in src/payment.rs"));
+    }
+
+    #[test]
+    fn test_format_validated_result_markdown_dedups_summary_heading() {
+        // The child brief asks for a leading `## Summary` heading; the
+        // report must contain it exactly once, not twice.
+        let raw = "## Summary\nRefactored payment gateway handler in src/payment.rs";
+        let res = format_validated_result_markdown("sub_1", "tinker", "completed", raw).unwrap();
+        assert_eq!(res.matches("## Summary").count(), 1);
+        assert!(res.contains("## Summary\nRefactored payment gateway handler in src/payment.rs"));
+        // A summary without the heading still gets exactly one.
+        let plain =
+            format_validated_result_markdown("sub_2", "tinker", "completed", "Did the thing")
+                .unwrap();
+        assert_eq!(plain.matches("## Summary").count(), 1);
     }
 
     #[tokio::test]

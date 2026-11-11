@@ -122,10 +122,14 @@ any mode. Cron jobs never run `oyen`/`yolo`.
   `[FILTERED]` filter. Never ask the user to paste a password/API key in chat
   — use the secure entry flow.
 - **Plugins:** manifest declares `capabilities` (network, fs, secrets);
-  default deny. A plugin never receives secrets unless the capability is
-  declared in the manifest. (Install-time approval flow is v0.3 scope —
-  see `docs/AUDIT_STATUS.md` §4 item 8; v0.1 enforces declaration +
-  default-deny only.)
+  default-deny is enforced ONLY for `secrets` in v0.1 (a plugin never
+  receives a secret unless the capability is declared, and the env is
+  scrubbed). `network`/`filesystem` are declarations for the v0.3 OS
+  sandbox — parsed and recorded, but NOT enforced in v0.1: a process
+  plugin runs with full user rights (see `PluginManager::
+  unenforced_capabilities`; the CLI logs an audit entry and the plugin
+  list prints a warning). (Install-time approval flow is v0.3 scope —
+  see `docs/AUDIT_STATUS.md` §4 item 8.)
 - **References:** patterns only, never copied code. GPL references: patterns
   OK. Non-commercial (Sustainable Use) / proprietary: patterns only, never
   code. Anthropic document skills (`docx`/`pdf`/`pptx`/`xlsx`) are

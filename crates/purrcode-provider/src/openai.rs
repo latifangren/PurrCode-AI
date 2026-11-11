@@ -22,9 +22,11 @@ pub struct OpenAiCompatibleProvider {
     healthy: AtomicBool,
 }
 
-/// Honest default User-Agent identifying this product. Gateways with a
-/// strict WAF that rejects non-browser agents need an explicit browser UA
-/// in the provider config instead (see `purrcode.jsonc.example`).
+/// Honest default User-Agent identifying this product. Strict WAFs reject
+/// requests without a recognizable User-Agent (observed: the user's gateway
+/// returns 403/error 1010 for a request with no UA header at all); this
+/// default passes there. A browser UA is only needed if a gateway rejects
+/// this default specifically (set `user_agent` in the provider config).
 pub const DEFAULT_USER_AGENT: &str =
     "PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)";
 
@@ -41,9 +43,18 @@ impl OpenAiCompatibleProvider {
             url.pop();
         }
         let valid_url = !url.trim().is_empty() && reqwest::Url::parse(&url).is_ok();
-        let user_agent = user_agent.unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
-        // If the configured UA is not a valid header value, fall back to a
-        // plain client rather than failing construction.
+        let configured = user_agent.unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
+        // An invalid header value (e.g. control characters) would make the
+        // builder fail, and the fallback client would then send NO
+        // User-Agent at all — the exact headerless request strict WAFs
+        // reject (observed: 403/error 1010). Validate first and fall back
+        // to the honest default, so the stored value is always the UA
+        // actually sent.
+        let user_agent = if reqwest::header::HeaderValue::from_str(&configured).is_ok() {
+            configured
+        } else {
+            DEFAULT_USER_AGENT.to_string()
+        };
         let client = reqwest::Client::builder()
             .user_agent(user_agent.clone())
             .build()
@@ -495,6 +506,18 @@ mod tests {
             Some(custom_ua.to_string()),
         );
         assert_eq!(custom_provider.user_agent, custom_ua);
+
+        // An invalid header value (control character) must resolve to the
+        // honest default — not be stored verbatim while the client sends
+        // no User-Agent at all (the headerless request strict WAFs reject).
+        let invalid_provider = OpenAiCompatibleProvider::new(
+            "invalid-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            Some("Bad\u{1}UA".to_string()),
+        );
+        assert_eq!(invalid_provider.user_agent, DEFAULT_USER_AGENT);
     }
 
     #[test]

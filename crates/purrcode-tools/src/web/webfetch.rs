@@ -77,7 +77,15 @@ pub async fn resolve_validated_addrs(url: &Url, tool_name: &str) -> Result<Vec<S
 /// Build a client whose DNS for `host` is pinned to the validated
 /// addresses. Redirects are disabled: the caller follows them manually
 /// (see `get_pinned`), re-validating and re-pinning every hop.
-fn build_pinned_client(host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
+/// Build a client whose DNS for `host` is pinned to the validated
+/// addresses. Redirects are disabled: the caller follows them manually
+/// (see `get_pinned`), re-validating and re-pinning every hop.
+///
+/// Fail-closed: a builder failure is an error, never a fallback to a plain
+/// client — a plain client would connect unpinned (and follow redirects),
+/// voiding the pinning guarantee this function exists to provide. With the
+/// constant inputs used here the builder practically cannot fail.
+fn build_pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
@@ -85,16 +93,29 @@ fn build_pinned_client(host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
         .user_agent("PurrCode-AI/0.1.0")
         .resolve_to_addrs(host, addrs)
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .map_err(|e| PurrError::Tool {
+            tool: "webfetch".to_string(),
+            message: format!("Failed to build pinned HTTP client for '{host}': {e}"),
+        })
 }
 
 /// Resolve a redirect `Location` against the current URL (absolute or
 /// relative). Pure helper, unit-tested.
-fn resolve_redirect(current: &Url, location: &str) -> Result<Url> {
+fn resolve_redirect(current: &Url, location: &str, tool_name: &str) -> Result<Url> {
     current.join(location).map_err(|e| PurrError::Tool {
-        tool: "webfetch".to_string(),
+        tool: tool_name.to_string(),
         message: format!("Invalid redirect Location '{location}': {e}"),
     })
+}
+
+/// Join a redirect `Location` against the current URL and validate the hop
+/// target (scheme, host, IP literal) BEFORE following it. The next loop
+/// iteration re-resolves and re-pins the target's DNS, so a redirect to a
+/// private/loopback host is rejected here and never connected to.
+fn next_hop_url(current: &Url, location: &str, tool_name: &str) -> Result<Url> {
+    let next = resolve_redirect(current, location, tool_name)?;
+    validate_destination_for_tool(&next, tool_name)?;
+    Ok(next)
 }
 
 /// GET a URL with per-hop DNS pinning: resolve → validate → pin → request,
@@ -106,7 +127,7 @@ pub async fn get_pinned(url: &Url, tool_name: &str) -> Result<reqwest::Response>
         validate_destination_for_tool(&current, tool_name)?;
         let addrs = resolve_validated_addrs(&current, tool_name).await?;
         let host = current.host_str().unwrap_or("").to_lowercase();
-        let client = build_pinned_client(&host, &addrs);
+        let client = build_pinned_client(&host, &addrs)?;
         let resp = client
             .get(current.clone())
             .send()
@@ -136,7 +157,7 @@ pub async fn get_pinned(url: &Url, tool_name: &str) -> Result<reqwest::Response>
                 message: format!("Redirect response from '{current}' has no Location header."),
             })?
             .to_string();
-        current = resolve_redirect(&current, &location)?;
+        current = next_hop_url(&current, &location, tool_name)?;
     }
     unreachable!("redirect loop is bounded by MAX_REDIRECT_HOPS")
 }
@@ -458,19 +479,41 @@ mod tests {
     fn test_resolve_redirect() {
         let base = Url::parse("https://example.com/a/b").unwrap();
         assert_eq!(
-            resolve_redirect(&base, "https://other.example/x")
+            resolve_redirect(&base, "https://other.example/x", "webfetch")
                 .unwrap()
                 .as_str(),
             "https://other.example/x"
         );
         assert_eq!(
-            resolve_redirect(&base, "/c").unwrap().as_str(),
+            resolve_redirect(&base, "/c", "webfetch").unwrap().as_str(),
             "https://example.com/c"
         );
         assert_eq!(
-            resolve_redirect(&base, "d").unwrap().as_str(),
+            resolve_redirect(&base, "d", "webfetch").unwrap().as_str(),
             "https://example.com/a/d"
         );
+    }
+
+    #[test]
+    fn test_redirect_hop_to_loopback_is_rejected() {
+        // A redirect hop to a private/loopback/metadata host is rejected
+        // before any connection is opened (proven at unit level; a live
+        // hop-redirect test is impossible from this VM because any public
+        // first hop is already blocked by the egress proxy's DNS).
+        let current = Url::parse("https://example.com/a").unwrap();
+        assert!(next_hop_url(&current, "http://127.0.0.1/secret", "webfetch").is_err());
+        assert!(next_hop_url(&current, "http://localhost:3000/", "webfetch").is_err());
+        assert!(next_hop_url(
+            &current,
+            "https://169.254.169.254/latest/meta-data",
+            "webfetch"
+        )
+        .is_err());
+        assert!(next_hop_url(&current, "ftp://example.com/file", "webfetch").is_err());
+        // A redirect to another public host passes the hop check; its DNS
+        // is re-resolved and re-pinned on the next hop.
+        assert!(next_hop_url(&current, "https://other.example/x", "webfetch").is_ok());
+        assert!(next_hop_url(&current, "/b", "webfetch").is_ok());
     }
 
     #[tokio::test]
