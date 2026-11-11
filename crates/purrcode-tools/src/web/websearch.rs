@@ -7,16 +7,22 @@ use serde::Deserialize;
 
 pub struct WebsearchTool {
     client: reqwest::Client,
+    endpoint_base: String,
 }
 
 impl WebsearchTool {
     pub fn new() -> Self {
+        Self::with_endpoint("https://html.duckduckgo.com/html/")
+    }
+
+    pub fn with_endpoint(endpoint_base: impl Into<String>) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .user_agent("PurrCode-AI/0.1.0")
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            endpoint_base: endpoint_base.into(),
         }
     }
 }
@@ -37,7 +43,9 @@ impl Tool for WebsearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "websearch".to_string(),
-            description: "Search the web for programming questions, library documentation, and error solutions".to_string(),
+            description:
+                "Search the web for programming questions, library documentation, and error solutions"
+                    .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -60,43 +68,54 @@ impl Tool for WebsearchTool {
                 message: format!("Invalid websearch arguments: {e}"),
             })?;
 
-        // Query duckduckgo html endpoint
-        let search_url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            encode_query(&args.query)
-        );
+        if args.query.trim().is_empty() {
+            return Err(PurrError::Tool {
+                tool: "websearch".to_string(),
+                message: "Search query must not be empty".to_string(),
+            });
+        }
 
-        let resp_res = self.client.get(&search_url).send().await;
+        let search_url = format!("{}?q={}", self.endpoint_base, encode_query(&args.query));
 
-        let output = match resp_res {
-            Ok(resp) => {
-                if let Ok(html) = resp.text().await {
-                    let text = extract_search_snippets(&html);
-                    if text.is_empty() {
-                        format!(
-                            "Search completed for query '{}', but no direct snippets found.",
-                            args.query
-                        )
-                    } else {
-                        text
-                    }
-                } else {
-                    format!(
-                        "Failed to parse search response for query '{}'.",
-                        args.query
-                    )
-                }
-            }
-            Err(e) => {
-                format!("Web search request failed: {e}. Check network connection or use webfetch directly.")
-            }
+        let resp = self
+            .client
+            .get(&search_url)
+            .send()
+            .await
+            .map_err(|e| PurrError::Tool {
+                tool: "websearch".to_string(),
+                message: format!("Web search HTTP request failed: {e}"),
+            })?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(PurrError::Tool {
+                tool: "websearch".to_string(),
+                message: format!("Web search endpoint returned HTTP {status}"),
+            });
+        }
+
+        let html = resp.text().await.map_err(|e| PurrError::Tool {
+            tool: "websearch".to_string(),
+            message: format!("Failed to read web search response body: {e}"),
+        })?;
+
+        let text = extract_search_snippets(&html);
+        let output = if text.is_empty() {
+            format!(
+                "Search completed for query '{}', but no direct snippets found.",
+                args.query
+            )
+        } else {
+            text
         };
 
         Ok(ToolResult {
             output,
             diff_preview: None,
             metadata: Some(serde_json::json!({
-                "query": args.query
+                "query": args.query,
+                "status": status.as_u16()
             })),
         })
     }
@@ -156,4 +175,33 @@ fn strip_tags(input: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_websearch_propagates_network_error() {
+        // Point to an unreachable port on loopback to verify network failure returns Err, not Ok
+        let tool = WebsearchTool::with_endpoint("http://127.0.0.1:9/search");
+        let ctx = ToolContext {
+            session_id: "test".to_string(),
+            agent_role: "whisker".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            is_dry_run: false,
+        };
+        let res = tool
+            .execute(serde_json::json!({ "query": "rust tokio" }), &ctx)
+            .await;
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_extract_snippets_and_encode() {
+        assert_eq!(encode_query("rust async/await"), "rust+async%2Fawait");
+        let html = r#"<div><a class="result__snippet" href="x">First <b>result</b> text</a></div>"#;
+        let out = extract_search_snippets(html);
+        assert!(out.contains("1. First result text"));
+    }
 }

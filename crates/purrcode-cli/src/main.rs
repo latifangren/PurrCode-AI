@@ -6,13 +6,13 @@ mod onboard;
 use clap::Parser;
 use cli::{Cli, Commands};
 use purrcode_api::error::{PurrError, Result};
-use purrcode_api::tool::ToolContext;
-use purrcode_approval::{AuditEntry, AuditLogger};
+use purrcode_api::tool::{AuditSink, PolicyGate, ToolContext};
+use purrcode_approval::{ApprovalGate, AuditEntry, AuditLogger};
 use purrcode_channel::tui::AskOptionItem;
 use purrcode_config::{
     Config, ConfigLoader, ModePresetLoader, ModelPresetLoader, MIN_CONTEXT_WINDOW,
 };
-use purrcode_core::{AgentLoop, SessionStore};
+use purrcode_core::{AgentLoop, SessionStore, SteeringQueue};
 use purrcode_memory::MarkdownMemory;
 use purrcode_orchestrator::MeowstroOrchestrator;
 use purrcode_plugin::PluginManager;
@@ -22,6 +22,7 @@ use purrcode_tools::mcp::McpManager;
 use purrcode_tools::{AskOption, AskRequester, ToolRegistry, ToolRegistryExt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -181,6 +182,15 @@ async fn main() -> Result<()> {
                 .await?;
                 return Ok(());
             }
+            Commands::Gateway => {
+                let _target_model = resolve_target_model_or_exit(args.model, &config);
+                println!(
+                    "🐾 PurrCode AI Gateway daemon ready (preset: {}). Listening for channel events (Ctrl-C to stop)...",
+                    config.preset
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                return Ok(());
+            }
         }
     }
 
@@ -229,6 +239,16 @@ async fn main() -> Result<()> {
 
     let (event_tx, event_rx) = tokio::sync::mpsc::channel::<purrcode_channel::TuiEvent>(64);
     let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (steer_tx, mut steer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let steering_queue = SteeringQueue::new();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    let sq_forwarder = steering_queue.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = steer_rx.recv().await {
+            sq_forwarder.push(msg);
+        }
+    });
 
     struct TuiApprovalRequester {
         event_tx: tokio::sync::mpsc::Sender<purrcode_channel::TuiEvent>,
@@ -312,6 +332,12 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "free".to_string());
     let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, &workspace_root).ok();
 
+    let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, args.yolo));
+    let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
+
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
+
     let mut tool_registry = ToolRegistry::with_defaults_and_ask(Some(ask_requester.clone()));
     if !mode_preset.tools.is_empty() {
         tool_registry.retain(|name| {
@@ -332,7 +358,6 @@ async fn main() -> Result<()> {
         let _ = session_store.save_preset_snapshots(&session_id, &p_val, &mp_val);
     }
 
-    let audit_logger = AuditLogger::new(&purrcode_dir);
     let _ = audit_logger.log_entry(AuditEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         session_id: session_id.clone(),
@@ -345,12 +370,16 @@ async fn main() -> Result<()> {
 
     let session_dir = session_store.session_dir(&session_id);
     let meowstro = if args.orchestrator {
-        Some(MeowstroOrchestrator::with_options(
+        Some(MeowstroOrchestrator::with_full_options(
             provider.clone(),
             wire_model,
             &session_dir,
             Some(approval_requester.clone()),
             Some(ask_requester.clone()),
+            Some(approval_gate.clone()),
+            Some(audit_sink.clone()),
+            Some(steering_queue.clone()),
+            Some(cancel_flag.clone()),
             args.yolo,
         ))
     } else {
@@ -359,6 +388,10 @@ async fn main() -> Result<()> {
 
     let direct_loop = AgentLoop::new(provider.clone(), wire_model, Arc::new(tool_registry))
         .with_approval_requester(approval_requester)
+        .with_policy_gate(policy_gate)
+        .with_audit_sink(audit_sink)
+        .with_steering_queue(steering_queue)
+        .with_cancel_flag(cancel_flag.clone())
         .with_yolo(args.yolo);
 
     let tool_context = ToolContext {
@@ -470,7 +503,13 @@ async fn main() -> Result<()> {
 
     let app = purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id)
         .with_model_preset(model_preset_name);
-    purrcode_channel::TuiRunner::run(app, Some(event_rx), Some(prompt_tx))?;
+    purrcode_channel::TuiRunner::run_with_controls(
+        app,
+        Some(event_rx),
+        Some(prompt_tx),
+        Some(steer_tx),
+        Some(cancel_flag),
+    )?;
     Ok(())
 }
 
@@ -591,13 +630,21 @@ async fn run_one_shot(
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let purrcode_dir = onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
+    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, &workspace_root) {
+        Ok(p) => p,
+        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
+    };
+    let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
+    let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
+
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
+
     let mut tool_registry = ToolRegistry::with_defaults();
-    if let Ok(mode_preset) = ModePresetLoader::load_by_name(&config.preset, &workspace_root) {
-        if !mode_preset.tools.is_empty() {
-            tool_registry.retain(|name| {
-                name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
-            });
-        }
+    if !mode_preset.tools.is_empty() {
+        tool_registry.retain(|name| {
+            name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
+        });
     }
     let mut mcp_manager = McpManager::new();
     let _ = mcp_manager
@@ -605,6 +652,19 @@ async fn run_one_shot(
         .await;
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+    let session_store = SessionStore::new(&purrcode_dir);
+    let session_dir = session_store.session_dir(&session_id);
+
+    let _ = audit_logger.log_entry(AuditEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        session_id: session_id.clone(),
+        agent: "meowstro".to_string(),
+        event: "one_shot_start".to_string(),
+        tool: None,
+        decision: "allow".to_string(),
+        detail: format!("preset={} yolo={}", config.preset, yolo),
+    });
+
     let tool_context = ToolContext {
         session_id: session_id.clone(),
         agent_role: "meowstro".to_string(),
@@ -613,13 +673,16 @@ async fn run_one_shot(
     };
 
     let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> = Arc::new(CliApprovalRequester);
-    let session_dir = std::env::temp_dir().join("purrcode_session");
     let meowstro = if use_orchestrator {
-        Some(MeowstroOrchestrator::with_options(
+        Some(MeowstroOrchestrator::with_full_options(
             provider.clone(),
             wire_model,
             &session_dir,
             Some(cli_approver.clone()),
+            None,
+            Some(approval_gate),
+            Some(audit_sink.clone()),
+            None,
             None,
             yolo,
         ))
@@ -629,6 +692,8 @@ async fn run_one_shot(
 
     let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry))
         .with_approval_requester(cli_approver)
+        .with_policy_gate(policy_gate)
+        .with_audit_sink(audit_sink)
         .with_yolo(yolo);
 
     let mut in_reasoning = false;
@@ -728,10 +793,12 @@ fn run_doctor(config: &Config, workspace_root: &std::path::Path) {
             "   Create '~/.purrcode/purrcode.jsonc' or run 'purrcode-ai onboard' to configure your endpoint."
         );
     } else {
+        let reg = ProviderRegistry::from_config(config);
         println!("Configured Providers ({}):", config.providers.len());
         for (name, p) in &config.providers {
             let eff_url = p.base_url.as_deref().unwrap_or("(none)");
-            println!("  • [{}]", name);
+            let healthy = reg.get(name).map(|prov| prov.is_healthy()).unwrap_or(false);
+            println!("  • [{}] (healthy: {})", name, healthy);
             println!("    Base URL: {}", eff_url);
             println!("    API Type: {}", p.api);
             println!("    Models: {} configured", p.models.len());

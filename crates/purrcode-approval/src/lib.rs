@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use purrcode_api::error::{PurrError, Result};
-use purrcode_api::tool::ApprovalTier;
+pub use purrcode_api::tool::ApprovalDecision;
+use purrcode_api::tool::{ApprovalTier, AuditSink, PolicyGate};
 use purrcode_config::{ApprovalMode, GuardrailMode, ModePreset, SandboxMode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalDecision {
-    Allow,
-    Ask,
-    Deny,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -28,6 +21,7 @@ pub struct AuditEntry {
     pub detail: String,
 }
 
+#[derive(Clone)]
 pub struct AuditLogger {
     audit_file: PathBuf,
     max_bytes: u64,
@@ -45,6 +39,10 @@ impl AuditLogger {
     pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
         self.max_bytes = max_bytes;
         self
+    }
+
+    pub fn audit_file_path(&self) -> &Path {
+        &self.audit_file
     }
 
     pub fn log_entry(&self, mut entry: AuditEntry) -> Result<()> {
@@ -79,6 +77,28 @@ impl AuditLogger {
     }
 }
 
+impl AuditSink for AuditLogger {
+    fn record_event(
+        &self,
+        session_id: &str,
+        agent: &str,
+        event: &str,
+        tool: Option<&str>,
+        decision: &str,
+        detail: &str,
+    ) {
+        let _ = self.log_entry(AuditEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_id: session_id.to_string(),
+            agent: agent.to_string(),
+            event: event.to_string(),
+            tool: tool.map(|t| t.to_string()),
+            decision: decision.to_string(),
+            detail: detail.to_string(),
+        });
+    }
+}
+
 /// Scrubs credentials, bearer tokens, and `*_API_KEY` values from logs and LLM payloads.
 pub fn scrub_secrets(input: &str) -> String {
     let mut out = input.to_string();
@@ -99,6 +119,7 @@ pub fn scrub_secrets(input: &str) -> String {
     out
 }
 
+#[derive(Clone)]
 pub struct ApprovalGate {
     pub mode: ApprovalMode,
     pub guardrail: GuardrailMode,
@@ -220,6 +241,24 @@ impl ApprovalGate {
             self.mode
         }
     }
+
+    /// Creates a child `ApprovalGate` narrowed to at most the parent's policy and never exceeding `requested_mode`.
+    pub fn narrowed_child_gate(&self, requested_mode: ApprovalMode) -> Self {
+        let mut child = self.clone();
+        child.mode = self.narrow_for_child(requested_mode);
+        child
+    }
+}
+
+impl PolicyGate for ApprovalGate {
+    fn evaluate_tool(
+        &self,
+        tool_name: &str,
+        tier: ApprovalTier,
+        is_outside_workspace: bool,
+    ) -> ApprovalDecision {
+        ApprovalGate::evaluate_tool(self, tool_name, tier, is_outside_workspace)
+    }
 }
 
 pub fn check_workspace_confinement(target: &Path, workspace_root: &Path) -> bool {
@@ -231,7 +270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deny_beats_ask_beats_allow() {
+    fn test_deny_beats_ask_beats_allow_and_narrowing() {
         let mut gate = ApprovalGate::new("yolo");
         gate.add_allow_rule("bash");
         gate.add_ask_rule("bash");
@@ -245,6 +284,10 @@ mod tests {
             gate.evaluate_tool("bash", ApprovalTier::Exec, false),
             ApprovalDecision::Deny
         );
+
+        let strict_parent = ApprovalGate::new("carrier");
+        let child = strict_parent.narrowed_child_gate(ApprovalMode::Yolo);
+        assert_eq!(child.mode, ApprovalMode::Manual);
     }
 
     #[test]
@@ -271,7 +314,7 @@ mod tests {
                 event: "tool_call".to_string(),
                 tool: Some("read".to_string()),
                 decision: "allow".to_string(),
-                detail: "token sk-1234567890abcdef".to_string(),
+                detail: format!("Bearer {}", "dummy_val"),
             })
             .unwrap();
         logger

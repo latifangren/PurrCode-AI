@@ -17,4 +17,7 @@ pub use provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, StreamChunk, TokenUsage,
     ToolCallDelta, ToolCallRequest,
 };
-pub use tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolRegistry, ToolResult};
+pub use tool::{
+    ApprovalDecision, ApprovalTier, AuditSink, PolicyGate, Tool, ToolContext, ToolDefinition,
+    ToolRegistry, ToolResult,
+};

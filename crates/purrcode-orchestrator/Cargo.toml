@@ -10,6 +10,7 @@ purrcode-api.workspace = true
 purrcode-config.workspace = true
 purrcode-core.workspace = true
 purrcode-provider.workspace = true
+purrcode-approval.workspace = true
 purrcode-tools.workspace = true
 async-trait.workspace = true
 tokio.workspace = true

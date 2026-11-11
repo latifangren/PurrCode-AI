@@ -165,7 +165,7 @@ impl MemoryBackend for MarkdownMemory {
         Ok(facts)
     }
 
-    async fn forget(&self, id_or_substring: &str) -> Result<()> {
+    async fn forget(&self, id: &str) -> Result<()> {
         let path = self.memory_file();
         if !path.exists() {
             return Ok(());
@@ -174,13 +174,12 @@ impl MemoryBackend for MarkdownMemory {
         let content = tokio::fs::read_to_string(&path)
             .await
             .map_err(purrcode_api::PurrError::Io)?;
-        let needle = format!("({})", id_or_substring);
         let kept: Vec<&str> = content
             .lines()
             .filter(|line| {
                 let t = line.trim();
                 if t.starts_with('-') {
-                    !t.contains(&needle) && !t.contains(id_or_substring)
+                    extract_fact_id(t).as_deref() != Some(id)
                 } else {
                     true
                 }
@@ -233,6 +232,15 @@ mod tests {
         .await
         .unwrap();
 
+        mem.remember(MemoryFact {
+            id: "fact_010".to_string(),
+            category: "preference".to_string(),
+            content: "Keep fact_010 intact when deleting fact_01".to_string(),
+            source: None,
+        })
+        .await
+        .unwrap();
+
         assert!(mem.has_changed_on_disk());
         let recalled = mem.recall("musl", 5).await.unwrap();
         assert_eq!(recalled.len(), 1);
@@ -241,6 +249,10 @@ mod tests {
         mem.forget("fact_01").await.unwrap();
         let after_forget = mem.recall("musl", 5).await.unwrap();
         assert!(after_forget.is_empty());
+
+        let remaining = mem.recall("fact_010", 5).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "fact_010");
 
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }

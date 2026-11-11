@@ -14,6 +14,35 @@ pub enum ApprovalTier {
     Exec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApprovalDecision {
+    Allow,
+    Ask,
+    Deny,
+}
+
+pub trait PolicyGate: Send + Sync {
+    fn evaluate_tool(
+        &self,
+        tool_name: &str,
+        tier: ApprovalTier,
+        is_outside_workspace: bool,
+    ) -> ApprovalDecision;
+}
+
+pub trait AuditSink: Send + Sync {
+    fn record_event(
+        &self,
+        session_id: &str,
+        agent: &str,
+        event: &str,
+        tool: Option<&str>,
+        decision: &str,
+        detail: &str,
+    );
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -94,5 +123,52 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyTool(&'static str);
+
+    #[async_trait]
+    impl Tool for DummyTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.0.to_string(),
+                description: "Dummy tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                tier: ApprovalTier::Read,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolResult> {
+            Ok(ToolResult {
+                output: "ok".to_string(),
+                diff_preview: None,
+                metadata: None,
+            })
+        }
+    }
+
+    #[test]
+    fn test_tool_registry_register_retain_and_freeze() {
+        let mut reg = ToolRegistry::new();
+        assert!(reg.register(Arc::new(DummyTool("read"))).is_ok());
+        assert!(reg.register(Arc::new(DummyTool("write"))).is_ok());
+        assert_eq!(reg.list().len(), 2);
+
+        reg.retain(|name| name == "read");
+        assert!(reg.get("read").is_some());
+        assert!(reg.get("write").is_none());
+
+        reg.freeze();
+        assert!(reg.is_frozen());
+        assert!(reg.register(Arc::new(DummyTool("bash"))).is_err());
     }
 }

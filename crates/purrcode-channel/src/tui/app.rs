@@ -249,3 +249,38 @@ impl TuiApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tui_app_utf8_editing_and_events() {
+        let mut app = TuiApp::new("model-1", "tabby", "purr_123456").with_model_preset("free");
+        app.insert_char('🐾');
+        app.insert_char('a');
+        assert_eq!(app.input, "🐾a");
+        app.move_cursor_left();
+        app.backspace();
+        assert_eq!(app.input, "a");
+        app.move_cursor_right();
+        assert_eq!(app.submit_input().as_deref(), Some("a"));
+        assert!(app.input.is_empty());
+
+        app.handle_event(TuiEvent::ReasoningChunk("thinking...".to_string()));
+        app.handle_event(TuiEvent::TextChunk("Hello".to_string()));
+        app.handle_event(TuiEvent::ToolCallStarted {
+            name: "read".to_string(),
+            args: "{}".to_string(),
+        });
+        assert_eq!(app.tool_call_count, 1);
+        app.handle_event(TuiEvent::ToolCallFinished {
+            name: "read".to_string(),
+            output: "1|line".to_string(),
+            success: true,
+        });
+        app.handle_event(TuiEvent::TurnFinished);
+        assert!(!app.is_generating);
+        assert_eq!(app.items.len(), 3);
+    }
+}

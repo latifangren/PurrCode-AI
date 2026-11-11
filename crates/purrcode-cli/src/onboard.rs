@@ -3,7 +3,7 @@
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use purrcode_api::error::{PurrError, Result};
-use purrcode_config::{Config, ModelConfig, ProviderConfig};
+use purrcode_config::{Config, ModelConfig, ProviderConfig, MIN_CONTEXT_WINDOW};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -44,6 +44,43 @@ pub fn run_interactive_onboard() -> Result<()> {
         ));
     }
 
+    print!(
+        "Context window in tokens (required, min {}): ",
+        MIN_CONTEXT_WINDOW
+    );
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let ctx_raw = read_line_trimmed();
+    let context_window: u64 = ctx_raw.parse().map_err(|_| {
+        PurrError::Config(format!(
+            "Valid numeric context_window (>= {}) is required",
+            MIN_CONTEXT_WINDOW
+        ))
+    })?;
+    if context_window < MIN_CONTEXT_WINDOW {
+        return Err(PurrError::Config(format!(
+            "context_window ({}) is below the required 64K ({}) minimum",
+            context_window, MIN_CONTEXT_WINDOW
+        )));
+    }
+
+    print!("Max output tokens (optional, press Enter to leave unset): ");
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let max_tok_raw = read_line_trimmed();
+    let max_tokens: Option<u64> =
+        if max_tok_raw.is_empty() {
+            None
+        } else {
+            Some(max_tok_raw.parse().map_err(|_| {
+                PurrError::Config("Invalid numeric value for max_tokens".to_string())
+            })?)
+        };
+
+    print!("Does this model emit reasoning/thinking blocks? [y/N]: ");
+    io::stdout().flush().map_err(PurrError::Io)?;
+    let reasoning_raw = read_line_trimmed();
+    let reasoning =
+        reasoning_raw.eq_ignore_ascii_case("y") || reasoning_raw.eq_ignore_ascii_case("yes");
+
     print!("Mode preset? [1] tabby (default supervised)  [2] carrier (strict) [default 1]: ");
     io::stdout().flush().map_err(PurrError::Io)?;
     let preset_choice = read_line_trimmed();
@@ -67,9 +104,9 @@ pub fn run_interactive_onboard() -> Result<()> {
         model_id.clone(),
         ModelConfig {
             name: Some(model_id.clone()),
-            context_window: 131072,
-            max_tokens: Some(8192),
-            reasoning: true,
+            context_window,
+            max_tokens,
+            reasoning,
             reasoning_effort: None,
         },
     );

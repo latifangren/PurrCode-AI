@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod meowstro;
+pub mod shadow;
 pub mod task;
 
 pub use meowstro::MeowstroOrchestrator;
+pub use shadow::{parse_shadow_verdict, should_trigger_shadow, ShadowAuditor, ShadowVerdict};
 pub use task::TaskTool;
 
 use purrcode_api::error::Result;

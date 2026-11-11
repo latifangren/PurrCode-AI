@@ -1070,6 +1070,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "purrcode-api",
+ "purrcode-approval",
  "purrcode-config",
  "purrcode-core",
  "purrcode-provider",

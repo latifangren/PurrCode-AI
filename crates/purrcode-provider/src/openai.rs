@@ -8,6 +8,7 @@ use purrcode_api::provider::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct OpenAiCompatibleProvider {
     pub name: String,
@@ -15,6 +16,7 @@ pub struct OpenAiCompatibleProvider {
     pub api_key: Option<String>,
     pub headers: HashMap<String, String>,
     client: reqwest::Client,
+    healthy: AtomicBool,
 }
 
 impl OpenAiCompatibleProvider {
@@ -28,12 +30,14 @@ impl OpenAiCompatibleProvider {
         if url.ends_with('/') {
             url.pop();
         }
+        let valid_url = !url.trim().is_empty() && reqwest::Url::parse(&url).is_ok();
         Self {
             name: name.into(),
             base_url: url,
             api_key,
             headers,
             client: reqwest::Client::new(),
+            healthy: AtomicBool::new(valid_url),
         }
     }
 
@@ -155,7 +159,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 
     fn is_healthy(&self) -> bool {
-        true
+        self.healthy.load(Ordering::SeqCst)
     }
 
     async fn stream_completion(
@@ -232,13 +236,19 @@ impl ModelProvider for OpenAiCompatibleProvider {
             req_builder = req_builder.header(k, v);
         }
 
-        let response = req_builder.send().await.map_err(|e| PurrError::Provider {
-            provider: self.name.clone(),
-            message: format!("HTTP request to {} failed: {}", url, e),
+        let response = req_builder.send().await.map_err(|e| {
+            self.healthy.store(false, Ordering::SeqCst);
+            PurrError::Provider {
+                provider: self.name.clone(),
+                message: format!("HTTP request to {} failed: {}", url, e),
+            }
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
+            if status.is_server_error() {
+                self.healthy.store(false, Ordering::SeqCst);
+            }
             let err_text = response.text().await.unwrap_or_default();
             let lower = err_text.to_ascii_lowercase();
             if lower.contains("content_policy_violation")
@@ -256,6 +266,8 @@ impl ModelProvider for OpenAiCompatibleProvider {
                 message: format!("HTTP error {}: {}", status, err_text),
             });
         }
+
+        self.healthy.store(true, Ordering::SeqCst);
 
         tokio::spawn(async move {
             let mut byte_stream = response.bytes_stream();

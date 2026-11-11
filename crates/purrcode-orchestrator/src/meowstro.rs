@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use purrcode_api::provider::ModelProvider;
-use purrcode_core::{AgentLoop, ApprovalRequester};
+use purrcode_api::tool::AuditSink;
+use purrcode_approval::ApprovalGate;
+use purrcode_core::{AgentLoop, ApprovalRequester, SteeringQueue};
 use purrcode_tools::{AskRequester, ToolRegistry};
 
 use crate::task::TaskTool;
@@ -31,6 +34,33 @@ impl MeowstroOrchestrator {
         session_dir: impl Into<PathBuf>,
         approval_requester: Option<Arc<dyn ApprovalRequester>>,
         ask_requester: Option<Arc<dyn AskRequester>>,
+        yolo: bool,
+    ) -> Self {
+        Self::with_full_options(
+            provider,
+            model,
+            session_dir,
+            approval_requester,
+            ask_requester,
+            None,
+            None,
+            None,
+            None,
+            yolo,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_full_options(
+        provider: Arc<dyn ModelProvider>,
+        model: impl Into<String>,
+        session_dir: impl Into<PathBuf>,
+        approval_requester: Option<Arc<dyn ApprovalRequester>>,
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        approval_gate: Option<Arc<ApprovalGate>>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+        steering_queue: Option<SteeringQueue>,
+        cancel_flag: Option<Arc<AtomicBool>>,
         yolo: bool,
     ) -> Self {
         let session_path = session_dir.into();
@@ -59,13 +89,15 @@ impl MeowstroOrchestrator {
             Arc::new(Mutex::new(skill_mgr)),
         )));
 
-        let task_tool = TaskTool::with_options(
+        let task_tool = TaskTool::with_full_options(
             registry.clone(),
             provider.clone(),
             model_str.clone(),
             session_path,
             approval_requester.clone(),
             ask_requester,
+            approval_gate.clone(),
+            audit_sink.clone(),
             yolo,
         );
         let _ = tool_reg.register(Arc::new(task_tool));
@@ -75,6 +107,18 @@ impl MeowstroOrchestrator {
             AgentLoop::new(provider, model_str, Arc::new(tool_reg)).with_yolo(yolo);
         if let Some(req) = approval_requester {
             agent_loop = agent_loop.with_approval_requester(req);
+        }
+        if let Some(gate) = approval_gate {
+            agent_loop = agent_loop.with_policy_gate(gate);
+        }
+        if let Some(sink) = audit_sink {
+            agent_loop = agent_loop.with_audit_sink(sink);
+        }
+        if let Some(sq) = steering_queue {
+            agent_loop = agent_loop.with_steering_queue(sq);
+        }
+        if let Some(cf) = cancel_flag {
+            agent_loop = agent_loop.with_cancel_flag(cf);
         }
 
         Self {

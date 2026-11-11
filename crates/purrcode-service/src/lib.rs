@@ -42,7 +42,22 @@ depend() {
         } else if std::path::Path::new("/etc/init.d/purrcode-ai").exists() {
             "OpenRC init script installed at /etc/init.d/purrcode-ai".to_string()
         } else {
-            "not installed (run `purrcode-ai service install --print` to inspect unit)".to_string()
+            "not installed (run `purrcode-ai service install` to inspect unit)".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_unit_generators() {
+        let systemd = ServiceInstaller::generate_systemd_unit();
+        assert!(systemd.contains("ExecStart=/usr/local/bin/purrcode-ai gateway"));
+        let openrc = ServiceInstaller::generate_openrc_init();
+        assert!(openrc.contains("command=\"/usr/local/bin/purrcode-ai\""));
+        assert!(openrc.contains("command_args=\"gateway\""));
+        assert!(!ServiceInstaller::status_report().is_empty());
     }
 }

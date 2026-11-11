@@ -15,6 +15,8 @@ use crossterm::{
 use purrcode_api::error::{PurrError, Result};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
@@ -22,9 +24,19 @@ pub struct TuiRunner;
 
 impl TuiRunner {
     pub fn run(
+        app: TuiApp,
+        rx: Option<Receiver<TuiEvent>>,
+        prompt_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<()> {
+        Self::run_with_controls(app, rx, prompt_tx, None, None)
+    }
+
+    pub fn run_with_controls(
         mut app: TuiApp,
         mut rx: Option<Receiver<TuiEvent>>,
         prompt_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        steer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        cancel_flag: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
         enable_raw_mode().map_err(|e| PurrError::Channel {
             channel: "tui".to_string(),
@@ -43,7 +55,14 @@ impl TuiRunner {
             message: format!("Failed to initialize terminal: {e}"),
         })?;
 
-        let res = run_loop(&mut terminal, &mut app, rx.as_mut(), prompt_tx.as_ref());
+        let res = run_loop(
+            &mut terminal,
+            &mut app,
+            rx.as_mut(),
+            prompt_tx.as_ref(),
+            steer_tx.as_ref(),
+            cancel_flag.as_ref(),
+        );
 
         // Always restore terminal on exit
         let _ = disable_raw_mode();
@@ -59,6 +78,8 @@ fn run_loop<B: ratatui::backend::Backend>(
     app: &mut TuiApp,
     mut rx: Option<&mut Receiver<TuiEvent>>,
     prompt_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    steer_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    cancel_flag: Option<&Arc<AtomicBool>>,
 ) -> Result<()> {
     while !app.should_quit {
         // 1. Drain any pending events from the background agent loop
@@ -199,25 +220,48 @@ fn run_loop<B: ratatui::backend::Backend>(
                                 }
                                 continue;
                             }
-                            app.items.push(MessageItem::User(cmd.clone()));
-                            app.is_generating = true;
-                            if let Some(p_tx) = prompt_tx {
-                                let _ = p_tx.send(cmd);
+                            if app.is_generating {
+                                // Mid-turn follow-up message goes into SteeringQueue
+                                app.items
+                                    .push(MessageItem::User(format!("[steered] {}", cmd)));
+                                if let Some(s_tx) = steer_tx {
+                                    let _ = s_tx.send(cmd);
+                                }
                             } else {
-                                app.items.push(MessageItem::Assistant {
-                                    text: format!(
-                                        "Echo response for '{}' (TUI standalone mode).",
-                                        cmd
-                                    ),
-                                    reasoning: None,
-                                });
-                                app.is_generating = false;
+                                app.items.push(MessageItem::User(cmd.clone()));
+                                app.is_generating = true;
+                                if let Some(cf) = cancel_flag {
+                                    cf.store(false, Ordering::SeqCst);
+                                }
+                                if let Some(p_tx) = prompt_tx {
+                                    let _ = p_tx.send(cmd);
+                                } else {
+                                    app.items.push(MessageItem::Assistant {
+                                        text: format!(
+                                            "Echo response for '{}' (TUI standalone mode).",
+                                            cmd
+                                        ),
+                                        reasoning: None,
+                                    });
+                                    app.is_generating = false;
+                                }
                             }
                         }
                     }
                     KeyCode::Esc => {
-                        app.should_quit = true;
-                        break;
+                        if app.is_generating {
+                            if let Some(cf) = cancel_flag {
+                                cf.store(true, Ordering::SeqCst);
+                            }
+                            app.is_generating = false;
+                            app.items.push(MessageItem::ToolResult {
+                                output: "Turn interrupted by user (Esc).".to_string(),
+                                success: false,
+                            });
+                        } else {
+                            app.should_quit = true;
+                            break;
+                        }
                     }
                     _ => {}
                 }

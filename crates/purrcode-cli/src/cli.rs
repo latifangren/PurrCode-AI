@@ -91,4 +91,6 @@ pub enum Commands {
         #[arg()]
         prompt: Option<String>,
     },
+    /// Run background gateway daemon for channel adapters (systemd/OpenRC service target)
+    Gateway,
 }

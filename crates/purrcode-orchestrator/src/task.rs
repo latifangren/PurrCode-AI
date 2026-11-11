@@ -3,7 +3,11 @@
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::provider::ModelProvider;
-use purrcode_api::tool::{ApprovalTier, Tool, ToolContext, ToolDefinition, ToolResult};
+use purrcode_api::tool::{
+    ApprovalTier, AuditSink, PolicyGate, Tool, ToolContext, ToolDefinition, ToolResult,
+};
+use purrcode_approval::ApprovalGate;
+use purrcode_config::GuardrailMode;
 use purrcode_core::{AgentLoop, ApprovalRequester};
 use purrcode_tools::{AskRequester, ToolRegistry, ToolRegistryExt};
 use serde::Deserialize;
@@ -11,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::shadow::{should_trigger_shadow, ShadowAuditor};
 use crate::SubagentRegistry;
 
 pub struct TaskTool {
@@ -20,6 +25,8 @@ pub struct TaskTool {
     session_dir: PathBuf,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
     ask_requester: Option<Arc<dyn AskRequester>>,
+    approval_gate: Option<Arc<ApprovalGate>>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
     yolo: bool,
 }
 
@@ -42,6 +49,31 @@ impl TaskTool {
         ask_requester: Option<Arc<dyn AskRequester>>,
         yolo: bool,
     ) -> Self {
+        Self::with_full_options(
+            registry,
+            provider,
+            model,
+            session_dir,
+            approval_requester,
+            ask_requester,
+            None,
+            None,
+            yolo,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_full_options(
+        registry: Arc<Mutex<SubagentRegistry>>,
+        provider: Arc<dyn ModelProvider>,
+        model: impl Into<String>,
+        session_dir: impl Into<PathBuf>,
+        approval_requester: Option<Arc<dyn ApprovalRequester>>,
+        ask_requester: Option<Arc<dyn AskRequester>>,
+        approval_gate: Option<Arc<ApprovalGate>>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+        yolo: bool,
+    ) -> Self {
         Self {
             registry,
             provider,
@@ -49,6 +81,8 @@ impl TaskTool {
             session_dir: session_dir.into(),
             approval_requester,
             ask_requester,
+            approval_gate,
+            audit_sink,
             yolo,
         }
     }
@@ -108,6 +142,12 @@ struct TaskArgs {
     role: String,
     id: Option<String>,
     brief: String,
+    #[serde(default)]
+    shadow_override_reason: Option<String>,
+    #[serde(default)]
+    is_cron: Option<bool>,
+    #[serde(default)]
+    is_replan: Option<bool>,
 }
 
 #[async_trait]
@@ -131,6 +171,10 @@ impl Tool for TaskTool {
                     "brief": {
                         "type": "string",
                         "description": "Clear instructions, target files/lines, constraints, and expected deliverables"
+                    },
+                    "shadow_override_reason": {
+                        "type": "string",
+                        "description": "Optional reason to override an advisory Tuxeshadow objection in Tabby (default) mode (recorded in audit.jsonl)"
                     }
                 },
                 "required": ["role", "brief"]
@@ -191,6 +235,39 @@ impl Tool for TaskTool {
         }
         let _ = tokio::fs::write(&brief_file, existing_brief.as_bytes()).await;
 
+        // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan delegations (ADR-012)
+        let mut effective_brief = args.brief.clone();
+        if should_trigger_shadow(
+            &args.role,
+            &existing_brief,
+            args.is_cron.unwrap_or(false),
+            args.is_replan.unwrap_or(false),
+        ) {
+            let guardrail = self
+                .approval_gate
+                .as_ref()
+                .map(|g| g.guardrail)
+                .unwrap_or(GuardrailMode::Default);
+            let mut auditor = ShadowAuditor::new(self.provider.clone(), &self.model, guardrail);
+            if let Some(ref sink) = self.audit_sink {
+                auditor = auditor.with_audit_sink(sink.clone());
+            }
+            if let Some(ref req) = self.approval_requester {
+                auditor = auditor.with_approval_requester(req.clone());
+            }
+            let verdict = auditor.audit_raw_artifact(&existing_brief, ctx).await?;
+            if let Some(shadow_note) = auditor
+                .enforce_verdict(
+                    &verdict,
+                    &ctx.session_id,
+                    args.shadow_override_reason.as_deref(),
+                )
+                .await?
+            {
+                effective_brief.push_str(&format!("\n\n{}", shadow_note));
+            }
+        }
+
         // 3. Assemble child toolset according to role
         let child_tools = Arc::new(self.build_role_tools(&args.role));
 
@@ -207,6 +284,15 @@ impl Tool for TaskTool {
         if let Some(ref req) = self.approval_requester {
             child_loop = child_loop.with_approval_requester(req.clone());
         }
+        // Narrow parent policy gate for child subagent (never escalate beyond parent)
+        if let Some(ref parent_gate) = self.approval_gate {
+            let narrowed: Arc<dyn PolicyGate> =
+                Arc::new(parent_gate.narrowed_child_gate(parent_gate.mode));
+            child_loop = child_loop.with_policy_gate(narrowed);
+        }
+        if let Some(ref sink) = self.audit_sink {
+            child_loop = child_loop.with_audit_sink(sink.clone());
+        }
 
         let system_prompt = format!(
             "You are {}, a specialized subagent of PurrCode AI.\nYour continuation ID is '{}'.\nPerform your assigned task thoroughly using your allowed tools and return a concise structured summary (changed files:line, verified evidence, blockers, unverified items).",
@@ -219,11 +305,11 @@ impl Tool for TaskTool {
             let mut h2 = history.clone();
             let seat1_prompt = format!(
                 "[Council Seat 1 — Architecture & Safety Lens]\n{}",
-                args.brief
+                effective_brief
             );
             let seat2_prompt = format!(
                 "[Council Seat 2 — Pragmatism & Edge-Case Lens]\n{}",
-                args.brief
+                effective_brief
             );
             let (r1, r2) = tokio::join!(
                 child_loop.run_turn_with_history(
@@ -249,7 +335,7 @@ impl Tool for TaskTool {
             child_loop
                 .run_turn_with_history(
                     &mut history,
-                    &args.brief,
+                    &effective_brief,
                     Some(&system_prompt),
                     &child_context,
                     None,
@@ -343,12 +429,15 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
-        let task_tool = TaskTool::with_options(
+        let gate = Arc::new(ApprovalGate::new("tabby"));
+        let task_tool = TaskTool::with_full_options(
             reg.clone(),
             provider.clone(),
             "mock-model",
             &temp_dir,
             None,
+            None,
+            Some(gate),
             None,
             true,
         );
@@ -423,10 +512,8 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(resumed_id, whisker_id);
-        // Must have preserved prior conversation turn (user_turns=2)
         assert!(r3.output.contains("user_turns=2"));
 
-        // Verify disk artifacts exist: brief.md, result.md, <id>.json, workgraph.json
         assert!(temp_dir
             .join("subagents")
             .join(&whisker_id)
