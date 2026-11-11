@@ -1,0 +1,95 @@
+# PurrCode AI — CI
+#
+# Runs on every push to main / dev-muse and on pull requests.
+# The musl job mirrors what was verified locally on 2026-11-12:
+# `musl-tools` (musl-gcc) as the target C compiler/linker, no zigbuild
+# or cross required. The Windows job is NOT verified from a Linux VM;
+# it runs only on GitHub's windows-latest runner.
+name: CI
+
+on:
+  push:
+    branches: [main, dev-muse]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (Linux GNU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+
+  release-gnu:
+    name: release (Linux GNU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - run: |
+          file target/release/purrcode-ai
+          ls -l target/release/purrcode-ai
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purrcode-ai-linux-gnu
+          path: target/release/purrcode-ai
+
+  release-musl:
+    name: release (Linux musl, static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build static musl release
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Verify the binary is statically linked
+        run: |
+          file target/x86_64-unknown-linux-musl/release/purrcode-ai
+          ldd target/x86_64-unknown-linux-musl/release/purrcode-ai 2>&1 | grep -q "statically linked"
+          ls -l target/x86_64-unknown-linux-musl/release/purrcode-ai
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purrcode-ai-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/purrcode-ai
+
+  windows:
+    name: test + release (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - run: cargo build --release
+      - run: |
+          Get-Item target/release/purrcode-ai.exe | Select-Object Length, Name

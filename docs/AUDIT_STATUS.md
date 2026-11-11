@@ -1,9 +1,9 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 05:02:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 05:08:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.629.616 byte stripped dynamic ELF di Linux, diukur pada build rilis branch `dev-muse`), keduanya jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross` (target rilis CI/distribusi — build saat ini masih dynamic GNU; bukti build musl menunggu workplan P1 item 13) & Windows Native Standalone Binary (`.exe`)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.629.616 byte stripped dynamic GNU ELF di Linux) / **~4,5 MiB** (4.756.640 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 4.756.640 byte = 4,54 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 98/98 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
 - **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (98 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
@@ -232,6 +232,11 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **TERBUKA — F3 (failover top-level belum ada, klarifikasi re-checker):** `FallbackRouter` hanya dibangun di loop child (`task.rs:312`, dari `fallback_candidates` preset model per-role); panggilan pertama model sesi yang 500 → hard error by design, bukan failover. Menutup ini butuh keputusan desain — dari mana rantai fallback model sesi berasal (tidak ada field `fallback` di `ModelConfig` saat ini) — dicatat sebagai item kerja terpisah, bukan diklaim tertutup di sini.
     - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **98/98 lolos, 0 failed** (96 + 2 baru: SSE index-default, CLI approval requester), clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.629.616 byte (4,41 MiB), ELF dynamic GNU, stripped.
     - **Catatan proses (perintah user 2026-11-12 04:54 WIB):** batch ini TIDAK disertai laporan verifikasi gabungan — kedua checker batch 2a sudah menutup klaim batch 2a (6/6 build + re-check 96/96), dan temuan mereka (F1/F2/N1b + observasi SSE) langsung menjadi daftar perbaikan ini. Verifikasi independen per batch tetap jalan diam-diam; laporan hanya di ujung v0.1.
+17. **Musl statis + CI (workplan item 20, 2026-11-12):**
+    - **Build musl sungguhan (bukan klaim):** `cargo build --release --target x86_64-unknown-linux-musl` dengan `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc` + `CC_x86_64_unknown_linux_musl=musl-gcc` (target + `musl-tools` 1.2.4 terpasang di VM). Hasil: **4.756.640 byte = 4,54 MiB**, `file` = `ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, stripped`, `ldd` = `statically linked`, `--help` berjalan. Static-PIE (bukan static biasa) karena Rust memakai relocation-model pic untuk target musl — tetap tanpa dynamic loader dan tanpa dependensi `.so` apa pun.
+    - **Suite di target musl: 98/98, 0 failed** — jumlah dan per-crate sama persis dengan suite GNU (api 4, approval 2, channel 9, cli 8, config 9, core 4, memory 3, orchestrator 8, plugin 6, provider 7, service 4, tools 34). Binary musl bukan sekadar ter-link, tapi teruji.
+    - **CI (`.github/workflows/ci.yml`, baru):** 6 job — `fmt`, `clippy -D warnings`, `test` (Linux GNU), `release-gnu`, `release-musl` (install `musl-tools`, build target musl, verifikasi `file` + `ldd` statically linked, upload artifact), `windows` (test + release di `windows-latest`). YAML divalidasi lokal (PyYAML, 6 job). **Jujur dicatat:** CI belum pernah berjalan di GitHub (belum ada push) — job Windows khususnya tidak terverifikasi dari VM ini dan hanya berjalan di runner GitHub; artifact upload belum teruji end-to-end. Sampai ada run hijau pertama di GitHub, CI ini adalah pipeline yang dibuat + divalidasi sintaksnya, bukan pipeline yang terbukti jalan.
+    - **Batas scope:** tidak memakai `cargo zigbuild`/`cross` (tidak diperlukan — `musl-gcc` cukup); cross-compile arm64/arm/mipsle (PRD F14) tetap belum dikerjakan.
 
 ---
 

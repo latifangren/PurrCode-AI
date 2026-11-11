@@ -52,7 +52,7 @@ User memerintahkan (04:16 WIB): kerjakan keduanya (default `--orchestrator` + Us
 | 17 | TOCTOU SSRF — pin IP hasil resolusi saat connect | P1 item 8, naik ke ronde ini. Lihat P1 untuk detail. |
 | 18 | Tegakkan `capabilities.network`/`filesystem` atau hapus klaimnya | P1 item 9, naik ke ronde ini. **SELESAI batch 2a, sisi "hapus klaimnya":** hanya `secrets` ditegakkan; `network`/`filesystem` di-parse + dicatat sebagai deklarasi v0.3, peringatan via `tracing::warn!` + audit entry `plugin_capability_unenforced` + baris `⚠` di `plugin list`; klaim default-deny dikualifikasi. Penegakan nyata = sandbox OS v0.3. |
 | 19 | Light fixes (result.md `##` ganda, fuzzy-edit newline, TUI first-line) | P1 item 10–12. **SELESAI batch 2a:** dedup `## Summary`, `line_content_end` (LF + CRLF), kartu TUI 4 baris + marker `… (N more lines)` — semua ber-unit-test. |
-| 20 | Musl build sungguhan + CI workflow | P1 item 13, naik ke ronde ini (bukti build statis nyata, bukan klaim). Target + `musl-tools` 1.2.4 sudah terpasang di VM (2026-11-12) — tinggal build + CI. |
+| 20 | Musl build sungguhan + CI workflow | **SELESAI 2026-11-12 05:08 WIB:** build musl 4.756.640 byte = 4,54 MiB, `static-pie linked`, stripped, `ldd` statically linked, suite musl 98/98; CI `.github/workflows/ci.yml` 6 job (YAML divalidasi lokal, belum pernah jalan di GitHub — job Windows belum terverifikasi). Tidak memakai zigbuild/cross. |
 | 21 | Temuan checker batch 2a (F1/F2/N1b) + SSE parser | **SELESAI batch 2b (2026-11-12 05:02 WIB):** F1 header §3 orchestrator 7→8; F2 `CliApprovalRequester { yolo }` + hint jujur + unit test; N1b `new()`/`from_config()` fallible, fallback `Client::new()` (panic trap) dihapus; SSE `index` `#[serde(default)]` + `tracing::warn!` untuk chunk malformed. Suite 98/98, release 4.629.616 byte. |
 | 22 | Failover top-level (F3, TERBUKA) | `FallbackRouter` hanya di loop child; model sesi 500 → hard error by design. Butuh keputusan desain: dari mana rantai fallback model sesi berasal (tidak ada field `fallback` di `ModelConfig`). Bukan diklaim tertutup. |
 
@@ -75,7 +75,7 @@ User memerintahkan (04:16 WIB): kerjakan keduanya (default `--orchestrator` + Us
 | 10 | Header `## Summary` ganda di `result.md` | Template + ringkasan mock sama-sama menulisnya (pre-existing, kosmetik). |
 | 11 | Kartu hasil tool TUI hanya menampilkan baris pertama | `crates/purrcode-channel/src/tui/render.rs:309` (`output.lines().next()`, by-design). Pertimbangkan beberapa baris pertama + penanda "N baris lainnya" agar marker truncasi / baris match grep terlihat. |
 | 12 | Multi-line fuzzy edit menghapus trailing newline | Artefak: baris berikut menyatu ke baris yang diganti (file tetap valid). Butuh boundary unit test. |
-| 13 | **Musl build sungguhan** | `cargo zigbuild/cross` + `Cross.toml` + `.github/workflows` + target musl terinstal; ukur binary rilis musl. Sampai ada, "single static musl binary" tetap target, bukan fakta. |
+| 13 | **Musl build sungguhan** | **SELESAI (lihat item 20 ronde autonomous):** build musl terverifikasi 4.756.640 byte static-pie linked + suite musl 98/98 + CI 6 job. `zigbuild`/`cross` tidak diperlukan — `musl-gcc` cukup. |
 | 14 | **Uji Windows sungguhan** | Butuh mesin Windows / CI Windows: deteksi Git Bash, codepage 65001, Scheduled Task, dan verifikasi ukuran `.exe` 3,7 MB. |
 
 ## P2 — Scope v0.3 (sudah jujur didokumentasikan)

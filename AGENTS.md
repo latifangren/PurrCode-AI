@@ -12,8 +12,9 @@
 ## 1. What PurrCode is
 
 PurrCode AI is a modular AI agent, written in **Rust**, licensed **GPL-3.0**,
-single binary (musl static is the distribution target; current builds are
-dynamic GNU — see `docs/AUDIT_STATUS.md`). Main agent (orchestrator) + subagents that do not
+single binary (musl static VERIFIED 2026-11-12: 4.756.640 byte,
+static-pie linked, suite 98/98 on the musl target; CI builds it on every
+push — see `docs/AUDIT_STATUS.md` item 17; GNU builds remain the dev default). Main agent (orchestrator) + subagents that do not
 lose context, persistent memory, plugins like DeepSeek Harness, terminal TUI
 like oh-my-pi, Telegram like Hermes Agent. Focus v0.1: **terminal CLI / TUI
 first**; Telegram v0.2; WebUI v0.4.
