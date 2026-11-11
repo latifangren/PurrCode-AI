@@ -1,10 +1,11 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-11 22:05:00 +07:00`
+- **Timestamp Audit:** `2026-11-11 23:25:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Bahasa Implementasi:** Rust (Single Static musl Binary `purrcode-ai` untuk target Linux release; PE/ELF native untuk platform host)
-- **Status Kompilasi:** ✅ `cargo test --workspace` (68 tests lolos, 0 failed di seluruh 12 crate)
-- **Status Linter:** ✅ `cargo clippy --workspace -- -D warnings` (0 warnings)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **3.7 MB** (`target/release/purrcode-ai.exe`), jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary via `cargo zigbuild/cross`; binary development saat ini adalah native host
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (69 tests lolos, 0 failed di seluruh 12 crate)
+- **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
 ---
@@ -14,13 +15,13 @@
 PurrCode AI dirancang sebagai agen asisten personal modular (setara **Hermes Agent** dan **Muse**) dengan kemampuan terminal coding agent kelas atas (setara **Claude Code**, **OpenAI Codex CLI**, **oh-my-pi / OMP**, dan **OpenCode**).
 
 ### Posisi Tahapan Saat Ini
-Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI Coding Agent)** yang telah mencapai **100% Selesai & Terverifikasi**, dan siap memasuki **Milestone v0.2 (Telegram Channel & Gateway Daemon)**.
+Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI Coding Agent)** yang telah mencapai status **Core Engine Selesai & Terverifikasi (Hardened)**, dan siap memasuki **Milestone v0.2 (Telegram Channel & Gateway Daemon)**.
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **100%** | **Selesai & Terverifikasi (Production Ready)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 68 unit/integration tests hermetis. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi 100% dengan 69 unit/integration tests hermetis. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
-| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dijadwalkan pada v0.3. |
+| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
 | **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~38%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills). |
 
@@ -32,17 +33,18 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 | Referensi Target | Fitur Kunci yang Diadopsi PurrCode | Status di PurrCode AI | Keunggulan Inovasi PurrCode AI |
 |---|---|---|---|
-| **Claude Code** (Anthropic) | Format `SKILL.md` (*agentskills*), agent definition Markdown frontmatter, session rollout JSONL, context-aware prompt injection (`CLAUDE.md`/`AGENTS.md`), supervised permissions (`deny > ask > allow`), fuzzy-whitespace `edit` fallback, grep context lines (`-C`), smart output truncation. | ✅ **Tercapai di v0.1** | Berjalan sebagai **single binary musl di Rust** tanpa dependensi Node.js / Bun / npm. Zero hardcoded model, mendukung endpoint lokal / Ollama secara native. |
+| **Claude Code** (Anthropic) | Format `SKILL.md` (*agentskills*), agent definition Markdown frontmatter, session rollout JSONL, supervised permissions (`deny > ask > allow`), fuzzy-whitespace `edit` fallback, grep context lines (`-C`), smart output truncation (60/40). (Catatan: panduan developer `CLAUDE.md`/`AGENTS.md` memandu agen pengembang repo, sedangkan prompt runtime PurrCode memakai `SOUL.md`/`USER.md`/`MEMORY.md`). | ✅ **Tercapai di v0.1** | Berjalan sebagai **binary tunggal ramping di Rust (3.7 MB release)** tanpa dependensi Node.js / Bun / npm. Zero hardcoded model, mendukung endpoint lokal / Ollama secara native. |
 | **OpenAI Codex CLI** | Confinement workspace, multi-turn tool execution loop, `kill_on_drop` process termination, fail-closed security. | ✅ **Tercapai di v0.1** | Path-confinement ketat pada tool filesystem (`read`, `write`, `edit`) dan `bash`. Sanitasi kredensial otomatis pada audit log. |
-| **Hermes Agent** (Nous) & **Muse** | Persona/Soul (`SOUL.md`), User context (`USER.md`), Memori persisten (`MEMORY.md`), gate minimum context-window (64K guard), gateway daemon pattern. | ✅ **Tercapai di v0.1** | Memori default **100% Markdown murni** tanpa dependensi database vektor berat. Nada bicara adaptif mengikuti bahasa user (bilingual/multilingual), kode internal tetap Bahasa Inggris. |
+| **Hermes Agent** (Nous) & **Muse** | Persona/Soul (`SOUL.md`), User context (`USER.md`), Memori persisten (`MEMORY.md`), gate minimum context-window (64K guard), gateway daemon pattern, dynamic procedural skills (`manage_skill`). | ✅ **Tercapai di v0.1** | Memori default **100% Markdown murni** tanpa dependensi database vektor berat. Nada bicara adaptif mengikuti bahasa user (bilingual/multilingual), kode internal tetap Bahasa Inggris. |
 | **oh-my-pi (OMP)** & **oh-my-opencode-slim** | Ratatui TUI differential rendering, card status tool (`[running]`, `[done]`, `[failed]`), diff preview sebelum tulis ke disk, steering queue (input interupsi saat generasi), cancel flag (`Ctrl-C`), spesialisasi subagent (The Clowder). | ✅ **Tercapai di v0.1** | **Mengatasi kelemahan terbesar OpenCode-Slim:** Pada slim, subagent hanya dicegah hilang konteks lewat *prompt discipline* yang rapuh. Di PurrCode AI, ini **ditegakkan runtime**: continuation ID stabil (`purr_<id>`), file handoff (`brief.md`, `result.md`), Meowstro **dilarang keras menulis kode** (tanpa write/edit/bash), plus **Tuxeshadow (ADR-012)** sebagai auditor independen. |
-| **DeepSeek Harness** | Filosofi *everything is a plugin*, spesifikasi manifest `plugin.yaml`, lifecycle hooks (`pre_tool_use` yang bisa melakukan veto sebelum eksekusi tool). | ✅ **Tercapai di v0.1** | Default-deny sandbox permission: plugin tidak pernah menerima akses filesystem, network, atau credentials kecuali dideklarasikan di manifest dan disetujui user saat install. |
+| **DeepSeek Harness** | Filosofi *everything is a plugin*, spesifikasi manifest `plugin.yaml`, lifecycle hooks (`pre_tool_use` yang bisa melakukan veto sebelum eksekusi tool). | ✅ **Tercapai di v0.1** | Default-deny secrets injection: plugin tidak pernah menerima kredensial lingkungan tanpa deklarasi manifest. (Isolasi sandbox cgroup/namespace OS dijadwalkan pada v0.3). |
+| **Weilin0723/PurrCode** (v1.0.0) | Kernel-level OS sandboxing (`bwrap` di Linux, `sandbox-exec` di macOS, `cap-std`), Tree-sitter AST parsing untuk ekstraksi simbol 7 bahasa, desktop GUI IDE berbasis `egui`/`eframe`. | 🔄 **Dijadwalkan di v0.3 & v0.4** (Pola arsitektur telah dianalisis di `docs/00-analysis-references.md` §2.10) | **PurrCode AI lebih unggul dalam portabilitas & kolaborasi:** Memakai **The Clowder** (multi-agent) dengan kontinuitas ID stabil untuk mencegah context-drift; memori **100% Markdown murni** tanpa beban SQLite WAL; serta berjalan langsung sebagai in-process CLI/TUI ramping (**3.7 MB**) tanpa kewajiban daemon latar. |
 
 ---
 
-## 3. Bukti Verifikasi Codebase (68 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (69 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-11 22:05:00 +07:00` (100% passing):
+Hasil pengujian otomatis per `2026-11-11 23:25:00 +07:00` (100% passing):
 
 1. **`purrcode_api` (4 tests):**
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
@@ -75,13 +77,14 @@ Hasil pengujian otomatis per `2026-11-11 22:05:00 +07:00` (100% passing):
    - `tests::test_markdown_memory_remember_recall_and_forget`
    - `tests::test_markdown_memory_load_context_sections` (Integrasi SOUL/USER/MEMORY/.purrcode)
    - `tests::test_truncate_chars_utf8_safety` (Pemotongan batas karakter UTF-8 aman)
-8. **`purrcode_orchestrator` (6 tests):**
+8. **`purrcode_orchestrator` (7 tests):**
    - `shadow::tests::test_parse_shadow_verdicts_and_triggers`
    - `shadow::tests::test_shadow_enforcement_across_modes`
    - `shadow::tests::test_strict_shadow_user_approval_with_preview` (Verifikasi penyerahan diff preview saat persetujuan Carrier)
    - `task::tests::test_per_role_model_preset_resolution_and_precedence`
    - `task::tests::test_subagent_chain_handoff_and_resume_by_id`
    - `task::tests::test_format_validated_result_markdown_rejects_empty_and_normalizes` (Penolakan ringkasan subagent kosong & normalisasi)
+   - `task::tests::test_task_tool_dry_run_returns_preview_without_side_effects` (Pencegahan eksekusi ganda subagent saat dry-run)
 9. **`purrcode_plugin` (4 tests):**
    - `tests::test_parse_plugin_yaml_and_default_deny_secrets`
    - `tests::test_parse_plugin_yaml_with_declared_secrets`
@@ -140,12 +143,17 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
    - Subagent Tinker dapat membuat skill baru (`create`), menambal instruksi skill yang sudah ada (`patch` dengan preview unified diff), menghapus skill override dan me-restore fallback embedded (`delete`), serta melihat katalog lengkap (`list`).
    - Meowstro bertindak sebagai orchestrator read-only yang menginjeksi daftar skill ringkas ke prompt sistem dan membaca detail instruksi via `read_skill`.
 7. **Kedalaman Unit Tests di Seluruh Crate:**
-   - Setiap crate di workspace kini memiliki unit tests komprehensif (total 65 tests, 100% pass).
+   - Setiap crate di workspace kini memiliki unit tests komprehensif (total 69 tests, 100% pass).
 8. **Verifikasi Lanjutan Commit 37b9b8a (Muse Spark Audit Resolution):**
    - **Hermetisitas Pengujian SSRF:** Menghapus resolusi DNS soket sinkron (`to_socket_addrs`) dari `validate_destination_for_tool` yang sebelumnya memicu false positive di lingkungan dengan reverse/transparent proxy (seperti isolasi VM Muse yang memetakan domain publik ke range `198.18.0.0/15`). Validasi DNS asinkron tetap aktif di runtime via `validate_dns_lookup_async_for_tool`, sementara unit test `test_ssrf_blocking` kini menguji vektor IP dan DNS-rebinding secara offline dan 100% deterministik.
    - **Penyaluran `workspace_root` Menyeluruh:** Menyalurkan parameter `workspace_root` ke `ToolRegistryExt::with_defaults_and_options`, `MeowstroOrchestrator::with_complete_options`, dan `run_one_shot`, sehingga skill projek di `<workspace_root>/.purrcode/skills/` terdeteksi secara konsisten saat flag `-w, --workspace` digunakan.
-   - **Normalisasi Schema `result.md`:** Menegaskan bahwa validasi `result.md` menggunakan pendekatan normalisasi struktural (bukan hard rejection) untuk menyisipkan header standar (`Status`, `Role`, `Timestamp`, `Changed Files`, `Verified Evidence`, `Failures`, `Unverified Items`) jika LLM subagent melewatkannya, demi mencegah hilangnya hasil kerja subagent.
+   - **Normalisasi Schema `result.md`:** Menegaskan bahwa validasi `result.md` menggunakan pendekatan normalisasi struktural untuk menyisipkan header standar (`Status`, `Role`, `Timestamp`, `Changed Files`, `Verified Evidence`, `Failures`, `Unverified Items`) jika LLM subagent melewatkannya, sembari menolak keras laporan yang kosong atau hanya whitespace.
    - **Klarifikasi Roadmap v0.1 vs v0.3:** Menegaskan batasan ruang lingkup bahwa daemon scheduler cron background dan alur konfirmasi interaktif instalasi plugin dirancang untuk v0.3, sementara generator service unit systemd/openrc dan validasi manifes izin plugin sudah aktif dan teruji di v0.1.
+9. **Verifikasi Live PTY Commit 55f1eda (Muse.ai Interactive Audit Resolution):**
+   - **Pencegahan Eksekusi Ganda Subagent pada Dry-Run (`TaskTool`):** Memeriksa `ctx.is_dry_run` di awal `TaskTool::execute`. Jika true, langsung mengembalikan rencana delegasi (peran, model, ID, objektif, dan plan/diff) sebagai `diff_preview` tanpa mengalokasikan ID di registry, tanpa menyentuh disk, dan tanpa memanggil child loop. Menghilangkan bug eksekusi ganda yang ditemukan pada pengujian interaktif PTY di mode Carrier/Strict.
+   - **Pencatatan Status Gagal (`failed`) di Registry:** Jika laporan subagent kosong atau gagal ditulis ke `result.md`, `TaskTool` memanggil `reg.record_failure` sebelum me-return error, sehingga status subagent di disk tersimpan sebagai `"failed"` (bukan tertinggal `"running"`).
+   - **Penyaluran `workspace_root` ke Toolset Subagent Child:** `build_role_tools` meneruskan `Some(&ctx.workspace_root)` ke `ToolRegistry::with_defaults_and_options`, sehingga subagent Tinker dapat menemukan skill projek di `<workspace_root>/.purrcode/skills/` saat flag `-w` digunakan.
+   - **Pengukuran Ukuran Binary Release Riil:** Kompilasi rilis `cargo build --release` menghasilkan binary ramping berukuran **3.7 MB** (`target/release/purrcode-ai.exe`), membuktikan terpenuhinya target non-fungsional PRD $\le 25$ MB. Ukuran ~128 MB sebelumnya adalah artefak debug unoptimized dengan simbol DWARF/PDB 182 crate.
 
 ---
 

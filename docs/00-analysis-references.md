@@ -28,8 +28,10 @@ sudah tidak berlaku.
 | sipeed/picoclaw | `bbf6893` (2026-08-19) | Go | MIT | 42 MB | Patokan single-binary Go ringan |
 | zeroclaw-labs/zeroclaw | `6877da5` (2026-11-10) | Rust | Apache-2.0 + MIT | 121 MB | Microkernel + supervised fail-closed + service install |
 | Muse (App + Code) | — (zip user 2026-11-11, Muse Code v1.4.14 menurut ekstraksi) | — | Proprietary / tidak tercantum * | 8,2 MB (ekstrak) | Harness perilaku (6 pilar) + MSP + skill routing |
+| Weilin0723/PurrCode | `156d832` (2026-11-12), v1.0.0 | Rust (34 crates) | Apache-2.0 | ~140 MB | OS Sandboxing (`bwrap`/`sandbox-exec`), Tree-sitter AST, egui Desktop IDE |
 
 \* **Batas lisensi — baca dulu sebelum meniru:**
+- `Weilin0723/PurrCode` berlisensi **Apache-2.0** — pola arsitektur bebas dipelajari dan diadaptasi secara clean-room ke dalam kode GPL-3.0 PurrCode AI tanpa menyalin kode secara mentah.
 - `oh-my-openagent` berlisensi **Sustainable Use License v1.0 (non-komersial)** — pola boleh
   ditiru, kode mentah **tidak boleh disalin**.
 - `openhuman` **GPL-3.0** — menyalin/me-link kodenya membuat PurrCode wajib GPL-3.0.
@@ -234,6 +236,33 @@ Temuan yang mengubah desain PurrCode:
   (keputusan kirim/lewati dengan alasan eksplisit). Isi privat user TIDAK ditiru —
   hanya strukturnya.
 
+### 2.10 Weilin0723/PurrCode — referensi ke-14 (OS Sandboxing, AST Indexing, & egui Desktop IDE)
+
+Sumber: `Weilin0723/PurrCode` (v1.0.0, commit `156d832`, lisensi Apache-2.0, npm `@minaovo/purrcode`) → `references/.tmp/PurrCode/`.
+Workspace Rust monorepo dengan 34 crate, arsitektur enterprise-grade auditable coding agent ("Models propose, PawGate authorizes, Claw executes, Evidence decides").
+
+Temuan dan pola kunci untuk PurrCode AI:
+
+1. **Kernel-Level OS Sandboxing (`bwrap` + `sandbox-exec`):**
+   - Di `crates/claw-sandbox`, proses tool tidak dieksekusi via shell bebas, melainkan melalui wrapper isolasi OS:
+     - Linux: menggunakan **Bubblewrap (`bwrap`)** dengan namespace terisolasi dan pembatasan mount filesystem.
+     - macOS: menggunakan `/usr/bin/sandbox-exec` dengan profil Seatbelt.
+     - Fallback: process-filter dengan runtime `cap-std` (capability-based security).
+   - **Keputusan PurrCode AI:** Pola deteksi runtime `bwrap`/`sandbox-exec` ini diadopsi sebagai referensi implementasi utama untuk **Sprint Sandbox OS di Milestone v0.3**, menggantikan kebutuhan container Docker yang berat.
+
+2. **Code Intelligence Tanpa LSP via Tree-sitter AST:**
+   - Di `crates/whisker-context-engine`, repositori diindeks secara lokal menggunakan **`tree-sitter`** untuk 7 bahasa (Rust, Python, TypeScript, JavaScript, Go, Java, Kotlin) guna mengekstrak simbol (`struct`, `fn`, `impl`, `class`) ke index lokal.
+   - **Keputusan PurrCode AI:** Mengadopsi pola AST indexing ini untuk memperkuat subagent **Whisker (Explorer)** di Milestone v0.3, melengkapi tool `grep` dan integrasi CodeGraph.
+
+3. **Native Desktop GUI IDE via `egui` / `eframe`:**
+   - Di `crates/purrcode-ide`, mereka membangun IDE desktop native berbasis pure-Rust (`egui`/`eframe`) dengan syntax highlighting (`syntect`) dan terminal PTY (`portable-pty`), tanpa Node.js, tanpa Electron, dan tanpa Chromium.
+   - **Keputusan PurrCode AI:** Dijadikan referensi alternatif desain untuk antarmuka visual selain WebUI di Milestone v0.4, menjaga konsumsi memori tetap hemat (30–50 MB RAM).
+
+4. **Komparasi Filosofis & Trade-offs:**
+   - *Multi-Agent vs Single-Agent:* PurrCode AI mengadopsi tim multi-agent terisolasi (*The Clowder*) dengan ID kontinuitas stabil dan file handoff untuk mencegah context-drift pada refactoring besar. `Weilin0723/PurrCode` memakai *single-agent* dengan state-machine reducer terpusat.
+   - *Zero-Database vs SQLite WAL:* PurrCode AI mempertahankan komitmen **100% Markdown murni** (`MEMORY.md`, `USER.md`, `SOUL.md`) agar human-readable dan portable. `Weilin0723/PurrCode` mengandalkan SQLite database (`rusqlite`) untuk ledger audit dan event store.
+   - *In-Process vs Daemon Requirement:* PurrCode AI berjalan langsung sebagai single static binary (3.7 MB release) tanpa wajib menjalankan daemon latar terlebih dahulu.
+
 ## 3. Yang belum terjawab dari referensi (jujur)
 
 1. OpenHuman: transport Telegram, engine Memory Tree, dan TinySecurity tidak bisa
@@ -293,3 +322,9 @@ Temuan yang mengubah desain PurrCode:
     Anthropic (docx/pdf/pptx/xlsx) source-available, melarang turunan — bila
     butuh, tulis dari nol.
     → `PRD.md` F8, `ARCHITECTURE.md` §4, `DESIGN.md` ADR-006.
+16. **Pola OS Sandboxing (`bwrap`), AST Tree-sitter, dan GUI egui dari Weilin0723/PurrCode:**
+    Mengadopsi pola deteksi dan eksekusi Bubblewrap (`bwrap`) untuk isolasi kernel OS di Linux
+    dan `sandbox-exec` di macOS pada Milestone v0.3; mengadopsi parser AST `tree-sitter` untuk
+    subagent Whisker di v0.3; serta mempertimbangkan desktop GUI berbasis `egui`/`eframe`
+    sebagai opsi antarmuka visual native di v0.4.
+    → `ARCHITECTURE.md` §7, `AUDIT_STATUS.md` §2.

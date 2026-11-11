@@ -295,7 +295,7 @@ impl TaskTool {
         (self.provider.clone(), spec.model.clone())
     }
 
-    fn build_role_tools(&self, role: &str) -> ToolRegistry {
+    fn build_role_tools(&self, role: &str, workspace_root: Option<&Path>) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         match role {
             "whisker" => {
@@ -332,7 +332,10 @@ impl TaskTool {
                 let _ = reg.register(Arc::new(purrcode_tools::search::FindTool));
             }
             _ => {
-                reg = ToolRegistry::with_defaults_and_ask(self.ask_requester.clone());
+                reg = ToolRegistry::with_defaults_and_options(
+                    self.ask_requester.clone(),
+                    workspace_root,
+                );
             }
         }
         reg.freeze();
@@ -422,6 +425,40 @@ impl Tool for TaskTool {
             return Err(PurrError::Subagent {
                 id: ctx.session_id.clone(),
                 message: "Subagent nesting is forbidden in v0.1 (max depth = 1)".to_string(),
+            });
+        }
+
+        // Dry-run handling: Return a structured delegation preview immediately without
+        // allocating continuation IDs, touching disk, invoking shadow auditor, or running the child loop.
+        if ctx.is_dry_run {
+            let role_spec = resolve_role_model_spec(
+                &args.role,
+                args.model.as_deref(),
+                self.model_preset.as_ref(),
+                &self.model,
+                &ctx.workspace_root,
+            );
+            let proposed_details = args
+                .diff_preview
+                .as_deref()
+                .or(args.plan_json.as_deref())
+                .unwrap_or("(none provided)");
+            let preview = format!(
+                "Delegation Plan to Subagent:\n- **Role:** {}\n- **Target Model:** {}\n- **Continuation ID:** {}\n- **Objective:** {}\n- **Proposed Plan / Diff:**\n{}",
+                args.role,
+                role_spec.model,
+                args.id.as_deref().unwrap_or("new"),
+                args.brief,
+                proposed_details
+            );
+            return Ok(ToolResult {
+                output: format!("Dry-run delegation plan preview for role '{}'", args.role),
+                diff_preview: Some(preview),
+                metadata: Some(serde_json::json!({
+                    "is_dry_run": true,
+                    "role": args.role,
+                    "model": role_spec.model,
+                })),
             });
         }
 
@@ -551,7 +588,7 @@ impl Tool for TaskTool {
         let (child_provider, child_model) = self.resolve_provider_and_model(&role_spec);
 
         // 4. Assemble child toolset according to role
-        let child_tools = Arc::new(self.build_role_tools(&args.role));
+        let child_tools = Arc::new(self.build_role_tools(&args.role, Some(&ctx.workspace_root)));
 
         let child_context = ToolContext {
             session_id: format!("{}:{}", ctx.session_id, subagent_id),
@@ -642,14 +679,27 @@ impl Tool for TaskTool {
         };
 
         // 6. Write validated result.md
-        let result_entry =
-            format_validated_result_markdown(&subagent_id, &args.role, "completed", &child_result)?;
-        tokio::fs::write(&result_file, result_entry.as_bytes())
-            .await
-            .map_err(|e| PurrError::Subagent {
+        let result_entry = match format_validated_result_markdown(
+            &subagent_id,
+            &args.role,
+            "completed",
+            &child_result,
+        ) {
+            Ok(entry) => entry,
+            Err(e) => {
+                let mut reg = self.registry.lock().await;
+                let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                return Err(e);
+            }
+        };
+        if let Err(e) = tokio::fs::write(&result_file, result_entry.as_bytes()).await {
+            let mut reg = self.registry.lock().await;
+            let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+            return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
                 message: format!("Failed to write result.md: {e}"),
-            })?;
+            });
+        }
 
         // 7. Save updated history & registry record to memory and disk
         {
@@ -908,5 +958,60 @@ mod tests {
         assert!(res.contains("- **Failures / Blockers:** None reported."));
         assert!(res.contains("- **Unverified Items:** None reported."));
         assert!(res.contains("## Summary\nRefactored payment gateway handler in src/payment.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_task_tool_dry_run_returns_preview_without_side_effects() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("purr_dryrun_test_{}", uuid::Uuid::new_v4()));
+        let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
+        let task_tool = TaskTool::with_options(
+            reg.clone(),
+            provider,
+            "mock-model",
+            &temp_dir,
+            None,
+            None,
+            false,
+        );
+
+        let dry_ctx = ToolContext {
+            session_id: "test_session".to_string(),
+            agent_role: "meowstro".to_string(),
+            workspace_root: PathBuf::from("."),
+            is_dry_run: true,
+        };
+
+        let result = task_tool
+            .execute(
+                serde_json::json!({
+                    "role": "tinker",
+                    "brief": "Implement auth middleware",
+                    "diff_preview": "--- a/auth.rs\n+++ b/auth.rs\n@@ -1 +1 @@\n+pub fn check() {}"
+                }),
+                &dry_ctx,
+            )
+            .await
+            .unwrap();
+
+        // 1. Dry-run must return a preview with role and diff/plan
+        assert!(result.diff_preview.is_some());
+        let preview = result.diff_preview.unwrap();
+        assert!(preview.contains("Delegation Plan to Subagent:"));
+        assert!(preview.contains("- **Role:** tinker"));
+        assert!(preview.contains("- **Target Model:** mock-model"));
+        assert!(preview.contains("pub fn check() {}"));
+
+        // 2. Crucial: Registry must have ZERO records and disk must not have been created
+        let reg_guard = reg.lock().await;
+        let records = reg_guard.list_records();
+        assert_eq!(records.len(), 0);
+        drop(reg_guard);
+        assert!(!temp_dir.join("subagents").exists());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
