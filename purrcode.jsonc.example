@@ -51,6 +51,23 @@
           "max_tokens": 8192
         }
       }
+    },
+    // Dev-testing provider: the user's own Magpie gateway on their PC,
+    // exposed via Cloudflare tunnel. Key ONLY from env ${MAGPIE_API_KEY}
+    // (or ~/.purrcode/credentials) — never write it into this file.
+    // Model preset for it: model-presets/magpie.jsonc.
+    "magpie": {
+      "api": "openai-completions",
+      "base_url": "https://magpie.raevtar.dev/v1",
+      "api_key": "${MAGPIE_API_KEY}",
+      "models": {
+        "antigravity/gemini-3.8-flash-tiered": {
+          "name": "Gemini 3.8 Flash (Tiered) via Antigravity",
+          "context_window": 1048576,
+          "max_tokens": 65536,
+          "reasoning": true
+        }
+      }
     }
   },
 

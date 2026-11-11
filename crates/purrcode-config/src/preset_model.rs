@@ -14,6 +14,10 @@ const BUNDLED_MODEL_PRESETS: &[(&str, &str)] = &[
     ("free", include_str!("../../../model-presets/free.jsonc")),
     ("local", include_str!("../../../model-presets/local.jsonc")),
     (
+        "magpie",
+        include_str!("../../../model-presets/magpie.jsonc"),
+    ),
+    (
         "premium",
         include_str!("../../../model-presets/premium.jsonc"),
     ),
@@ -178,6 +182,7 @@ mod tests {
         let presets = ModelPresetLoader::discover_all(Path::new("."));
         assert!(presets.contains_key("free"));
         assert!(presets.contains_key("local"));
+        assert!(presets.contains_key("magpie"));
         assert!(presets.contains_key("premium"));
         assert!(presets.contains_key("custom-endpoint"));
         assert!(presets["free"].agents.contains_key("sphinx"));

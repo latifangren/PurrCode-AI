@@ -25,6 +25,17 @@
 
 **Kriteria keluar P0:** `cargo check` lolos 0 warning, `cargo test --workspace` hijau (76/76 atau lebih bila ada test baru), `cargo clippy --workspace --all-targets -- -D warnings` lolos, `cargo fmt --check` bersih, `cargo build --release` + ukuran binary tercatat di `AUDIT_STATUS.md` §4 item 9 dengan nomor commit branch ini.
 
+## Magpie dev-testing provider (2026-11-12)
+
+Untuk pengujian development, PurrCode memakai model **`antigravity/gemini-3.8-flash-tiered`** dari gateway Magpie milik user di PC-nya (Cloudflare tunnel `https://magpie.raevtar.dev/v1`, 66 model). Terverifikasi live dari VM ini: completion 200 ("OK", 7,8 dtk), tool call 200 (`calc` a=2 b=2, 20,5 dtk). Lebih cepat dari `group/cheap-first` (22,7 dtk) — tetap lambat per langkah (model reasoning + tunnel/proxy).
+
+- Wiring: provider `magpie` di `purrcode.jsonc.example` (base_url literal — endpoint publik milik user; `"api_key": "${MAGPIE_API_KEY}"` dari env saja, jangan pernah tulis key ke repo) + preset `model-presets/magpie.jsonc` (semua role → model yang sama) + embedded di `crates/purrcode-config/src/preset_model.rs` + assert di `test_bundled_model_presets_load`.
+- Cara pakai: `export MAGPIE_API_KEY='<key>'` lalu `purrcode-ai --orchestrator -m magpie:antigravity/gemini-3.8-flash-tiered -p "..."` dengan `model_preset: "magpie"` di config (atau `-m` eksplisit untuk sesi). **Tanpa `--orchestrator`, `-p` menjalankan agent generik dengan semua tool, bukan Meowstro** (lihat temuan di bawah).
+- Terverifikasi live dari VM ini (2026-11-12): completion "OK" 7,8 dtk, tool call `calc` 20,5 dtk, binary `-p` baca file 25,5 dtk, delegasi `--orchestrator --yolo` end-to-end ~157 dtk (Meowstro `task` → Tinker `write` + `read` + `bash od` verifikasi).
+- **Keterbatasan lingkungan:** binary membuat HTTPS langsung; VM ini hanya keluar lewat proxy egress → tes dari VM memakai bridge lokal `127.0.0.1:3457` (passthrough `/tmp/magpie_bridge.py`, bukan bagian repo). Di PC user binary langsung nyambung.
+- **Temuan baru (terbuka):** (a) UA default `reqwest` di-block Cloudflare gateway ini (403, error 1010) — perlu allowlist atau opsi custom User-Agent di provider. (b) **`-p` tanpa `--orchestrator` bukan Meowstro** — agent generik + semua tool, audit tetap melabeli "meowstro" (`main.rs:816`); jalur read-only Meowstro hanya aktif dengan flag itu. Pengujian delegasi wajib pakai `--orchestrator`.
+- Hanya model itu yang dites live; 65 model gateway lain belum dites satu-satu. Context window 1.048.576 adalah klaim gateway.
+
 ## P1 — Berikutnya
 
 | # | Item | Catatan |
