@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 05:08:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 05:41:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.629.616 byte stripped dynamic GNU ELF di Linux) / **~4,5 MiB** (4.756.640 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.630.000 byte stripped dynamic GNU ELF di Linux) / **~4,5 MiB** (4.756.640 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
 - **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 4.756.640 byte = 4,54 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 98/98 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (98 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (99 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,7 +19,7 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 98 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 99 unit/integration tests hermetis lintas platform. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
 | **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (98 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (99 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-12 05:02:00 +07:00` (98/98 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per `2026-11-12 05:41:00 +07:00` (99/99 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api` (4 tests):**
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
@@ -54,12 +54,13 @@ Hasil pengujian otomatis per `2026-11-12 05:02:00 +07:00` (98/98 lolos di Linux;
 2. **`purrcode_approval` (2 tests):**
    - `tests::test_deny_beats_ask_beats_allow_and_narrowing` (Penyempitan policy & resolusi izin)
    - `tests::test_secret_scrubbing_and_audit_rotation` (Sanitasi secret & rotasi file audit)
-3. **`purrcode_channel` (9 tests):**
+3. **`purrcode_channel` (10 tests):**
    - `tui::app::tests::test_tui_app_utf8_editing_and_events` (Input TUI UTF-8 & penanganan event)
    - `tui::app::tests::test_tui_app_approval_flow` (Alur interaktif dialog persetujuan TUI)
    - `tui::app::tests::test_tui_app_ask_prompt_flow` (Alur interaktif dialog ask prompt TUI)
    - `tui::app::tests::test_tui_app_cursor_movement_and_editing` (Pergerakan kursor & edit input)
-   - `tui::tests::test_approval_key_action_approve_keys` (Pemetaan tombol approve `a`/`y`/`Enter` di kartu approval)
+   - `tui::tests::test_approval_key_action_approve_keys`
+   - `tui::tests::test_approval_key_action_approve_always_key` (`A` besar = approve + matikan prompt untuk sisa sesi; `a` kecil = approve sekali) (Pemetaan tombol approve `a`/`y`/`Enter` di kartu approval)
    - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
    - `tui::tests::test_approval_key_action_edit_keys` (Pemetaan tombol edit `e` di kartu approval)
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
@@ -237,6 +238,14 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Suite di target musl: 98/98, 0 failed** — jumlah dan per-crate sama persis dengan suite GNU (api 4, approval 2, channel 9, cli 8, config 9, core 4, memory 3, orchestrator 8, plugin 6, provider 7, service 4, tools 34). Binary musl bukan sekadar ter-link, tapi teruji.
     - **CI (`.github/workflows/ci.yml`, baru):** 6 job — `fmt`, `clippy -D warnings`, `test` (Linux GNU), `release-gnu`, `release-musl` (install `musl-tools`, build target musl, verifikasi `file` + `ldd` statically linked, upload artifact), `windows` (test + release di `windows-latest`). YAML divalidasi lokal (PyYAML, 6 job). **Jujur dicatat:** CI belum pernah berjalan di GitHub (belum ada push) — job Windows khususnya tidak terverifikasi dari VM ini dan hanya berjalan di runner GitHub; artifact upload belum teruji end-to-end. Sampai ada run hijau pertama di GitHub, CI ini adalah pipeline yang dibuat + divalidasi sintaksnya, bukan pipeline yang terbukti jalan.
     - **Batas scope:** tidak memakai `cargo zigbuild`/`cross` (tidak diperlukan — `musl-gcc` cukup); cross-compile arm64/arm/mipsle (PRD F14) tetap belum dikerjakan.
+18. **Dogfood v0.1 end-to-end 2026-11-12 (TUI + `-p` + `--json`, model Magpie `antigravity/gemini-3.8-flash-tiered` via bridge lokal) + perbaikan temuan (workplan item 23):**
+    - **TUI run (sesi `purr_f3f166`, Tabby):** tugas nyata — scaffold + implementasi + test + README proyek Rust `mdcount` (CLI statistik Markdown: kata/baris/code block, output JSON). Meowstro mendelegasikan 2× ke child Tinker yang SAMA (continuation ID `purr_59f8dd`, resume — bukan respawn). **Hasil terverifikasi independen:** `cargo test` **21/21 hijau**, `cargo clippy` 0 warning, `cargo run -- sample.md` → `{"words": 70, "lines": 31, "code_blocks": 2}` persis seperti klaim child; child memverifikasi sendiri (JSON via `python3 -m json.tool`, error handling exit 1). Registry `purr_59f8dd.json` berisi summary terstruktur lengkap + `result.md` ditulis. Meowstro memverifikasi (baca `README.md`, todo completed) dan menutup dengan summary akhir (ada di transkrip sesi `purr_f3f166.jsonl`; pane TUI saat dicek masih menampilkan kartu task terakhir — kemungkinan scroll, bukan hilangnya pesan; dicatat sebagai observasi, bukan defect).
+    - **`-p --json --yolo` run (sesi `purr_2ad407`):** tugas lanjutan — flag `--words-only` di mdcount. Implementasi benar, **terverifikasi independen: `cargo test` 26/26 hijau** (21 + 5 test parsing argumen baru), `cargo run -- --words-only sample.md` → `70` (persis `words` dari JSON). Run dihentikan di tengah karena agent berputar pada pencarian toolchain (PATH) — artefak harness (HOME terisolasi, cargo tidak di PATH), bukan defect produk; implementasi sudah terbukti benar sebelum dihentikan.
+    - **Temuan D2 — approval fatigue (DIPERBAIKI):** mode Tabby meminta persetujuan untuk SETIAP bash/write (20 approval untuk satu tugas mdcount, termasuk `pwd`, `cargo --version`, `rustup toolchain list` yang read-only). Kartu TUI kini punya **`[A] Always (session)`**: `A` besar = approve + matikan prompt untuk sisa sesi; `a` kecil tetap approve sekali. Implementasi: `ApprovalRequest.always` (Arc<AtomicBool>) + `TuiApprovalRequester.session_allow` fast path; flag hanya melewati *prompt* — hard denial dari policy gate (outside-workspace, deny rules) tetap berlaku karena gate berjalan sebelum requester. **Terverifikasi live:** tugas 2 file (NOTES.md + NOTES2.md + verifikasi xxd/od) selesai dengan SATU kali tekan `A`; audit mencatat 4× `approved_by_user` tanpa kartu kedua.
+    - **Temuan D3 — hasil task menunjuk file yang tidak bisa dibaca (DIPERBAIKI, 2 lapis):** (a) Child loop cap dinaikkan **15 → 25 langkah** (`task.rs:622`, sama dengan default parent loop) — cap 15 tertabrak di tengah tugas dogfood dan summary kembali berupa stub `"[Max steps (15) reached...]"`, memaksa delegasi kedua. (b) Baris hasil task tidak lagi berbunyi `"Handoff result saved to: <path>"` (yang membuat Meowstro membaca `result.md` via tool `read`, lalu ditolak workspace confinement karena file handoff di luar workspace root) — kini berbunyi record-only dan menegaskan summary lengkap sudah inline. Konfinemen TIDAK dilonggarkan (membuka `~/.purrcode` ke tool `read` akan memperluas permukaan baca).
+    - **TERBUKA — D5 (`--json` hanya delta teks):** NDJSON `-p --json` hanya meng-emit `{"type": "text"|"reasoning", "delta": chunk}` (main.rs:892); tidak ada event tool_call/tool_result/session. PRD F2 menyebut "event stream NDJSON" — implementasi saat ini adalah stream delta teks, bukan event stream penuh. Menutupnya butuh event bus dari loop (desain tersendiri), dicatat terbuka di sini, bukan diklaim tertutup.
+    - **TERBUKA — D6 (bash stateless):** setiap panggilan `bash` adalah shell baru; `export PATH` tidak bertahan antar panggilan — agent di dogfood menghabiskan delegasi berulang untuk menemukan ulang toolchain. Shell persisten adalah item desain v0.1-polish, dicatat terbuka.
+    - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **99/99 lolos, 0 failed** (98 + 1 baru: ApproveAlways), clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.630.000 byte (4,41 MiB), ELF dynamic GNU, stripped.
 
 ---
 

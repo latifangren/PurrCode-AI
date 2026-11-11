@@ -23,7 +23,7 @@ use purrcode_tools::mcp::McpManager;
 use purrcode_tools::{AskOption, AskRequester, ToolRegistry, ToolRegistryExt};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[cfg(windows)]
@@ -335,6 +335,11 @@ async fn main() -> Result<()> {
 
     struct TuiApprovalRequester {
         event_tx: tokio::sync::mpsc::Sender<purrcode_channel::TuiEvent>,
+        /// Set when the user presses `A` on an approval card ("approve always
+        /// for this session"). Later prompts auto-approve without a card.
+        /// Only skips the prompt: the policy gate's hard denials run before
+        /// this requester is consulted, so "always" cannot override them.
+        session_allow: Arc<AtomicBool>,
     }
 
     #[async_trait::async_trait]
@@ -345,12 +350,16 @@ async fn main() -> Result<()> {
             description: &str,
             preview: Option<&str>,
         ) -> bool {
+            if self.session_allow.load(Ordering::SeqCst) {
+                return true;
+            }
             let (tx, rx) = tokio::sync::oneshot::channel();
             let req = purrcode_channel::ApprovalRequest {
                 tool_name: tool.to_string(),
                 description: description.to_string(),
                 diff_preview: preview.map(|p| p.to_string()),
                 tx,
+                always: self.session_allow.clone(),
             };
             if self
                 .event_tx
@@ -400,6 +409,7 @@ async fn main() -> Result<()> {
     let approval_requester: Arc<dyn purrcode_core::ApprovalRequester> =
         Arc::new(TuiApprovalRequester {
             event_tx: event_tx.clone(),
+            session_allow: Arc::new(AtomicBool::new(false)),
         });
     let ask_requester: Arc<dyn AskRequester> = Arc::new(TuiAskRequester {
         event_tx: event_tx.clone(),

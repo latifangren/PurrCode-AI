@@ -77,21 +77,25 @@ impl TuiRunner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApprovalKeyAction {
     Approve,
+    /// Approve this action AND auto-approve every later approval prompt for
+    /// the rest of this TUI session (hard policy denials still apply — the
+    /// flag only skips the prompt, it cannot override a gate denial).
+    ApproveAlways,
     Reject,
     CancelForEdit,
 }
 
 /// Map a key press to its approval-card action: `Some(Approve)` for
-/// `a`/`A`/`y`/`Y`/`Enter`, `Some(Reject)` for `t`/`T`/`n`/`N`/`Esc`,
+/// `a`/`y`/`Y`/`Enter`, `Some(ApproveAlways)` for `A` (capital A),
+/// `Some(Reject)` for `t`/`T`/`n`/`N`/`Esc`,
 /// `Some(CancelForEdit)` for `e`/`E`, `None` for any other key (the card
 /// stays open). Pure function, covered by unit tests.
 fn approval_key_action(code: KeyCode) -> Option<ApprovalKeyAction> {
     match code {
-        KeyCode::Char('a')
-        | KeyCode::Char('A')
-        | KeyCode::Char('y')
-        | KeyCode::Char('Y')
-        | KeyCode::Enter => Some(ApprovalKeyAction::Approve),
+        KeyCode::Char('a') | KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            Some(ApprovalKeyAction::Approve)
+        }
+        KeyCode::Char('A') => Some(ApprovalKeyAction::ApproveAlways),
         KeyCode::Char('t')
         | KeyCode::Char('T')
         | KeyCode::Char('n')
@@ -154,6 +158,16 @@ fn run_loop<B: ratatui::backend::Backend>(
                             let _ = req.tx.send(true);
                             app.items.push(MessageItem::ToolResult {
                                 output: "Action approved by user.".to_string(),
+                                success: true,
+                            });
+                            continue;
+                        }
+                        Some(ApprovalKeyAction::ApproveAlways) => {
+                            req.always.store(true, Ordering::SeqCst);
+                            let _ = req.tx.send(true);
+                            app.items.push(MessageItem::ToolResult {
+                                output: "Action approved by user; approval prompts disabled for the rest of this session (hard policy rules still apply)."
+                                    .to_string(),
                                 success: true,
                             });
                             continue;
@@ -422,7 +436,6 @@ mod tests {
     fn test_approval_key_action_approve_keys() {
         for code in [
             KeyCode::Char('a'),
-            KeyCode::Char('A'),
             KeyCode::Char('y'),
             KeyCode::Char('Y'),
             KeyCode::Enter,
@@ -433,6 +446,20 @@ mod tests {
                 "key {code:?} must approve"
             );
         }
+    }
+
+    #[test]
+    fn test_approval_key_action_approve_always_key() {
+        // Capital `A` approves this action AND disables later prompts for
+        // the rest of the session; lowercase `a` is a one-off approval.
+        assert_eq!(
+            approval_key_action(KeyCode::Char('A')),
+            Some(ApprovalKeyAction::ApproveAlways)
+        );
+        assert_eq!(
+            approval_key_action(KeyCode::Char('a')),
+            Some(ApprovalKeyAction::Approve)
+        );
     }
 
     #[test]

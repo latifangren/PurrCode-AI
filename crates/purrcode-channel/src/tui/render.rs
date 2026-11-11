@@ -115,6 +115,12 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
+            "[A] Always (session)  ",
+            Style::default()
+                .fg(SUCCESS_GREEN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
             "[t]/[n] Reject / Deny    ",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),

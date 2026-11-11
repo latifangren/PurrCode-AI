@@ -619,7 +619,13 @@ impl Tool for TaskTool {
         };
 
         let mut child_loop = AgentLoop::new(child_provider, &child_model, child_tools)
-            .with_max_steps(15)
+            // 25, not 15: a real implementation sub-task (scaffold + implement
+            // + test + fix) needs ~20 tool calls. Dogfooding 2026-11-12 hit the
+            // 15-step cap mid-task and the summary came back a stub, forcing a
+            // second delegation to finish the job. Same default as the parent
+            // loop (loop_engine.rs); the continuation contract still bounds
+            // runaway children (resume, never respawn).
+            .with_max_steps(25)
             .with_temperature(role_spec.temperature)
             .with_reasoning_effort(role_spec.reasoning_effort)
             .with_yolo(self.yolo);
@@ -729,8 +735,15 @@ impl Tool for TaskTool {
             reg.record_result(&subagent_id, &child_result)?;
         }
 
+        // The summary below is complete and inline: the result.md path is a
+        // session-state record, not a source to re-read. (Dogfooding 2026-11-12:
+        // the old "Handoff result saved to: <path>" line made Meowstro read
+        // result.md via the `read` tool, which workspace confinement denies —
+        // the handoff file lives outside the workspace root. Pointing the
+        // orchestrator at a file it cannot open is a wart; the inline summary
+        // is the handoff.)
         let summary = format!(
-            "Subagent '{}' (role: {}, model: {}) completed its task.\nContinuation ID: {}\nHandoff result saved to: {}\n\nSummary Report:\n{}",
+            "Subagent '{}' (role: {}, model: {}) completed its task.\nContinuation ID: {}\nHandoff result saved to session state at {} (record only — the full summary follows inline below, do not re-read the file).\n\nSummary Report:\n{}",
             subagent_id,
             args.role,
             child_model,
