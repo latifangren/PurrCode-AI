@@ -91,5 +91,20 @@
       "command": "codegraph",
       "args": ["serve", "--mcp"]
     }
+  },
+
+  // Telegram gateway (v0.2, ADR-013). Run with `purrcode-ai gateway`.
+  // The bot token comes from ~/.purrcode/credentials (0600) or the
+  // environment as ${TELEGRAM_BOT_TOKEN} — never put a literal token here.
+  // allow_from is FAIL-CLOSED: an empty list authorizes NOBODY.
+  // Group chats must be listed explicitly AND the bot must be @-mentioned.
+  "telegram": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "allow_from": [
+      // 123456789
+    ],
+    "api_base": "https://api.telegram.org",
+    "approval_timeout_secs": 120,
+    "poll_timeout_secs": 30
   }
 }

@@ -17,6 +17,60 @@ pub struct Config {
 
     #[serde(default, alias = "mcpServers")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Telegram gateway settings (v0.2, ADR-013). Absent = gateway disabled.
+    /// The bot token must come from the environment / `~/.purrcode/credentials`
+    /// via `${TELEGRAM_BOT_TOKEN}` — never commit a literal token here.
+    #[serde(default)]
+    pub telegram: Option<TelegramConfig>,
+}
+
+/// Telegram gateway configuration (PRD F15–F18, ADR-013).
+/// `allow_from` is fail-closed: an empty list authorizes NOBODY.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    /// Bot token, normally `"${TELEGRAM_BOT_TOKEN}"` (expanded from env or
+    /// `~/.purrcode/credentials` by `expand_env_vars`).
+    #[serde(default)]
+    pub bot_token: Option<String>,
+
+    /// Chat IDs allowed to talk to the bot. Empty = nobody allowed.
+    #[serde(default)]
+    pub allow_from: Vec<i64>,
+
+    /// Bot API base URL. Default `https://api.telegram.org`. Overridable
+    /// for local mock/testing servers. NOTE: SSRF IP-pinning deliberately
+    /// does NOT apply here (ADR-013): no model-controlled URL ever
+    /// reaches the client, and pinning would break self-hosted Bot API
+    /// servers on LAN IPs and the local mock. Only the scheme
+    /// (http/https) is validated by the client.
+    #[serde(default)]
+    pub api_base: Option<String>,
+
+    /// Approval card timeout in seconds. Default 120; expiry denies
+    /// (fail-closed, ADR-013).
+    #[serde(default)]
+    pub approval_timeout_secs: Option<u64>,
+
+    /// Long-poll timeout in seconds for `getUpdates`. Default 30.
+    #[serde(default)]
+    pub poll_timeout_secs: Option<u32>,
+}
+
+impl TelegramConfig {
+    pub fn api_base(&self) -> &str {
+        self.api_base
+            .as_deref()
+            .unwrap_or("https://api.telegram.org")
+    }
+
+    pub fn approval_timeout_secs(&self) -> u64 {
+        self.approval_timeout_secs.unwrap_or(120)
+    }
+
+    pub fn poll_timeout_secs(&self) -> u32 {
+        self.poll_timeout_secs.unwrap_or(30)
+    }
 }
 
 fn default_preset() -> String {
@@ -31,6 +85,7 @@ impl Default for Config {
             model: None,
             providers: HashMap::new(),
             mcp_servers: HashMap::new(),
+            telegram: None,
         }
     }
 }
@@ -186,5 +241,36 @@ mod tests {
             assert_eq!(provider, "alpha");
             assert_eq!(model, "shared-model");
         }
+    }
+
+    #[test]
+    fn test_telegram_config_defaults_and_fail_closed_allowlist() {
+        // No telegram section at all -> gateway disabled.
+        let cfg: Config = serde_json::from_str("{}").expect("empty config parses");
+        assert!(cfg.telegram.is_none());
+
+        // Empty allow_from deserializes fine and means NOBODY (fail-closed,
+        // ADR-013) — it must never be read as "allow everyone".
+        let cfg: Config = serde_json::from_str(
+            r#"{"telegram": {"bot_token": "${TELEGRAM_BOT_TOKEN}", "allow_from": []}}"#,
+        )
+        .expect("telegram section parses");
+        let tg = cfg.telegram.expect("telegram present");
+        assert_eq!(tg.allow_from.len(), 0);
+        assert_eq!(tg.bot_token.as_deref(), Some("${TELEGRAM_BOT_TOKEN}"));
+        assert_eq!(tg.api_base(), "https://api.telegram.org");
+        assert_eq!(tg.approval_timeout_secs(), 120);
+        assert_eq!(tg.poll_timeout_secs(), 30);
+
+        // Explicit values win over defaults.
+        let cfg: Config = serde_json::from_str(
+            r#"{"telegram": {"bot_token": "x", "allow_from": [123, -456], "api_base": "http://127.0.0.1:9", "approval_timeout_secs": 60, "poll_timeout_secs": 10}}"#,
+        )
+        .expect("explicit telegram section parses");
+        let tg = cfg.telegram.expect("telegram present");
+        assert_eq!(tg.allow_from, vec![123, -456]);
+        assert_eq!(tg.api_base(), "http://127.0.0.1:9");
+        assert_eq!(tg.approval_timeout_secs(), 60);
+        assert_eq!(tg.poll_timeout_secs(), 10);
     }
 }

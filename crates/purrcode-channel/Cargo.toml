@@ -7,6 +7,9 @@ description = "PurrCode AI TUI terminal and CLI channels"
 
 [dependencies]
 purrcode-api.workspace = true
+purrcode-core.workspace = true
+purrcode-config.workspace = true
+purrcode-tools.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 uuid.workspace = true
@@ -16,3 +19,4 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+reqwest.workspace = true

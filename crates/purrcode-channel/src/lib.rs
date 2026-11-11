@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod telegram;
 pub mod tui;
 
 pub use tui::{

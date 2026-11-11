@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 05:52:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 06:51:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,4 MiB** (4.630.000 byte stripped dynamic GNU ELF di Linux) / **~4,5 MiB** (4.756.640 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 4.756.640 byte = 4,54 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 100/100 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (100 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,6 MiB** (4.826.088 byte stripped dynamic GNU ELF di Linux) / **~4,7 MiB** (4.949.152 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 4.949.152 byte = 4,72 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 135/135 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (135 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,11 +19,11 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 100 unit/integration tests hermetis lintas platform. |
-| **Milestone v0.2: Telegram Channel & Gateway Daemon** | **~15%** | **Desain Arsitektur & Service Unit Siap** | CLI subcommand `gateway` dan generator systemd/openrc sudah terpasang di `purrcode-service`, handler bot Telegram siap diimplementasikan. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 135 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.2: Telegram Channel & Gateway Daemon** | **90%** | **Selesai & Terverifikasi Mock End-to-End** | F15–F18 selesai: gateway daemon + channel Telegram hand-rolled (poll, allowlist fail-closed, sesi per chat, kartu approval Ya/Tidak/Selalu, chunking 4096), terverifikasi 2 checker independen + E2E mock 11 kasus (38/38 asersi). Tersisa uji live Telegram asli (butuh token + chat ID user) dan `service install` live. |
 | **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
-| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~38%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills). |
+| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~45%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti. Tersisa v0.3 (cron/sandbox, akhiran) + v0.4 (WebUI). |
 
 ---
 
@@ -42,120 +42,168 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (100 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (135 Unit/Integration Tests)
 
-Hasil pengujian otomatis per `2026-11-12 05:52:00 +07:00` (100/100 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per 2026-11-12 06:36:00 +07:00 (135/135 lolos di Linux; Windows belum dijalankan dari VM ini):
 
-1. **`purrcode_api` (4 tests):**
-   - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
+1. **`purrcode_api`** (4 tests):
    - `error::tests::test_purr_error_formatting` (Format error standard)
    - `event::tests::test_agent_event_serialization_roundtrip` (Event roundtrip JSON)
    - `event::tests::test_subagent_status_serde` (Serde status subagent)
-2. **`purrcode_approval` (2 tests):**
+   - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
+
+2. **`purrcode_approval`** (2 tests):
    - `tests::test_deny_beats_ask_beats_allow_and_narrowing` (Penyempitan policy & resolusi izin)
    - `tests::test_secret_scrubbing_and_audit_rotation` (Sanitasi secret & rotasi file audit)
-3. **`purrcode_channel` (10 tests):**
-   - `tui::app::tests::test_tui_app_utf8_editing_and_events` (Input TUI UTF-8 & penanganan event)
+
+3. **`purrcode_channel`** (43 tests):
+   - `telegram::approval::tests::test_always_set_is_per_chat_session` (Always dikunci (chat, sesi): sesi baru lewat /new mulai bersih)
+   - `telegram::approval::tests::test_pending_claim_drops_receiver` (Klaim pending tanpa resolve menutup receiver (penonton timeout))
+   - `telegram::approval::tests::test_pending_register_resolve_is_single_claim` (Resolve pending klaim-tunggal: resolve kedua gagal)
+   - `telegram::approval::tests::test_pending_tokens_are_unique` (200 token callback unik (tanpa tabrakan))
+   - `telegram::chunk::tests::test_4097_chars_becomes_two_chunks_with_markers` (4097 karakter jadi 2 chunk bermarker (1/2), (2/2))
+   - `telegram::chunk::tests::test_empty_message_is_one_empty_chunk` (Pesan kosong = satu chunk kosong)
+   - `telegram::chunk::tests::test_escape_html` (Escape HTML (& < >) untuk parse_mode HTML (cadangan))
+   - `telegram::chunk::tests::test_exactly_4096_chars_is_one_chunk` (Tepat 4096 karakter = satu chunk tanpa marker)
+   - `telegram::chunk::tests::test_fence_split_is_balanced_in_every_chunk` (Pesan berpagar: setiap chunk punya fence seimbang)
+   - `telegram::chunk::tests::test_fenced_440kb_message_never_exceeds_limit` (Regresi cadangan 14: pesan berpagar ~440 KB (100+ chunk, marker 3-digit) tidak ada yang > 4096)
+   - `telegram::chunk::tests::test_long_message_never_exceeds_limit_and_keeps_all_chars` (Pesan panjang tidak ada chunk > 4096 dan tidak kehilangan karakter)
+   - `telegram::chunk::tests::test_multibyte_chars_are_never_split` (Karakter multibyte tidak pernah terbelah di batas chunk)
+   - `telegram::chunk::tests::test_numbered_split_continues_an_earlier_part` (Split bernomor melanjutkan bagian sebelumnya (head + remainder))
+   - `telegram::chunk::tests::test_short_message_is_one_chunk` (Pesan pendek = satu chunk)
+   - `telegram::client::tests::test_debug_redacts_token` (Debug client meredaksi token)
+   - `telegram::client::tests::test_edit_message_not_modified_is_ok` (Edit "message is not modified" = Ok (bukan error))
+   - `telegram::client::tests::test_get_updates_sends_offset_limit_timeout_and_parses` (getUpdates mengirim offset/limit/timeout + parse hasil)
+   - `telegram::client::tests::test_new_rejects_empty_token_and_bad_base` (Klien menolak token kosong & api_base bukan http/https)
+   - `telegram::client::tests::test_rate_limited_429_carries_retry_after` (429 membawa retry_after (default 1 dtk))
+   - `telegram::client::tests::test_send_message_retries_once_after_429` (sendMessage retry sekali setelah 429 lalu sukses)
+   - `telegram::client::tests::test_transport_error_never_contains_token` (Error transport tidak pernah memuat URL ber-token)
+   - `telegram::client::tests::test_unauthorized_401_is_terminal` (401 = Unauthorized (terminal, tidak di-retry))
+   - `telegram::render::tests::test_draft_head_is_the_first_chunk_content` (Head draft = isi chunk pertama (cap budget 4096 - 14))
+   - `telegram::render::tests::test_draft_head_short_is_whole` (Draft pendek dikirim utuh saat flush)
+   - `telegram::sessions::tests::test_corrupt_index_loads_empty` (File chats.json rusak = indeks kosong (tidak crash))
+   - `telegram::sessions::tests::test_roundtrip_and_new_session_archives` (Roundtrip + /new mengarsipkan sesi lama ke history)
+   - `telegram::types::tests::test_bot_api_response_parses` (Parse respons Bot API (ok/result))
+   - `telegram::types::tests::test_command_parsing` (Parse perintah + strip @BotName)
+   - `telegram::types::tests::test_error_response_parses_retry_after` (Parse error 429 + retry_after)
+   - `telegram::types::tests::test_mentions_bot_via_bot_command_entity` (Entity bot_command /cmd@BotName dihitung mention (perintah grup))
+   - `telegram::types::tests::test_mentions_bot_via_mention_entity` (Mention @username dikenali (entity mention))
+   - `telegram::types::tests::test_mentions_bot_via_text_mention` (text_mention ke user bot dikenali)
+   - `telegram::types::tests::test_mentions_bot_with_emoji_before_mention` (Offset entity UTF-16: emoji sebelum mention tidak merusak slice)
    - `tui::app::tests::test_tui_app_approval_flow` (Alur interaktif dialog persetujuan TUI)
    - `tui::app::tests::test_tui_app_ask_prompt_flow` (Alur interaktif dialog ask prompt TUI)
    - `tui::app::tests::test_tui_app_cursor_movement_and_editing` (Pergerakan kursor & edit input)
-   - `tui::tests::test_approval_key_action_approve_keys` (Pemetaan tombol approve `a`/`y`/`Enter` di kartu approval)
+   - `tui::app::tests::test_tui_app_utf8_editing_and_events` (Input TUI UTF-8 & penanganan event)
+   - `tui::render::tests::test_tool_result_card_shows_first_lines_and_more_marker` (Kartu hasil tool TUI: 4 baris pertama + marker `… (N more lines)`, via TestBackend)
    - `tui::tests::test_approval_key_action_approve_always_key` (`A` besar = approve + matikan prompt untuk sisa sesi; `a` kecil = approve sekali)
-   - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
+   - `tui::tests::test_approval_key_action_approve_keys` (Pemetaan tombol approve `a`/`y`/`Enter` di kartu approval)
    - `tui::tests::test_approval_key_action_edit_keys` (Pemetaan tombol edit `e` di kartu approval)
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
-   - `tui::render::tests::test_tool_result_card_shows_first_lines_and_more_marker` (Kartu hasil tool TUI: 4 baris pertama + marker `… (N more lines)`, via TestBackend)
-4. **`purrcode_ai` (CLI binary) (8 tests):**
+   - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
+
+4. **`purrcode_ai` (CLI binary) (8 tests):
+   - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
+   - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
    - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
-   - `tests::test_resolve_target_model_deterministic_priority` (Resolusi deterministik prioritas model sesi)
-   - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
-   - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
-   - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
    - `tests::test_cli_approval_requester_denies_without_tty` (Requester non-TTY menolak di kedua varian `yolo`; hint `yolo` tidak lagi menyesatkan)
-5. **`purrcode_config` (9 tests):**
-   - `jsonc::tests::test_clean_jsonc_comments`, `jsonc::tests::test_strip_trailing_commas`
-   - `loader::tests::test_expand_env_vars`, `loader::tests::test_parse_example_file`, `loader::tests::test_hierarchical_merge`
-   - `validator::tests::test_rejects_model_under_64k`
-   - `preset_mode::tests::test_bundled_mode_presets_load`, `preset_model::tests::test_bundled_model_presets_load`
+   - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
+   - `tests::test_resolve_target_model_deterministic_priority` (Resolusi deterministik prioritas model sesi)
+
+5. **`purrcode_config`** (11 tests):
+   - `jsonc::tests::test_clean_jsonc_comments`
+   - `jsonc::tests::test_strip_trailing_commas`
+   - `loader::tests::test_expand_env_vars`
+   - `loader::tests::test_hierarchical_merge`
+   - `loader::tests::test_merge_into_keeps_telegram` (Lapisan config project yang membawa section `telegram` tidak hilang saat merge (regresi E2E batch Telegram))
+   - `loader::tests::test_parse_example_file`
    - `model::tests::test_resolve_model_bare_name_is_deterministic_across_providers` (Resolusi deterministik nama model telanjang antar-provider)
-6. **`purrcode_core` (4 tests):**
-   - `loop_engine::tests::test_policy_gate_deny_blocks_tool_and_audits`
-   - `loop_engine::tests::test_plugin_pre_tool_use_veto_blocks_execution`
+   - `model::tests::test_telegram_config_defaults_and_fail_closed_allowlist` (Default config Telegram (api_base, timeout 120/30 dtk) + `allow_from` kosong = tidak ada yang boleh)
+   - `preset_mode::tests::test_bundled_mode_presets_load`
+   - `preset_model::tests::test_bundled_model_presets_load`
+   - `validator::tests::test_rejects_model_under_64k`
+
+6. **`purrcode_core`** (4 tests):
    - `loop_engine::tests::test_dry_run_diff_preview_and_audit_sink`
+   - `loop_engine::tests::test_plugin_pre_tool_use_veto_blocks_execution`
+   - `loop_engine::tests::test_policy_gate_deny_blocks_tool_and_audits`
    - `session::tests::test_session_append_fork_and_compact`
-7. **`purrcode_memory` (3 tests):**
-   - `tests::test_markdown_memory_remember_recall_and_forget`
+
+7. **`purrcode_memory`** (3 tests):
    - `tests::test_markdown_memory_load_context_sections` (Integrasi SOUL/USER/MEMORY/.purrcode)
+   - `tests::test_markdown_memory_remember_recall_and_forget`
    - `tests::test_truncate_chars_utf8_safety` (Pemotongan batas karakter UTF-8 aman)
-8. **`purrcode_orchestrator` (9 tests):**
+
+8. **`purrcode_orchestrator`** (9 tests):
    - `shadow::tests::test_parse_shadow_verdicts_and_triggers`
    - `shadow::tests::test_shadow_enforcement_across_modes`
    - `shadow::tests::test_strict_shadow_user_approval_with_preview` (Verifikasi penyerahan diff preview saat persetujuan Carrier)
+   - `task::tests::test_format_validated_result_markdown_dedups_summary_heading` (Heading `## Summary` ganda di `result.md` dihapus)
+   - `task::tests::test_format_validated_result_markdown_rejects_empty_and_normalizes` (Penolakan ringkasan subagent kosong & normalisasi)
    - `task::tests::test_per_role_model_preset_resolution_and_precedence`
    - `task::tests::test_subagent_chain_handoff_and_resume_by_id`
-   - `task::tests::test_unresolved_role_model_falls_back_to_session_model` (preset menamai provider tak terkonfigurasi → child jalan di model sesi, bukan id model preset yang dikirim ke provider sesi)
-   - `task::tests::test_format_validated_result_markdown_rejects_empty_and_normalizes` (Penolakan ringkasan subagent kosong & normalisasi)
-   - `task::tests::test_format_validated_result_markdown_dedups_summary_heading` (Heading `## Summary` ganda di `result.md` dihapus)
    - `task::tests::test_task_tool_dry_run_returns_preview_without_side_effects` (Pencegahan eksekusi ganda subagent saat dry-run)
-9. **`purrcode_plugin` (6 tests):**
+   - `task::tests::test_unresolved_role_model_falls_back_to_session_model` (preset menamai provider tak terkonfigurasi → child jalan di model sesi, bukan id model preset yang dikirim ke provider sesi)
+
+9. **`purrcode_plugin`** (6 tests):
    - `tests::test_parse_plugin_yaml_and_default_deny_secrets`
-   - `tests::test_parse_plugin_yaml_with_declared_secrets`
    - `tests::test_parse_plugin_yaml_missing_name_rejected`
    - `tests::test_parse_plugin_yaml_records_network_and_filesystem` (Deklarasi `network`/`filesystem` di-parse & dicatat, tidak ditegakkan di v0.1)
-   - `tests::test_unenforced_capabilities_reports_declared_only` (Helper `unenforced_capabilities` hanya melaporkan yang dideklarasikan)
+   - `tests::test_parse_plugin_yaml_with_declared_secrets`
    - `tests::test_plugin_manager_dispatch_pre_tool_use_veto`
-10. **`purrcode_provider` (7 tests):**
-    - `router::tests::test_policy_refusal_stops_fallback_chain`
-    - `router::tests::test_technical_error_fails_over_to_next_candidate_and_cooldown` (Failover otomatis saat error teknis & cooldown)
-    - `openai::tests::test_openai_provider_endpoint_url_resolution`
-    - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
-    - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
-    - `openai::tests::test_sse_tool_call_delta_without_index_defaults_to_zero` (Chunk tool-call tanpa `index` tetap di-parse sebagai tool call pertama, bukan dibuang diam-diam)
-    - `openai::tests::test_user_agent_resolution_default_and_custom` (Default UA jujur `PurrCode-AI/0.1` vs UA kustom dari config; UA invalid → kembali ke default, bukan client tanpa UA)
-11. **`purrcode_service` (4 tests):**
-    - `tests::test_service_unit_generators`
-    - `tests::test_systemd_unit_dependencies_and_restart_policy`
-    - `tests::test_openrc_init_shebang_and_network_dependency`
-    - `tests::test_windows_task_script_generator` (Generator skrip PowerShell Task Scheduler Windows)
-12. **`purrcode_tools` (34 tests):**
-    - `execution::bash::tests::test_smart_truncate_output`
-    - `execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate` (Deteksi otomatis Git Bash di Windows)
-    - `execution::bash::tests::test_resolve_windows_shell_detects_path_bash` (Deteksi bash.exe di PATH lingkungan lintas platform)
-    - `execution::bash::tests::test_windows_join_uses_backslash_for_windows_paths` (Join path Windows memakai `\` di semua platform)
-    - `execution::bash::tests::test_windows_join_keeps_host_separator_for_unix_paths` (Join path Unix tetap memakai separator host)
-    - `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell` (Fallback aman ke powershell.exe)
-    - `fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows` (Normalisasi prefix verbatim `\\?\` dan case-insensitivity Windows)
-    - `web::webfetch::tests::test_utf8_safe_truncation`
-    - `web::webfetch::tests::test_ssrf_blocking`
-    - `web::webfetch::tests::test_resolve_redirect` (Join Location redirect absolut/relatif)
-    - `web::webfetch::tests::test_resolve_validated_addrs_ip_literal` (Resolve + validasi IP literal: loopback/benchmarking ditolak, publik lolos)
-    - `web::webfetch::tests::test_dns_lookup_fail_closed` (DNS gagal → fetch ditolak, bukan dilanjutkan tanpa verifikasi)
-    - `web::webfetch::tests::test_get_pinned_rejects_private_destination` (Fetch ter-pin menolak target loopback sebelum socket dibuka)
-    - `web::webfetch::tests::test_redirect_hop_to_loopback_is_rejected` (Hop redirect ke loopback/metadata ditolak sebelum koneksi dibuka)
-    - `web::websearch::tests::test_extract_snippets_and_encode`
-    - `web::websearch::tests::test_websearch_propagates_network_error`
-    - `coordination::ask::tests::test_ask_empty_options`
-    - `coordination::ask::tests::test_ask_non_interactive`
-    - `coordination::todo::tests::test_todo_tool`
-    - `skill::tests::test_embedded_skills_always_available`
-    - `skill::tests::test_create_and_read_custom_skill`
-    - `skill::tests::test_patch_skill_fuzzy_matching`
-    - `skill::tests::test_delete_custom_skill_and_embedded_protection`
-    - `skill::tests::test_skill_name_and_description_validation`
-    - `skill::manage::tests::test_manage_skill_lifecycle_create_patch_list_delete`
-    - `skill::manage::tests::test_manage_skill_dry_run`
-    - `fs::read::tests::test_read_confinement_blocks_traversal`
-    - `fs::read::tests::test_read_tool`
-    - `fs::edit::tests::test_edit_unique_match_and_hash_anchor`
-    - `fs::edit::tests::test_edit_fuzzy_whitespace_and_crlf_fallback`
-    - `fs::edit::tests::test_find_match_range_rejects_ambiguity`
-    - `fs::edit::tests::test_fuzzy_match_range_keeps_trailing_newline` (Range fuzzy berakhir sebelum newline baris terakhir; baris berikut tidak menempel)
-    - `search::glob::tests::test_glob_to_regex`
-    - `search::grep::tests::test_grep_basic_and_context_lines`
+   - `tests::test_unenforced_capabilities_reports_declared_only` (Helper `unenforced_capabilities` hanya melaporkan yang dideklarasikan)
 
----
+10. **`purrcode_provider`** (7 tests):
+   - `openai::tests::test_openai_provider_endpoint_url_resolution`
+   - `openai::tests::test_sse_chunk_deserialization_reasoning_variants` (DeepSeek R1 / Ollama)
+   - `openai::tests::test_sse_chunk_deserialization_tool_call_delta`
+   - `openai::tests::test_sse_tool_call_delta_without_index_defaults_to_zero` (Chunk tool-call tanpa `index` tetap di-parse sebagai tool call pertama, bukan dibuang diam-diam)
+   - `openai::tests::test_user_agent_resolution_default_and_custom` (Default UA jujur `PurrCode-AI/0.1` vs UA kustom dari config; UA invalid → kembali ke default, bukan client tanpa UA)
+   - `router::tests::test_policy_refusal_stops_fallback_chain`
+   - `router::tests::test_technical_error_fails_over_to_next_candidate_and_cooldown` (Failover otomatis saat error teknis & cooldown)
+
+11. **`purrcode_service`** (4 tests):
+   - `tests::test_openrc_init_shebang_and_network_dependency`
+   - `tests::test_service_unit_generators`
+   - `tests::test_systemd_unit_dependencies_and_restart_policy`
+   - `tests::test_windows_task_script_generator` (Generator skrip PowerShell Task Scheduler Windows)
+
+12. **`purrcode_tools`** (34 tests):
+   - `coordination::ask::tests::test_ask_empty_options`
+   - `coordination::ask::tests::test_ask_non_interactive`
+   - `coordination::todo::tests::test_todo_tool`
+   - `execution::bash::tests::test_resolve_windows_shell_detects_git_bash_candidate` (Deteksi otomatis Git Bash di Windows)
+   - `execution::bash::tests::test_resolve_windows_shell_detects_path_bash` (Deteksi bash.exe di PATH lingkungan lintas platform)
+   - `execution::bash::tests::test_resolve_windows_shell_falls_back_to_powershell` (Fallback aman ke powershell.exe)
+   - `execution::bash::tests::test_smart_truncate_output`
+   - `execution::bash::tests::test_windows_join_keeps_host_separator_for_unix_paths` (Join path Unix tetap memakai separator host)
+   - `execution::bash::tests::test_windows_join_uses_backslash_for_windows_paths` (Join path Windows memakai `\` di semua platform)
+   - `fs::edit::tests::test_edit_fuzzy_whitespace_and_crlf_fallback`
+   - `fs::edit::tests::test_edit_unique_match_and_hash_anchor`
+   - `fs::edit::tests::test_find_match_range_rejects_ambiguity`
+   - `fs::edit::tests::test_fuzzy_match_range_keeps_trailing_newline` (Range fuzzy berakhir sebelum newline baris terakhir; baris berikut tidak menempel)
+   - `fs::read::tests::test_read_confinement_blocks_traversal`
+   - `fs::read::tests::test_read_tool`
+   - `fs::read::tests::test_strip_verbatim_prefix_and_confinement_windows` (Normalisasi prefix verbatim `\\?\` dan case-insensitivity Windows)
+   - `search::glob::tests::test_glob_to_regex`
+   - `search::grep::tests::test_grep_basic_and_context_lines`
+   - `skill::manage::tests::test_manage_skill_dry_run`
+   - `skill::manage::tests::test_manage_skill_lifecycle_create_patch_list_delete`
+   - `skill::tests::test_create_and_read_custom_skill`
+   - `skill::tests::test_delete_custom_skill_and_embedded_protection`
+   - `skill::tests::test_embedded_skills_always_available`
+   - `skill::tests::test_patch_skill_fuzzy_matching`
+   - `skill::tests::test_skill_name_and_description_validation`
+   - `web::webfetch::tests::test_dns_lookup_fail_closed` (DNS gagal → fetch ditolak, bukan dilanjutkan tanpa verifikasi)
+   - `web::webfetch::tests::test_get_pinned_rejects_private_destination` (Fetch ter-pin menolak target loopback sebelum socket dibuka)
+   - `web::webfetch::tests::test_redirect_hop_to_loopback_is_rejected` (Hop redirect ke loopback/metadata ditolak sebelum koneksi dibuka)
+   - `web::webfetch::tests::test_resolve_redirect` (Join Location redirect absolut/relatif)
+   - `web::webfetch::tests::test_resolve_validated_addrs_ip_literal` (Resolve + validasi IP literal: loopback/benchmarking ditolak, publik lolos)
+   - `web::webfetch::tests::test_ssrf_blocking`
+   - `web::webfetch::tests::test_utf8_safe_truncation`
+   - `web::websearch::tests::test_extract_snippets_and_encode`
+   - `web::websearch::tests::test_websearch_propagates_network_error`
 
 ## 4. Evaluasi Penutupan Temuan Audit & Inovasi Baru
 
@@ -239,6 +287,7 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Suite di target musl: 98/98, 0 failed** — jumlah dan per-crate sama persis dengan suite GNU (api 4, approval 2, channel 9, cli 8, config 9, core 4, memory 3, orchestrator 8, plugin 6, provider 7, service 4, tools 34). Binary musl bukan sekadar ter-link, tapi teruji.
     - **CI (`.github/workflows/ci.yml`, baru):** 6 job — `fmt`, `clippy -D warnings`, `test` (Linux GNU), `release-gnu`, `release-musl` (install `musl-tools`, build target musl, verifikasi `file` + `ldd` statically linked, upload artifact), `windows` (test + release di `windows-latest`). YAML divalidasi lokal (PyYAML, 6 job). **Jujur dicatat:** CI belum pernah berjalan di GitHub (belum ada push) — job Windows khususnya tidak terverifikasi dari VM ini dan hanya berjalan di runner GitHub; artifact upload belum teruji end-to-end. Sampai ada run hijau pertama di GitHub, CI ini adalah pipeline yang dibuat + divalidasi sintaksnya, bukan pipeline yang terbukti jalan.
     - **Batas scope:** tidak memakai `cargo zigbuild`/`cross` (tidak diperlukan — `musl-gcc` cukup); cross-compile arm64/arm/mipsle (PRD F14) tetap belum dikerjakan.
+    - **Diperbarui batch Telegram (item 20):** suite musl kini **135/135**, rilis musl **4.949.152 byte** (4,72 MiB) static-pie. Catatan infra: restart VM menghapus `musl-tools` dari /usr (ephemeral) — dipulihkan lewat `.deb` langsung dari archive.ubuntu.com (`musl` + `musl-dev` + `musl-tools` 1.2.4-2); `apt-get update` lewat proxy terlalu lambat untuk ditunggu.
 18. **Dogfood v0.1 end-to-end 2026-11-12 (TUI + `-p` + `--json`, model Magpie `antigravity/gemini-3.8-flash-tiered` via bridge lokal) + perbaikan temuan (workplan item 23):**
     - **TUI run (sesi `purr_f3f166`, Tabby):** tugas nyata — scaffold + implementasi + test + README proyek Rust `mdcount` (CLI statistik Markdown: kata/baris/code block, output JSON). Meowstro mendelegasikan 2× ke child Tinker yang SAMA (continuation ID `purr_59f8dd`, resume — bukan respawn). **Hasil terverifikasi independen:** `cargo test` **21/21 hijau**, `cargo clippy` 0 warning, `cargo run -- sample.md` → `{"words": 70, "lines": 31, "code_blocks": 2}` persis seperti klaim child; child memverifikasi sendiri (JSON via `python3 -m json.tool`, error handling exit 1). Registry `purr_59f8dd.json` berisi summary terstruktur lengkap + `result.md` ditulis. Meowstro memverifikasi (baca `README.md`, todo completed) dan menutup dengan summary akhir (ada di transkrip sesi `purr_f3f166.jsonl`; pane TUI saat dicek masih menampilkan kartu task terakhir — kemungkinan scroll, bukan hilangnya pesan; dicatat sebagai observasi, bukan defect).
     - **`-p --json --yolo` run (sesi `purr_2ad407`):** tugas lanjutan — flag `--words-only` di mdcount. Implementasi benar, **terverifikasi independen: `cargo test` 26/26 hijau** (21 + 5 test parsing argumen baru), `cargo run -- --words-only sample.md` → `70` (persis `words` dari JSON). Run dihentikan di tengah karena agent berputar pada pencarian toolchain (PATH) — artefak harness (HOME terisolasi, cargo tidak di PATH), bukan defect produk; implementasi sudah terbukti benar sebelum dihentikan.
@@ -253,16 +302,20 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Hasil ukur batch ini:** `cargo check` 0 warning, `cargo test --workspace` **100/100 lolos, 0 failed** (99 + 1 baru: dead-model fallback), clippy `-D warnings` lolos, fmt bersih, `cargo build --release` → 4.630.000 byte (4,41 MiB) ELF dynamic GNU stripped; suite musl **100/100**, rilis musl 4.756.640 byte static-pie stripped, `ldd` = statically linked.
     - **Bukan defect (catatan infra checker):** build checker F2 — sesi TUI pertamanya mati karena checker paralel me-restart server tmux bersama (HOME checker lain bocor ke sesi baru). Harness, bukan produk: checker live-TUI paralel ke depan memakai socket tmux terpisah (`tmux -L <nama>`).
 
+20. **Telegram v0.2 (F15–F18) 2026-11-12 — gateway daemon + channel Telegram selesai & terverifikasi mock end-to-end (workplan item 25):**
+    - **Implementasi (branch `dev-muse`, ADR-013 diamendemen — lihat bawah):** modul `crates/purrcode-channel/src/telegram/` (types, client, chunk, sessions, approval, render, channel) + `crates/purrcode-cli/src/gateway.rs`; config `telegram` di `model.rs` + merge di `loader.rs` (**bug layering DIPERBAIKI:** section `telegram` sempat hilang saat merge config — `merge_into` tidak membawanya; regression test `test_merge_into_keeps_telegram`); `purrcode.jsonc.example` + JSON schema diperbarui.
+    - **Poll (ZeroClaw):** probe `timeout: 0` + drain backlog, loop `timeout: 30`, `limit: 100`, offset maju setelah batch utuh; 429 → `retry_after` (maks 60 dtk; poll loop retry tanpa batas, cap 2× hanya jalur kirim); 401 → berhenti. **Allowlist fail-closed** (kosong = tidak ada yang boleh), SATU balasan privat, isi pesan tak dikenal tidak masuk log/audit — terbukti: string `halo jahat` 0 kemunculan di audit/transkrip. Sesi per chat (`chats.json` atomik), `/new` `/resume` `/stop` `/help`. **Approval Ya/Tidak/Selalu** (timeout 120 dtk → deny, klaim-tunggal) + audit `telegram_approval` terpisah dari `tool_approval` generik — catatan: entri generik loop tetap mencatat `denied_by_user` saat timeout (bool tidak membawa sumber; sumber presisi hanya di `telegram_approval`). **Always dikunci (chat, sesi)** — `/new` mulai bersih. Chunking 4096 sadar-fence + marker `(i/n)`, cadangan 14 karakter (marker 3-digit 10 + penutup fence 4). Callback dijawab tepat SEKALI (resolved → polos, stale → "Sudah kedaluwarsa."). Session ID 12 hex (bukan 6). Ctrl-C meng-abort task poll (tidak menunggu `getUpdates` sampai 45 dtk; tidak menunggu turn berjalan).
+    - **Verifikasi 2 checker independen (diam-diam, tree dibekukan):** semua angka direproduksi persis (135/135 GNU + musl, clippy/fmt bersih, GNU 4.826.088 byte, musl 4.949.152 byte static-pie). **E2E mock 11 kasus, 38/38 asersi PASS** (main, group, poll429, poll401, long, deny, timeout, always, probefail, groupcmd, alwaysnew) — driver + mock ditulis ulang setelah restart VM menghapus isi `/tmp` (harness hidup di `/tmp`, bukan file repo).
+    - **Temuan checker yang DIPERBAIKI (batch 2e):** build checker F2 (Always per-chat seumur daemon → kini per-(chat, sesi) + kasus `alwaysnew`); F3 (cadangan chunk 10 → 14; pesan berpagar ~440 KB terbukti 107/109 chunk > 4096 sebelum perbaikan, regression test baru); F4 = re-checker F3 (probe gagal → backlog dieksekusi; probe kini di-retry sampai sukses/401/shutdown + kasus `probefail`); F4 re-checker (perintah grup `@BotName` diabaikan; entity `bot_command` kini dihitung mention + kasus `groupcmd` + unit test); F2 re-checker (Ctrl-C menggantung sampai 45 dtk; poll di-abort + asersi SIGINT diukur); F1 re-checker (kasus `always` vacuous; mock `delegate_write` kini bersiklus + wait berbasis hitungan + kasus `always` membuktikan 2× `approved_always`); F5 re-checker (label asersi timeout overclaim; kini parse `telegram_approval` spesifik + dual-entry didokumentasikan); N3 (session ID 6 → 12 hex, tanpa dash); N4 (kartu approval tanpa fence ``` — plain text); N5 (pesan user tetap dipersist bila turn gagal); N7 (callback dijawab sekali).
+    - **Amendemen ADR-013 (dokumen, D1/D2/F5/D3):** (a) SSRF pinning TIDAK berlaku untuk `api_base` (deviasi disengaja + alasan); (b) klaim `on_subagent_event` dihapus (tidak ada di kode; baris status subagent ditunda); (c) "maks 2 retry" = jalur kirim saja; (d) cadangan chunk 14 + probe retry + Ctrl-C abort dicatat.
+    - **TERBUKA / hanya bisa dicek live (Telegram asli):** konektivitas `api.telegram.org` dari PC user (VM ini tidak bisa egress langsung — reqwest tanpa proxy), rendering keyboard di aplikasi Telegram, perilaku 429/grup asli, `service install` + daemon systemd/OpenRC, `TelegramAskRequester` live (tanpa skenario E2E), `/resume <id>` dengan id tak ada, `/stop` saat turn berjalan, turn paralel lintas chat. Bot `@purrcodeai_bot` dibuat user 2026-11-12 via BotFather; token TIDAK disimpan di mana pun (tempat benar: `~/.purrcode/credentials`); uji live butuh chat ID user (kirim satu pesan ke bot → baca dari `getUpdates` → masukkan `allow_from`).
+    - **Hasil ukur:** check 0 warning, test **135/135**, clippy `-D warnings` bersih, fmt bersih, release GNU 4.826.088 byte (4,60 MiB); suite musl **135/135**, rilis musl 4.949.152 byte (4,72 MiB) static-pie stripped, `ldd` = statically linked.
+
 ---
 
 ## 5. Rencana Aksi Strategis Berikutnya (Kickoff v0.2)
 
-Dengan kapabilitas inti Milestone v0.1 yang telah **selesai dan terverifikasi secara mendalam**, langkah strategis berikutnya adalah memulai **Milestone v0.2: Telegram Channel & Gateway Daemon**:
+Dengan Milestone v0.1 **dan v0.2 (Telegram)** yang telah selesai inti dan terverifikasi, langkah berikutnya:
 
-1. **Implementasi Telegram Bot Handler (`crates/purrcode-channel`):**
-   - Integrasikan long-polling dan webhook Telegram client (via `teloxide` atau reqwest polling ringan) agar binary tetap ramping.
-   - Sambungkan user ID Telegram yang terotorisasi dengan session manager di `purrcode-core`.
-2. **Gateway Daemon Service Integration:**
-   - Jalankan subcommand `purrcode-ai gateway` sebagai background service melalui systemd / OpenRC unit yang sudah digenerate oleh `purrcode-service`.
-3. **Multi-Channel Orchestration:**
-   - Memungkinkan user mengirim tugas coding ke Meowstro lewat chat Telegram, dan Meowstro mendisposisikan subagent Tinker/Whisker sambil melaporkan status kembali ke Telegram.
+1. **Uji live Telegram (butuh user):** bot `@purrcodeai_bot` sudah dibuat (2026-11-12). User kirim satu pesan ke bot → chat ID dibaca dari `getUpdates` → masukkan `allow_from` → jalankan `purrcode-ai gateway` dan uji: konektivitas `api.telegram.org` dari PC user, rendering keyboard di aplikasi, 429/grup asli, `ask` picker live, `/resume <id>` tak ada, `/stop` saat turn berjalan, turn paralel lintas chat, `service install` + daemon systemd/OpenRC.
+2. **Akhiran (sesuai perintah user 2026-11-12 04:54 WIB — bukan prioritas):** cron scheduler (F19), sandbox OS (F21), install-approval plugin, WebUI v0.4 (F23–F25), F3 failover top-level (butuh keputusan desain), D5 event stream `--json` penuh, D6 shell bash persisten, baris status subagent di Telegram (butuh `on_subagent_event` di listener + titik emisi di task tool).

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod cli;
+mod gateway;
 mod onboard;
 
 use clap::Parser;
@@ -265,12 +266,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Commands::Gateway => {
-                let _target_model = resolve_target_model_or_exit(args.model, &config);
-                println!(
-                    "🐾 PurrCode AI Gateway daemon ready (preset: {}). Listening for channel events (Ctrl-C to stop)...",
-                    config.preset
-                );
-                let _ = tokio::signal::ctrl_c().await;
+                gateway::run_gateway(&config, &workspace_root, args.model).await?;
                 return Ok(());
             }
         }
