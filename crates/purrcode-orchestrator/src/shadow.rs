@@ -16,7 +16,21 @@ pub enum ShadowVerdict {
 }
 
 /// Parses Tuxeshadow's raw output into a structured `ShadowVerdict` (ADR-012).
+///
+/// Fail-closed: an empty, ambiguous, or unrecognized reply is an
+/// OBJECTION, never an approval. The auditor's job is to block a
+/// risky delegation; a reply that cannot be read as an approval must
+/// not silently approve it. A model that rambles, an empty response,
+/// or a reply that omits the verdict keyword must all block, not
+/// pass. The shadow prompt instructs the keyword-first format
+/// (`APPROVE` / `APPROVE_WITH_NOTES: ...` / `OBJECT: ...`), so a
+/// reply that does not lead with one is a protocol violation.
 pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
+    if raw.trim().is_empty() {
+        return ShadowVerdict::Object {
+            reason: "Empty verdict from Tuxeshadow (fail-closed)".to_string(),
+        };
+    }
     for line in raw.lines() {
         let trimmed = line
             .trim()
@@ -41,6 +55,20 @@ pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
                 .unwrap_or_else(|| raw.trim().to_string());
             return ShadowVerdict::ApproveWithNotes { notes };
         }
+        // Plain APPROVE — checked after APPROVE_WITH_NOTES, which
+        // starts with the same word. The character after APPROVE
+        // must be a boundary (":", "*", space, end of line) so that
+        // APPROVE_WITH_NOTES and APPROVAL do not match as APPROVE.
+        if upper == "APPROVE"
+            || upper.strip_prefix("APPROVE").is_some_and(|rest| {
+                rest.chars()
+                    .next()
+                    .is_some_and(|c| !c.is_ascii_alphanumeric() && c != '_')
+            })
+            || upper.contains("VERDICT: APPROVE")
+        {
+            return ShadowVerdict::Approve;
+        }
     }
 
     if raw.to_ascii_uppercase().contains("OBJECT:") {
@@ -53,8 +81,19 @@ pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
             notes: raw.trim().to_string(),
         };
     }
+    // Whole-text approval is strict: the reply must LEAD with the
+    // keyword. A bare `contains("APPROVE")` would turn a negation
+    // ("I do not approve this") into an approval.
+    if raw.trim().to_ascii_uppercase().starts_with("APPROVE") {
+        return ShadowVerdict::Approve;
+    }
 
-    ShadowVerdict::Approve
+    ShadowVerdict::Object {
+        reason: format!(
+            "Ambiguous or unrecognized Tuxeshadow verdict: {}",
+            raw.trim()
+        ),
+    }
 }
 
 /// Determines whether Tuxeshadow's narrow event-driven trigger fires for a delegation (ADR-012):
@@ -395,6 +434,44 @@ mod tests {
             false,
             false
         ));
+    }
+
+    /// The parser is fail-closed: anything that is not a readable
+    /// approval is an objection. Found by comparing dev-muse against
+    /// dev-claude (2026-11-12): the old fallback returned `Approve`
+    /// for empty/garbage output, so a shadow that failed to answer
+    /// silently approved the delegation it was meant to audit.
+    #[test]
+    fn test_parse_shadow_verdict_fail_closed() {
+        // Empty / whitespace-only: no verdict at all.
+        assert!(matches!(
+            parse_shadow_verdict(""),
+            ShadowVerdict::Object { .. }
+        ));
+        assert!(matches!(
+            parse_shadow_verdict("   \n\t"),
+            ShadowVerdict::Object { .. }
+        ));
+        // Narrative with no verdict keyword.
+        assert!(matches!(
+            parse_shadow_verdict("This looks fine to me, proceed."),
+            ShadowVerdict::Object { .. }
+        ));
+        // A negation contains the word APPROVE — it must NOT approve.
+        assert!(matches!(
+            parse_shadow_verdict("I do not approve this delegation."),
+            ShadowVerdict::Object { .. }
+        ));
+        // Genuine approvals still pass, in every accepted form.
+        assert_eq!(parse_shadow_verdict("APPROVE"), ShadowVerdict::Approve);
+        assert_eq!(
+            parse_shadow_verdict("VERDICT: APPROVE"),
+            ShadowVerdict::Approve
+        );
+        assert_eq!(
+            parse_shadow_verdict("**APPROVE**: go ahead"),
+            ShadowVerdict::Approve
+        );
     }
 
     #[tokio::test]

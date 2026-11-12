@@ -84,6 +84,21 @@ impl CuratorRunner {
         });
     }
 
+    /// Consume the save turn's tool calls. The save turn runs with
+    /// the parent's session id, so its `task` delegation would
+    /// otherwise count toward the NEXT turn's threshold — the marker
+    /// from `run_after_turn` was written before the save turn ran.
+    /// Called by the hook right after the save turn, whether the
+    /// save succeeded or failed (the calls are spent either way).
+    pub fn consume_save_turn(&self, session_id: &str) {
+        self.audit(
+            session_id,
+            "skill_curator_checked",
+            "ok",
+            "save turn calls consumed (F3)",
+        );
+    }
+
     /// Run the check after one turn. `messages` is the turn's session
     /// history and `from_idx` the index it had before the turn, so
     /// the log is built from this turn's messages only. `skill_mgr`
@@ -134,7 +149,12 @@ impl CuratorRunner {
             return CuratorOutcome::NoDraft;
         };
         match validate_draft(&content, skill_mgr) {
-            Ok(meta) => match stage_draft(&self.deps.purrcode_dir, &meta.name, &meta.content) {
+            Ok(meta) => match stage_draft(
+                &self.deps.purrcode_dir,
+                session_id,
+                &meta.name,
+                &meta.content,
+            ) {
                 Ok(path) => {
                     self.audit(
                         session_id,
@@ -348,9 +368,10 @@ mod tests {
             CuratorOutcome::DraftStaged { meta, path } => {
                 assert_eq!(meta.name, "cargo-test-loop");
                 assert!(path.exists());
+                // Session-keyed staged file (F4).
                 assert!(path
                     .to_string_lossy()
-                    .contains("skills/.drafts/cargo-test-loop.md"));
+                    .contains("skills/.drafts/cargo-test-loop.purr_stage.md"));
             }
             other => panic!("expected DraftStaged, got {other:?}"),
         }
@@ -360,6 +381,34 @@ mod tests {
         seed_audit(&home, sid, 0);
         let out2 = r.run_after_turn(sid, &[user_msg("again")], 0, &mgr).await;
         assert!(matches!(out2, CuratorOutcome::BelowThreshold { count: 0 }));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// F3: the save turn's `task` delegation runs with the parent's
+    /// session id. Without a consume step it leaks into the next
+    /// turn's threshold; `consume_save_turn` writes a marker that
+    /// eats it.
+    #[tokio::test]
+    async fn test_save_turn_calls_leak_without_consume_and_consumed_with() {
+        let home = tmp_home("save-leak");
+        let sid = "purr_save_leak";
+        seed_audit(&home, sid, 5);
+        let r = runner_for(&home, DRAFT);
+        let mgr = SkillManager::new();
+        let out = r
+            .run_after_turn(sid, &[user_msg("fix the tests")], 0, &mgr)
+            .await;
+        assert!(matches!(out, CuratorOutcome::DraftStaged { .. }));
+        // One more tool call, as the save turn's `task` delegation
+        // would make: without a consume step the next turn sees it.
+        seed_audit(&home, sid, 1);
+        let out2 = r.run_after_turn(sid, &[user_msg("hi")], 0, &mgr).await;
+        assert!(matches!(out2, CuratorOutcome::BelowThreshold { count: 1 }));
+        // Same again, but the hook consumes the save turn first.
+        seed_audit(&home, sid, 1);
+        r.consume_save_turn(sid);
+        let out3 = r.run_after_turn(sid, &[user_msg("hi")], 0, &mgr).await;
+        assert!(matches!(out3, CuratorOutcome::BelowThreshold { count: 0 }));
         let _ = std::fs::remove_dir_all(&home);
     }
 

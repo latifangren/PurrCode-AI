@@ -72,6 +72,25 @@ pub fn parse_draft_response(text: &str) -> Option<String> {
 /// `manage_skill`), an empty body, a name that already exists as a
 /// live skill, content over the 100,000-char cap, and anything the
 /// audit's secret scanner redacts (a draft must never carry a secret).
+/// True when the frontmatter block contains a `name:` line with a
+/// non-empty value. Mirrors the `name:` scan in
+/// `parse_skill_frontmatter` (same prefix, same trimming) so the two
+/// never disagree about what counts as a name. A draft without one
+/// would silently become the skill literally named "draft".
+fn frontmatter_has_name(content: &str) -> bool {
+    let Some(rest) = content.strip_prefix("---") else {
+        return false;
+    };
+    let Some(end) = rest.find("---") else {
+        return false;
+    };
+    rest[..end].lines().any(|line| {
+        line.trim()
+            .strip_prefix("name:")
+            .is_some_and(|v| !v.trim().is_empty())
+    })
+}
+
 pub fn validate_draft(content: &str, skill_mgr: &SkillManager) -> Result<DraftMeta, String> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -95,6 +114,12 @@ pub fn validate_draft(content: &str, skill_mgr: &SkillManager) -> Result<DraftMe
     let body = &rest[end + 3..];
     if body.trim().is_empty() {
         return Err("draft has no body after the frontmatter".to_string());
+    }
+    if !frontmatter_has_name(trimmed) {
+        return Err(
+            "draft frontmatter has no 'name:' field (a draft must name its skill explicitly)"
+                .to_string(),
+        );
     }
     let (name, description) = parse_skill_frontmatter(trimmed, "draft");
     let name = validate_skill_name(&name).map_err(|m| format!("invalid draft name: {m}"))?;
@@ -187,6 +212,22 @@ mod tests {
         .expect("seed live skill");
         assert!(validate_draft(GOOD, &m).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_draft_rejects_missing_name_field() {
+        // No `name:` line at all: the frontmatter parser would
+        // default the name to "draft" — the draft is rejected
+        // instead of silently becoming a skill named "draft".
+        let no_name = "---\ndescription: No name here.\n---\n\n# Body\n";
+        assert!(validate_draft(no_name, &mgr()).is_err());
+        // An empty `name:` value is as good as missing.
+        let empty_name = "---\nname:   \ndescription: Empty name.\n---\n\n# Body\n";
+        assert!(validate_draft(empty_name, &mgr()).is_err());
+        // An explicit `name: draft` is a deliberate choice and
+        // validates (the duplicate-name check catches a real clash).
+        let named_draft = "---\nname: draft\ndescription: Explicitly named draft.\n---\n\n# Body\n";
+        assert!(validate_draft(named_draft, &mgr()).is_ok());
     }
 
     #[test]

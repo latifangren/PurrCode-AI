@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 12:02:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 17:36:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,8 MiB** (5.075.192 byte stripped dynamic GNU ELF di Linux) / **~5,0 MiB** (5.203.104 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 5.203.104 byte = 4,96 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 184/184 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (184 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,9 MiB** (5.102.240 byte stripped dynamic GNU ELF di Linux) / **~5,0 MiB** (5.227.680 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 5.227.680 byte = 4,99 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 201/201 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (201 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,11 +19,11 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 184 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 201 unit/integration tests hermetis lintas platform. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **90%** | **Selesai & Terverifikasi Mock End-to-End** | F15–F18 selesai: gateway daemon + channel Telegram hand-rolled (poll, allowlist fail-closed, sesi per chat, kartu approval Ya/Tidak/Selalu, chunking 4096), terverifikasi 2 checker independen + E2E mock 11 kasus (38/38 asersi). Uji live pertama BERHASIL 2026-11-12 07:28 WIB (turn "Hello" dijawab Meowstro lewat gateway + Magpie). Tersisa kartu approval live (HELLO.md) dan `service install` live. |
-| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **50%** | **F19 Cron + F22 Heartbeat — Selesai** | F19 (cron) selesai penuh: parser jadwal bahasa alami ID+EN, store job atomik, delivery queue claim-first, CLI `cron add/list/remove/enable/disable/deliveries/run`, allowlist fail-closed + guard `sandbox: "os"` (ditolak sampai F21), runner job + tick gateway + drain delivery, semua terverifikasi 2 checker (item 21–22). E2E mock 9 kasus, 58/58 asersi. F22 heartbeat selesai (item 23): ticker gateway + two-phase run/skip + `PROACTIVE_PREFERENCES.md` + delivery bersama + TUI seed, terverifikasi 2 checker + E2E mock 15 kasus (94/94 asersi), termasuk perbaikan grup-privasi + preset-fallback + antrean rusak. F20 berikutnya; F21 akhiran. |
+| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **75%** | **F19 Cron + F22 Heartbeat + F20 Kurator — Selesai** | F19 (cron) selesai penuh: parser jadwal bahasa alami ID+EN, store job atomik, delivery queue claim-first, CLI `cron add/list/remove/enable/disable/deliveries/run`, allowlist fail-closed + guard `sandbox: "os"` (ditolak sampai F21), runner job + tick gateway + drain delivery, semua terverifikasi 2 checker (item 21–22). E2E mock 9 kasus, 58/58 asersi. F22 heartbeat selesai (item 23): ticker gateway + two-phase run/skip + `PROACTIVE_PREFERENCES.md` + delivery bersama + TUI seed, terverifikasi 2 checker + E2E mock 15 kasus (94/94 asersi), termasuk perbaikan grup-privasi + preset-fallback + antrean rusak. F20 kurator selesai (item 24): trigger post-turn ≥ 5 tool call, review fork satu call tool-less, draft di `~/.purrcode/skills/.drafts/` (session-keyed), secret scan + validasi, approval TUI/Telegram (Selalu terpisah dari approval tool), Tinker-only `manage_skill create` saat approve, recursion guard; terverifikasi build checker CLOSED + E2E mock 7 kasus (49/49 asersi), termasuk perbaikan fail-open parser verdict Tuxeshadow yang ditemukan dari perbandingan cabang `dev-claude`. F21 akhiran. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
-| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~52%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti; v0.3 F19 + F22 selesai. Tersisa v0.3 (F20/F21, akhiran) + v0.4 (WebUI). |
+| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~58%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti; v0.3 F19 + F22 + F20 selesai. Tersisa v0.3 (F21, akhiran) + v0.4 (WebUI). |
 
 ---
 
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (184 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (201 Unit/Integration Tests)
 
-Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per 2026-11-12 17:36:00 +07:00 (201/201 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api`** (4 tests):
    - `error::tests::test_purr_error_formatting` (Format error standard)
@@ -52,11 +52,12 @@ Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux;
    - `event::tests::test_subagent_status_serde` (Serde status subagent)
    - `tool::tests::test_tool_registry_register_retain_and_freeze` (Pembekuan registry tool)
 
-2. **`purrcode_approval`** (4 tests):
+2. **`purrcode_approval`** (5 tests):
    - `tests::test_deny_beats_ask_beats_allow_and_narrowing` (Penyempitan policy & resolusi izin)
    - `tests::test_secret_scrubbing_and_audit_rotation` (Sanitasi secret & rotasi file audit)
    - `tests::test_tool_allowlist_denies_undeclared_tools` (Allowlist tool di gate: tool di luar set → Deny, sebelum deny rule/tier/axis)
    - `tests::test_tool_allowlist_propagates_to_child_gate` (Allowlist diwariskan ke child gate via `narrowed_child_gate`)
+   - `tests::test_count_tool_calls_since_curator_check` (Hitung `tool_call` per sesi sejak marker kurator terakhir; marker `skill_curator_checked` me-reset hitungan)
 
 3. **`purrcode_channel`** (44 tests):
    - `telegram::approval::tests::test_always_set_is_per_chat_session` (Always dikunci (chat, sesi): sesi baru lewat /new mulai bersih)
@@ -104,7 +105,7 @@ Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux;
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
    - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
 
-4. **`purrcode_ai` (CLI binary) (47 tests):
+4. **`purrcode_ai` (CLI binary) (62 tests):
    - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
    - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
    - `cron::cli::tests::test_truncate` (Pemotongan tampilan prompt di output `cron list`)
@@ -132,6 +133,21 @@ Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux;
    - `cron::store::tests::test_job_roundtrip_atomic_save` (Job tersimpan atomik (tmp+rename) dan terbaca kembali utuh)
    - `cron::store::tests::test_validate_job_rejects_god_yolo_and_unknown_tools` (Job menolak preset guardrail God, approval yolo, dan tool tak dikenal)
    - `cron::store::tests::test_validate_job_rejects_manage_skill_in_allowlist` (Job menolak `manage_skill` di allowlist, di creation dan di run-time)
+   - `curator::counter::tests::test_build_tool_log_orders_calls_and_results` (Log tool call diurutkan: panggilan + hasil, dipotong per entri 300 karakter, total cap 4000)
+   - `curator::counter::tests::test_build_tool_log_truncates_long_entries` (Entri log panjang dipotong, log utuh ≤ 4000 karakter)
+   - `curator::draft::tests::test_parse_draft_response_no_skill_forms` (Jawaban `NO_SKILL` (varian case/spasi) = tidak ada draft)
+   - `curator::draft::tests::test_parse_draft_response_strips_fence` (Pagar code fence dilepas; baris `---` frontmatter TIDAK dimakan sebagai tag bahasa)
+   - `curator::draft::tests::test_validate_draft_good` (Draft valid (frontmatter + body) lolos validasi)
+   - `curator::draft::tests::test_validate_draft_rejects_bad_name_and_duplicate` (Nama invalid / duplikat skill hidup ditolak)
+   - `curator::draft::tests::test_validate_draft_rejects_missing_name_field` (Draft tanpa field `name:` di frontmatter ditolak — skill tidak boleh bernama `draft` diam-diam)
+   - `curator::draft::tests::test_validate_draft_rejects_no_frontmatter_and_empty_body` (Tanpa frontmatter / body kosong ditolak)
+   - `curator::draft::tests::test_validate_draft_rejects_secrets` (Draft yang mengandung secret (terdeteksi `scrub_secrets`) ditolak)
+   - `curator::runner::tests::test_below_threshold_writes_marker_and_resets` (Di bawah threshold: marker `skill_curator_checked` ditulis, hitungan di-reset)
+   - `curator::runner::tests::test_no_skill_and_decide_failure` (`NO_SKILL` dan kegagalan provider = tanpa draft, marker tetap dikonsumsi fail-closed)
+   - `curator::runner::tests::test_save_prompt_carries_content_inline` (Prompt save membawa konten draft inline + scope `global` eksplisit)
+   - `curator::runner::tests::test_save_turn_calls_leak_without_consume_and_consumed_with` (1 call save turn bocor ke threshold berikutnya tanpa `consume_save_turn`; dengan consume, hitungan kembali 0)
+   - `curator::runner::tests::test_threshold_stages_draft_and_marker_resets` (≥ 5 call: draft di-stage + audit `skill_draft_created` + marker di-reset)
+   - `curator::stage::tests::test_stage_and_discard_roundtrip` (Draft di-stage atomik (tmp+rename) di `.drafts/<nama>.<sesi>.md` dan di-discard per sesi tanpa menyentuh sesi lain)
    - `heartbeat::cli::tests::test_bare_heartbeat_defaults_to_status` (Subcommand `heartbeat` tanpa aksi benar-benar default ke `status` — di-parse lewat clap, bukan ditegaskan terhadap struct literal)
    - `heartbeat::prefs::tests::test_is_denied_substring_case_insensitive` ("Never tell me about" cocok substring case-insensitive)
    - `heartbeat::prefs::tests::test_is_in_window_day_and_overnight` (Jendela siang + overnight membungkus tengah malam)
@@ -183,7 +199,8 @@ Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux;
    - `tests::test_markdown_memory_remember_recall_and_forget`
    - `tests::test_truncate_chars_utf8_safety` (Pemotongan batas karakter UTF-8 aman)
 
-8. **`purrcode_orchestrator`** (9 tests):
+8. **`purrcode_orchestrator`** (10 tests):
+   - `shadow::tests::test_parse_shadow_verdict_fail_closed` (Verdict kosong / sampah / narasi → Object (fail-closed); `APPROVE` eksplisit perbatasan kata → Approve)
    - `shadow::tests::test_parse_shadow_verdicts_and_triggers`
    - `shadow::tests::test_shadow_enforcement_across_modes`
    - `shadow::tests::test_strict_shadow_user_approval_with_preview` (Verifikasi penyerahan diff preview saat persetujuan Carrier)
@@ -381,10 +398,16 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Live (di luar audit batch ini):** gateway live v0.2 di-restart 2026-11-12 11:49 WIB dengan binary batch 4a (rig persisten `~/workspace/purr-tmp/purr-tg-live/`, bridge 3457/3458, token + kunci Magpie dari user) — banner `🐾 PurrCode AI Gateway — bot @purrcodeai_bot (preset: tabby, model: magpie:antigravity/gemini-3.8-flash-tiered)` + tick heartbeat pertama berjalan live (audit `heartbeat_tick` deny "no HEARTBEAT.md found; created template", tanpa LLM call). Uji kartu approval HELLO.md menunggu perintah tugas dari user. Catatan jujur dari restart itu: start pertama gagal probe getMe karena bridge sempat putus (`RemoteDisconnected` proxy — bridge memegang kredensial proxy lama; perbaikan: restart bridge dengan env segar), dan `getMe` di startup adalah one-shot fail-fast (tanpa retry — retry hanya ada di probe getUpdates sesudahnya); proses gateway yang tampak "hidup tapi error" saat diagnosis ternyata adalah gateway spot-check build checker yang tertinggal (stdout ke `b4a-build/spot3-gw.log`), bukan gateway live — sudah dimatikan.
     - **Hasil ukur:** check 0 warning, test **184/184** (182 + 2 baru: 1 antrean rusak, 1 jendela detik), clippy `-D warnings` bersih, fmt bersih, release GNU 5.075.192 byte; suite musl **184/184**, rilis musl 5.203.104 byte static-pie stripped, `ldd` = statically linked.
 
-
----
-
-## 5. Rencana Aksi Strategis Berikutnya (Kickoff v0.2)
+24. **F20 kurator skill self-improving (batch 4b + follow-up) 2026-11-12 (workplan item 29, ADR-014):**
+    - **Implementasi (branch `dev-muse`, commit `5a91c7a`):** modul baru `crates/purrcode-cli/src/curator/` (counter, draft, stage, runner) + hook post-turn di TUI (`main.rs`) dan gateway (`gateway.rs`) + `SkillDraftRequester` di `crates/purrcode-channel/src/telegram/approval.rs` (callback `sk:`) + `count_tool_calls_since_curator_check` di `purrcode-approval`. Alur: hitung `tool_call` per sesi dari audit log (marker `skill_curator_checked` me-reset hitungan; threshold 5 — const, tanpa section config, jadi tidak ada jebakan `merge_into`); bila ≥ 5, SATU call tool-less ke model sesi (temperature 0, max_tokens 2048) dari log tool call in-memory yang sudah di-scrub secret (`scrub_secrets` sebelum batas LLM — AGENTS.md §7); jawaban `NO_SKILL` = tanpa draft, sisanya draft SKILL.md lengkap; validasi (`parse_skill_frontmatter` kini `pub`, `validate_skill_name`/`validate_skill_description`, body non-empty, ≤ 100.000 karakter, nama belum hidup, secret scan) lalu stage atomik di `~/.purrcode/skills/.drafts/` — path itu TIDAK dibaca `scan_directory` (hanya `.md` top-level `skills/` dan `SKILL.md` di subdirektori) sehingga draft tidak pernah bocor ke prompt index; approval via kartu TUI kedua (sesi-allow terpisah — `A` di kartu skill tidak pernah auto-approve tool call) atau tombol Telegram Ya/Tidak/Selalu (`sk:`, always key `skill_draft`, timeout 120 dtk → deny, audit `telegram_skill_approval` terpisah) — **tidak ada save tanpa persetujuan pengguna, persis yang dilarang F20**; saat approve, SATU turn simpan lewat loop normal dengan prompt `Save the skill draft '<nama>' by running manage_skill action=create with scope 'global'` — konten inline (draft di luar workspace, `read` Tinker confinement-denied di sana) dan scope `global` EKSPLISIT (default `manage_skill create` adalah `project`); saat sukses draft dihapus dari staging, saat gagal simpan draft DIPERTAHANKAN (retryable; gateway memberi tahu user) dan saat deny dihapus + audit `skill_draft_discarded`. Recursion guard tanpa flag khusus: save turn hanya menyumbang 1 call di sesi parent. Turn `-p` one-shot TIDAK di-wire (tanpa UI approval); turn cron/heartbeat tidak pernah mencapai hook (jalur `run_job`/`run_once` terpisah).
+    - **Verifikasi build checker (independen, tree dibekukan, `~/workspace/purrcode-ai-v03-4b-build-draft.md`): Verdict BATCH 4b CLOSED.** Semua angka direproduksi persis (198/198 GNU + musl, clippy/fmt bersih, GNU 5.101.128 byte, musl 5.227.680 byte static-pie). **E2E mock 38/38 asersi PASS dari salinan harness-nya sendiri** (A gateway_curator_yes, B no, C noskill, D below_threshold, E timeout, F tui_curator_yes). Semua seam dibaca & cocok (counter `approval/src/lib.rs:56`, draft.rs:75, stage.rs:27, `scan_directory` skill/mod.rs:115, hook TUI main.rs:670, hook gateway gateway.rs:523, approval.rs:305/315, channel.rs:148/423). Tree tidak diedit, gateway live PID 1518295 + rig tidak disentuh, tanpa orphan.
+    - **Verifikasi adversarial — DUA KALI GAGAL OLEH RUNTIME, bukan oleh check (dicatat jujur):** re-checker #1 (`6d84b5dc`) ter-interrupt sebelum verdict, di-resume 2026-11-12 14:49 WIB lalu stuck ~3,7 jam di `pending_init` tanpa aktivitas dan ditutup 16:27 WIB; re-checker #2 yang segar (`026d55b3`) ter-interrupt ~8 menit setelah spawn; `subagent.resume` mengembalikan ok tapi status tetap `interrupted`. Keduanya tidak pernah menghasilkan verdict. Batch ini ditutup atas: build checker CLOSED + E2E saya sendiri (49/49) + perbandingan independen cabang `dev-claude` (lihat bawah) yang menemukan SATU bug nyata di kode saya — bukti adversarial yang lebih kuat daripada dua re-checker yang mati.
+    - **E2E mock (`~/workspace/purr-tmp/b4b-e2e/`, bukan file repo): 7 kasus, 49/49 asersi PASS** (A 9, B 6, C 6, D 5, E 5, F 7, G 11) di binary rilis hasil fix pass. G (gateway_curator_always, baru di follow-up): turn 1 draft diapprove via tap `a` (Selalu) → skill live; turn 2 draft ke-2 terbuat OTOMATIS tanpa kartu `sk:` kedua (tepat 1 token `sk:` berbeda di seluruh log TG) sementara kartu tool `ap:` TETAP muncul di turn 2 (always draft tidak bocor ke tool approval); audit `telegram_skill_approval` `approved_always`.
+    - **Temuan build checker yang DIPERBAIKI (follow-up, sebelum commit ini):** F1 LOW (jalur "Selalu" tanpa coverage live — kini kasus G 11/11); F2 INFO (draft tanpa field `name:` diam-diam jadi skill bernama `"draft"` — kini `validate_draft` menolak eksplisit, test baru); F3 INFO (1 call `task` dari save turn bocor ke threshold turn berikutnya — kini `consume_save_turn()` menulis marker segera setelah save turn, di kedua hook, test baru `test_save_turn_calls_leak_without_consume_and_consumed_with`); F4 INFO (draft sesi berbeda dengan nama sama menimpa file `.drafts/<nama>.md` — kini file session-keyed `.drafts/<nama>.<session_id>.md` di `stage_draft`/`discard_draft` + call sites, test stage diperluas).
+    - **Bug NYATA dari perbandingan `dev-claude` (DIPERBAIKI di follow-up ini — paling serius):** `parse_shadow_verdict` (`crates/purrcode-orchestrator/src/shadow.rs:19-59`, warisan era Sprint) adalah **fail-open**: tanpa cabang APPROVE eksplisit, fallback terakhir di baris 57 = `ShadowVerdict::Approve` — output kosong/sampah/narasi Tuxeshadow jatuh ke Approve. Verifikasi ronde 1–9 memverifikasi ENFORCEMENT verdict dan OBJECT yang memblokir secara live, tapi tidak pernah memberi input kosong/sampah ke parser. Perbaikan: kosong/whitespace → Object; cabang APPROVE eksplisit dengan batas kata (`APPROVE` utuh, atau `APPROVE:`/`APPROVE**:` — `APPROVE_WITH_NOTES` dan `APPROVAL` tidak cocok); fallback whole-text ketat (teks harus DIAWALI `APPROVE` — `contains("APPROVE")` mentah akan mengubah "I do not approve this" jadi approval); fallback terakhir = Object dengan alasan isi mentahnya. `dev-claude` sudah fail-closed (kosong/sampah → Object + test) — perbandingan itu benar di poin ini, dan perbandingannya juga benar bahwa `dev-muse` melanggar ADR-011 (main.rs 1271, task.rs 1167 + 3 file di zona 800–1000) sementara `dev-claude` patuh (terbesar 716) — refactor ADR-011 dicatat sebagai kerja terpisah, bukan dikerjakan di batch ini. Dua lubang `dev-claude` yang TIDAK disebut perbandingan kiriman agen lain (diverifikasi langsung dari tree `aee428f`): `OsSandboxAdapter` dead code (hanya re-export, tidak pernah dipanggil — klaim "sandbox 100%" overclaim) dan `is_tool_allowed` tidak pernah dipanggil di runtime (allowlist cron hanya DTO + test); analisis kedua menambahkan lubang ke-3: `HeartbeatMonitor` dead code. Klaim `dev-claude` "TOTAL 100%" adalah label, bukan kedalaman terverifikasi. Arah merge belum diputuskan user.
+    - **Pelajaran harness (bukan defect produk, dicatat agar tidak terulang):** (a) respons `sendMessage` mock Telegram HARUS mengembalikan `Message` lengkap dengan field `chat` yang diwajibkan — mock 4a yang hanya mengembalikan `{"message_id": N}` membuat setiap pengiriman kartu tampak gagal transport ke requester → `denied_unreachable` (satu run kasus A penuh terbuang); (b) mock/gateway orphan dari run sebelumnya memegang port dan meracuni run berikutnya (counter `getUpdates` terbagi ke dua gateway; kartu timeout 120 dtk) — driver kini membunuh proses per-cwd + memastikan port bebas sebelum bind dan membungkus kasus gateway di `try/finally`; (c) cabang save mock yang mengembalikan tool call yang SAMA di setiap completion membuat turn simpan tidak pernah berakhir (loop sampai max-steps 25, ~11×, 247 approval) — kini cabang save hanya mengembalikan tool call saat `n_calls == 0`, lalu teks final; (d) asersi "kartu tool tetap muncul" di kasus G sempat gagal karena pump men-tap kartu `ap:` dengan `a` di turn 1 (always tool yang sah) — pump kasus G kini men-tap `ap:` dengan `y`.
+    - **Live (di luar audit batch ini):** gateway live TIDAK di-restart dengan binary 4b saat batch ini ditutup — user mungkin sedang mengetes bot (PID 1518295, binary batch 4a); restart ke binary ini dilakukan di close-out v0.3 atau saat terbukti idle, dengan verifikasi liveness ulang. `service install` tetap generate-only; uji kartu approval HELLO.md masih menunggu perintah tugas dari user.
+    - **Hasil ukur:** check 0 warning, test **201/201** (198 + 3 baru: shadow fail-closed, draft tanpa name, consume save turn), clippy `-D warnings` bersih, fmt bersih, release GNU 5.102.240 byte; suite musl **201/201**, rilis musl 5.227.680 byte static-pie stripped, `ldd` = statically linked.
 
 Dengan Milestone v0.1 **dan v0.2 (Telegram)** yang telah selesai inti dan terverifikasi, langkah berikutnya:
 

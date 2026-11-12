@@ -511,16 +511,18 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
     // saves the draft (Meowstro delegates to Tinker). The hook holds
     // the chat lock while it waits — same as a tool approval inside a
     // turn — so two turns in one chat never interleave.
+    // The runner is hoisted out of the outcome block: it is needed
+    // again after the save turn (F3: consume its calls).
+    let curator_runner = crate::curator::CuratorRunner::new(crate::curator::CuratorDeps {
+        provider: curator_provider,
+        model: state.wire_model.clone(),
+        purrcode_dir: state.purrcode_dir.clone(),
+        audit_logger: state.audit_logger.clone(),
+    });
     let curator_outcome = {
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
         skill_mgr.discover_all(&state.workspace_root);
-        let deps = crate::curator::CuratorDeps {
-            provider: curator_provider,
-            model: state.wire_model.clone(),
-            purrcode_dir: state.purrcode_dir.clone(),
-            audit_logger: state.audit_logger.clone(),
-        };
-        crate::curator::CuratorRunner::new(deps)
+        curator_runner
             .run_after_turn(&session_id, &messages, loaded_len, &skill_mgr)
             .await
     };
@@ -553,6 +555,12 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                     )
                     .await;
                 renderer.flush().await;
+                // F3: the save turn's `task` delegation runs with the
+                // parent's session id — consume it so it does not
+                // count toward the next turn's threshold. Runs
+                // whether the save succeeded or failed (the calls
+                // are spent either way).
+                curator_runner.consume_save_turn(&session_id);
                 if let Err(e) = save_result {
                     tracing::warn!(
                         "telegram: skill save turn failed for chat {}: {e}",
@@ -564,7 +572,8 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                     )
                     .await;
                 } else {
-                    let _ = crate::curator::discard_draft(&state.purrcode_dir, &meta.name);
+                    let _ =
+                        crate::curator::discard_draft(&state.purrcode_dir, &session_id, &meta.name);
                 }
                 for msg in messages.iter().skip(prev_save) {
                     if let Err(e) = session_store.append_message(&session_id, msg) {
@@ -572,7 +581,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                     }
                 }
             } else {
-                let _ = crate::curator::discard_draft(&state.purrcode_dir, &meta.name);
+                let _ = crate::curator::discard_draft(&state.purrcode_dir, &session_id, &meta.name);
                 let _ = state.audit_logger.log_entry(purrcode_approval::AuditEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     session_id: session_id.clone(),

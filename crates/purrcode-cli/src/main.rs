@@ -657,17 +657,19 @@ async fn main() -> Result<()> {
             // turn made enough tool calls. The approval card is a
             // second TuiApprovalRequester with its own session_allow,
             // so pressing `A` ("always") here auto-approves future
-            // skill drafts only — never tool calls.
+            // skill drafts only — never tool calls. The runner is
+            // hoisted out of the outcome block: it is needed again
+            // after the save turn (F3: consume its calls).
+            let curator_runner = crate::curator::CuratorRunner::new(crate::curator::CuratorDeps {
+                provider: curator_provider.clone(),
+                model: curator_model.clone(),
+                purrcode_dir: curator_purrcode_dir.clone(),
+                audit_logger: curator_audit.clone(),
+            });
             let curator_outcome = {
                 let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
                 skill_mgr.discover_all(&tool_context.workspace_root);
-                let deps = crate::curator::CuratorDeps {
-                    provider: curator_provider.clone(),
-                    model: curator_model.clone(),
-                    purrcode_dir: curator_purrcode_dir.clone(),
-                    audit_logger: curator_audit.clone(),
-                };
-                crate::curator::CuratorRunner::new(deps)
+                curator_runner
                     .run_after_turn(&sid_worker, &session_messages, prev_len, &skill_mgr)
                     .await
             };
@@ -711,9 +713,22 @@ async fn main() -> Result<()> {
                         for msg in session_messages.iter().skip(prev_save) {
                             let _ = store_worker.append_message(&sid_worker, msg);
                         }
-                        let _ = crate::curator::discard_draft(&curator_purrcode_dir, &meta.name);
+                        // F3: the save turn's `task` delegation runs
+                        // with the parent's session id — consume it so
+                        // it does not count toward the next turn's
+                        // threshold.
+                        curator_runner.consume_save_turn(&sid_worker);
+                        let _ = crate::curator::discard_draft(
+                            &curator_purrcode_dir,
+                            &sid_worker,
+                            &meta.name,
+                        );
                     } else {
-                        let _ = crate::curator::discard_draft(&curator_purrcode_dir, &meta.name);
+                        let _ = crate::curator::discard_draft(
+                            &curator_purrcode_dir,
+                            &sid_worker,
+                            &meta.name,
+                        );
                         let _ = curator_audit.log_entry(AuditEntry {
                             timestamp: chrono::Utc::now().to_rfc3339(),
                             session_id: sid_worker.clone(),
