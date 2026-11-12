@@ -9,7 +9,7 @@ use purrcode_api::tool::{
 };
 use purrcode_approval::ApprovalGate;
 use purrcode_config::{Config, GuardrailMode, ModelPreset};
-use purrcode_core::{AgentLoop, ApprovalRequester};
+use purrcode_core::{AgentLoop, ApprovalRequester, EventBus};
 use purrcode_provider::{FallbackRouter, ProviderRegistry};
 use purrcode_tools::{AskRequester, ToolRegistry, ToolRegistryExt};
 use serde::Deserialize;
@@ -39,6 +39,11 @@ pub struct TaskTool {
     model_preset: Option<ModelPreset>,
     config: Option<Config>,
     provider_registry: Option<Arc<ProviderRegistry>>,
+    /// EventBus the child loops publish to (R3): when set, every
+    /// subagent turn streams its chunks / tool calls / approvals to
+    /// the same bus the parent loop uses, so one SSE feed shows the
+    /// whole Clowder. `None` = children run listener-only (pre-R3).
+    event_bus: Option<Arc<EventBus>>,
     yolo: bool,
 }
 
@@ -99,8 +104,14 @@ impl TaskTool {
             model_preset: None,
             config: None,
             provider_registry: None,
+            event_bus: None,
             yolo,
         }
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
+        self
     }
 
     pub fn with_plugin_dispatcher(mut self, dispatcher: Arc<dyn PluginHookDispatcher>) -> Self {
@@ -432,6 +443,14 @@ impl Tool for TaskTool {
             if let Some(ref req) = self.approval_requester {
                 auditor = auditor.with_approval_requester(req.clone());
             }
+            // R3 fix (P1-1): the shadow consult happens inside
+            // TaskTool, outside the loop — without the bus, a Strict
+            // consult's card is invisible on bus-only surfaces
+            // (the WebUI). TUI/Telegram/cron pass None and are
+            // unaffected (their requesters render their own cards).
+            if let Some(ref bus) = self.event_bus {
+                auditor = auditor.with_event_bus(bus.clone());
+            }
             let verdict = match auditor.audit_raw_artifact(&existing_brief, ctx).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -509,6 +528,9 @@ impl Tool for TaskTool {
         }
         if let Some(ref pd) = self.plugin_dispatcher {
             child_loop = child_loop.with_plugin_dispatcher(pd.clone());
+        }
+        if let Some(ref bus) = self.event_bus {
+            child_loop = child_loop.with_event_bus(bus.clone());
         }
 
         let system_prompt = format!(

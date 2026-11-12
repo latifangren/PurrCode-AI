@@ -81,6 +81,7 @@ pub(crate) async fn run_tui(
     impl purrcode_core::ApprovalRequester for TuiApprovalRequester {
         async fn request_approval(
             &self,
+            _call_id: &str,
             tool: &str,
             description: &str,
             preview: Option<&str>,
@@ -229,6 +230,7 @@ pub(crate) async fn run_tui(
             Some(cancel_flag.clone()),
             yolo,
             Some(workspace_root.clone()),
+            None,
         ))
     } else {
         None
@@ -388,6 +390,7 @@ pub(crate) async fn run_tui(
                     let preview: String = meta.content.chars().take(2000).collect();
                     let approved = skill_approver
                     .request_approval(
+                        &format!("skill-draft:{}", meta.name),
                         "manage_skill",
                         &format!(
                             "Save the drafted skill '{}'?\n{}\n\nDraft staged at {} — it becomes a live skill only if you approve.",

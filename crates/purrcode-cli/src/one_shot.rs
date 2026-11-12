@@ -48,7 +48,13 @@ struct CliApprovalRequester {
 
 #[async_trait::async_trait]
 impl purrcode_core::ApprovalRequester for CliApprovalRequester {
-    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
+    async fn request_approval(
+        &self,
+        _call_id: &str,
+        tool: &str,
+        description: &str,
+        preview: Option<&str>,
+    ) -> bool {
         if !std::io::stdin().is_terminal() {
             if self.yolo {
                 eprintln!(
@@ -211,6 +217,7 @@ pub(crate) async fn run_one_shot(
             None,
             yolo,
             Some(workspace_root.to_path_buf()),
+            None,
         ))
     } else {
         None
@@ -379,12 +386,12 @@ mod tests {
         // (the `yolo` variant only changes the hint, never the decision).
         assert!(
             !CliApprovalRequester { yolo: false }
-                .request_approval("write", "Run tool 'write'", None)
+                .request_approval("test-call", "write", "Run tool 'write'", None)
                 .await
         );
         assert!(
             !CliApprovalRequester { yolo: true }
-                .request_approval("write", "Run tool 'write'", None)
+                .request_approval("test-call", "write", "Run tool 'write'", None)
                 .await
         );
     }

@@ -141,6 +141,18 @@ pub enum Commands {
     },
     /// Run background gateway daemon for channel adapters (systemd/OpenRC service target)
     Gateway,
+    /// Run PurrCode local WebUI channel and REST/SSE server (v0.3 R3)
+    Web {
+        /// HTTP host to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// HTTP port to bind
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Optional authentication token for remote access
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// Manage scheduled cron jobs (v0.3 F19): add/list/remove/enable/disable + delivery queue
     Cron {
         #[arg(default_value = "list")]

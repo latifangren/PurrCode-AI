@@ -650,7 +650,7 @@ impl Channel for TelegramChatChannel {
 
     async fn request_approval(
         &self,
-        _call_id: &str,
+        call_id: &str,
         tool: &str,
         description: &str,
         preview: Option<&str>,
@@ -660,7 +660,7 @@ impl Channel for TelegramChatChannel {
         // machinery (ADR-013).
         Ok(self
             .approval
-            .request_approval(tool, description, preview)
+            .request_approval(call_id, tool, description, preview)
             .await)
     }
 }

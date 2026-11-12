@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::AgentEvent;
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallDelta, ToolCallRequest,
@@ -15,10 +16,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::steering::SteeringQueue;
+use crate::EventBus;
 
 #[async_trait]
 pub trait ApprovalRequester: Send + Sync {
-    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool;
+    /// `call_id` is the loop's tool-call id for this request: it lets a
+    /// channel correlate the request with the `ToolCallApprovalRequested`
+    /// event the loop publishes to the EventBus just before calling here.
+    /// Requesters that render their own card (Telegram, TUI, CLI) may
+    /// ignore it; the WebUI requester uses it as the pending key so the
+    /// card the UI rendered from the bus event resolves to this wait.
+    /// Plan-level consults with no tool call (Tuxeshadow in Carrier mode)
+    /// pass a stable pseudo-id (`"shadow"`).
+    async fn request_approval(
+        &self,
+        call_id: &str,
+        tool: &str,
+        description: &str,
+        preview: Option<&str>,
+    ) -> bool;
 }
 
 pub trait AgentEventListener: Send + Sync {
@@ -41,6 +57,11 @@ pub struct AgentLoop {
     is_yolo: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
     steering_queue: Option<SteeringQueue>,
+    /// Broadcast sink for turn events (R3). `None` = the loop runs
+    /// listener-only, exactly like before; `Some` = every chunk, tool
+    /// call, approval request and turn boundary is also published here
+    /// (the WebUI subscribes through it; D5 `--json` will too).
+    event_bus: Option<Arc<EventBus>>,
 }
 
 impl AgentLoop {
@@ -63,7 +84,13 @@ impl AgentLoop {
             is_yolo: false,
             cancel_flag: None,
             steering_queue: None,
+            event_bus: None,
         }
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
+        self
     }
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
@@ -172,6 +199,19 @@ impl AgentLoop {
             tool_call_id: None,
         });
 
+        // One turn id for the whole turn: TurnStarted and TurnFinished
+        // carry the same value so a consumer can pair them (the
+        // dev-claude reference minted a second uuid at the end; pairing
+        // by one id is strictly more useful and costs nothing).
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnStarted {
+                session_id: ctx.session_id.clone(),
+                turn_id: turn_id.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
         let mut step = 0;
         let mut final_answer = String::new();
 
@@ -219,6 +259,11 @@ impl AgentLoop {
                 }
 
                 if let Some(reasoning) = chunk.reasoning_delta {
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::ReasoningChunk {
+                            thinking: reasoning.clone(),
+                        });
+                    }
                     if let Some(l) = listener {
                         l.on_text_chunk(&reasoning, true);
                     }
@@ -226,6 +271,11 @@ impl AgentLoop {
 
                 if !chunk.delta.is_empty() {
                     step_text.push_str(&chunk.delta);
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::TextChunk {
+                            text: chunk.delta.clone(),
+                        });
+                    }
                     if let Some(l) = listener {
                         l.on_text_chunk(&chunk.delta, false);
                     }
@@ -297,6 +347,16 @@ impl AgentLoop {
                 let call_id = tool_call.id.clone();
                 let tool_name = tool_call.name.clone();
                 let args_str = tool_call.arguments.clone();
+                let args_val: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
+
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallStarted {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        arguments: args_val.clone(),
+                    });
+                }
 
                 if let Some(l) = listener {
                     l.on_tool_call_started(&tool_name, &args_str);
@@ -305,9 +365,6 @@ impl AgentLoop {
                 let (tool_output, is_success) = if let Some(tool) =
                     self.tool_registry.get(&tool_name)
                 {
-                    let args_val: serde_json::Value =
-                        serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
-
                     // 1. Dispatch `pre_tool_use` plugin hook (can veto execution)
                     let plugin_allowed = if let Some(ref pd) = self.plugin_dispatcher {
                         pd.dispatch_pre_tool_use(&tool_name, &args_val).await
@@ -377,10 +434,24 @@ impl AgentLoop {
                                             Ok(dry_res) => dry_res.diff_preview,
                                             Err(_) => None,
                                         };
+                                    let desc = format!("Run tool '{}'", tool_name);
+                                    // The requester is called with the
+                                    // loop's call id so its card resolves
+                                    // to exactly this event (R3).
+                                    if let Some(ref bus) = self.event_bus {
+                                        let _ =
+                                            bus.publish(AgentEvent::ToolCallApprovalRequested {
+                                                call_id: call_id.clone(),
+                                                tool: tool_name.clone(),
+                                                description: desc.clone(),
+                                                diff_preview: preview.clone(),
+                                            });
+                                    }
                                     let user_ok = req
                                         .request_approval(
+                                            &call_id,
                                             &tool_name,
-                                            &format!("Run tool '{}'", tool_name),
+                                            &desc,
                                             preview.as_deref(),
                                         )
                                         .await;
@@ -456,6 +527,15 @@ impl AgentLoop {
                     )
                 };
 
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallFinished {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        result: serde_json::json!({ "output": tool_output }),
+                        success: is_success,
+                    });
+                }
+
                 if let Some(l) = listener {
                     l.on_tool_call_finished(&tool_name, &tool_output, is_success);
                 }
@@ -484,6 +564,11 @@ impl AgentLoop {
                 while let Some(chunk) = stream.recv().await {
                     if !chunk.delta.is_empty() {
                         final_answer.push_str(&chunk.delta);
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::TextChunk {
+                                text: chunk.delta.clone(),
+                            });
+                        }
                         if let Some(l) = listener {
                             l.on_text_chunk(&chunk.delta, false);
                         }
@@ -499,6 +584,14 @@ impl AgentLoop {
                     self.max_steps
                 );
             }
+        }
+
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnFinished {
+                session_id: ctx.session_id.clone(),
+                turn_id,
+                tokens_used: None,
+            });
         }
 
         Ok(final_answer)

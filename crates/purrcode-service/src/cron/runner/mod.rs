@@ -155,6 +155,7 @@ impl CronApprovalRequester {
 impl ApprovalRequester for CronApprovalRequester {
     async fn request_approval(
         &self,
+        _call_id: &str,
         tool: &str,
         _description: &str,
         _preview: Option<&str>,
@@ -394,6 +395,7 @@ impl CronRunner {
             None,
             false,
             Some(self.deps.workspace_root.clone()),
+            None,
         );
         let ctx = ToolContext {
             session_id: session_id.clone(),

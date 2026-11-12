@@ -448,6 +448,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         None,
         false,
         Some(state.workspace_root.clone()),
+        None,
     );
 
     let ctx = ToolContext {

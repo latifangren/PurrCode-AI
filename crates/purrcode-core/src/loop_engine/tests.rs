@@ -47,6 +47,7 @@ struct CaptureApprover {
 impl ApprovalRequester for CaptureApprover {
     async fn request_approval(
         &self,
+        _call_id: &str,
         _tool: &str,
         _description: &str,
         preview: Option<&str>,
@@ -265,4 +266,149 @@ async fn test_plugin_pre_tool_use_veto_blocks_execution() {
     assert!(history
         .iter()
         .any(|m| m.role == MessageRole::Tool && m.content.contains("vetoed by pre_tool_use")));
+}
+
+/// Approver that records the call id the loop hands it (R3): the card a
+/// channel renders from the bus event must resolve to this wait, so the
+/// two ids have to be the same value.
+struct CaptureCallIdApprover {
+    captured_call_id: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl ApprovalRequester for CaptureCallIdApprover {
+    async fn request_approval(
+        &self,
+        call_id: &str,
+        _tool: &str,
+        _description: &str,
+        _preview: Option<&str>,
+    ) -> bool {
+        if let Ok(mut g) = self.captured_call_id.lock() {
+            *g = Some(call_id.to_string());
+        }
+        true
+    }
+}
+
+#[tokio::test]
+async fn test_event_bus_receives_turn_events() {
+    let bus = Arc::new(crate::EventBus::new(32));
+    let mut rx = bus.subscribe();
+
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(DryRunMockTool)).unwrap();
+
+    let provider = Arc::new(SingleToolTurnProvider {
+        step: AtomicBool::new(false),
+    });
+
+    let engine = AgentLoop::new(provider, "m", Arc::new(reg))
+        .with_event_bus(bus.clone())
+        .with_yolo(true);
+
+    let ctx = ToolContext {
+        session_id: "s_event_test".to_string(),
+        agent_role: "tinker".to_string(),
+        workspace_root: std::path::PathBuf::from("."),
+        is_dry_run: false,
+        is_cron: false,
+    };
+
+    let mut history = Vec::new();
+    let _ = engine
+        .run_turn_with_history(&mut history, "write file", None, &ctx, None)
+        .await
+        .unwrap();
+
+    let mut received = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        received.push(ev);
+    }
+
+    assert!(!received.is_empty());
+    let has_turn_started = received
+        .iter()
+        .any(|e| matches!(e, AgentEvent::TurnStarted { .. }));
+    let has_tool_started = received
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolCallStarted { .. }));
+    let has_tool_finished = received
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolCallFinished { .. }));
+    let has_turn_finished = received
+        .iter()
+        .any(|e| matches!(e, AgentEvent::TurnFinished { .. }));
+
+    assert!(has_turn_started, "EventBus should receive TurnStarted");
+    assert!(has_tool_started, "EventBus should receive ToolCallStarted");
+    assert!(
+        has_tool_finished,
+        "EventBus should receive ToolCallFinished"
+    );
+    assert!(has_turn_finished, "EventBus should receive TurnFinished");
+
+    // TurnStarted and TurnFinished carry the SAME turn id so a
+    // consumer can pair them (R3 improvement over the dev-claude
+    // reference, which minted a second uuid at the end).
+    let started_id = received.iter().find_map(|e| match e {
+        AgentEvent::TurnStarted { turn_id, .. } => Some(turn_id.clone()),
+        _ => None,
+    });
+    let finished_id = received.iter().find_map(|e| match e {
+        AgentEvent::TurnFinished { turn_id, .. } => Some(turn_id.clone()),
+        _ => None,
+    });
+    assert_eq!(started_id, finished_id);
+    assert!(started_id.is_some());
+}
+
+#[tokio::test]
+async fn test_event_bus_approval_carries_loop_call_id() {
+    let bus = Arc::new(crate::EventBus::new(32));
+    let mut rx = bus.subscribe();
+
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(DryRunMockTool)).unwrap();
+
+    let captured = Arc::new(Mutex::new(None));
+    let approver = Arc::new(CaptureCallIdApprover {
+        captured_call_id: captured.clone(),
+    });
+    let provider = Arc::new(SingleToolTurnProvider {
+        step: AtomicBool::new(false),
+    });
+
+    // No yolo: the Write tool goes through Ask, so the loop publishes
+    // ToolCallApprovalRequested and then calls the requester.
+    let engine = AgentLoop::new(provider, "m", Arc::new(reg))
+        .with_event_bus(bus.clone())
+        .with_approval_requester(approver);
+
+    let ctx = ToolContext {
+        session_id: "s_event_approval".to_string(),
+        agent_role: "tinker".to_string(),
+        workspace_root: std::path::PathBuf::from("."),
+        is_dry_run: false,
+        is_cron: false,
+    };
+
+    let mut history = Vec::new();
+    let _ = engine
+        .run_turn_with_history(&mut history, "write file", None, &ctx, None)
+        .await
+        .unwrap();
+
+    // The mock provider emits the tool call with id "call_1".
+    assert_eq!(captured.lock().unwrap().as_deref(), Some("call_1"));
+
+    let mut received = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        received.push(ev);
+    }
+    let approval_id = received.iter().find_map(|e| match e {
+        AgentEvent::ToolCallApprovalRequested { call_id, .. } => Some(call_id.clone()),
+        _ => None,
+    });
+    assert_eq!(approval_id.as_deref(), Some("call_1"));
 }

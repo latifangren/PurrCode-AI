@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::AgentEvent;
 use purrcode_api::provider::ModelProvider;
 use purrcode_api::tool::{AuditSink, ToolContext, ToolRegistry};
 use purrcode_config::GuardrailMode;
-use purrcode_core::{AgentLoop, ApprovalRequester};
+use purrcode_core::{AgentLoop, ApprovalRequester, EventBus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -133,6 +134,13 @@ pub struct ShadowAuditor {
     guardrail: GuardrailMode,
     audit_sink: Option<Arc<dyn AuditSink>>,
     approval_requester: Option<Arc<dyn ApprovalRequester>>,
+    /// Bus a bus-carried surface (the WebUI) subscribes to. The
+    /// Strict consult happens inside `TaskTool::execute`, outside the
+    /// loop's Ask branch, so the loop never publishes a
+    /// `ToolCallApprovalRequested` for it — without this, a web turn
+    /// stalls on an invisible card. `None` in TUI/Telegram/cron
+    /// flows, whose requesters render their own cards (or auto-decide).
+    event_bus: Option<Arc<EventBus>>,
 }
 
 impl ShadowAuditor {
@@ -149,6 +157,7 @@ impl ShadowAuditor {
             guardrail,
             audit_sink: None,
             approval_requester: None,
+            event_bus: None,
         }
     }
 
@@ -166,6 +175,13 @@ impl ShadowAuditor {
 
     pub fn with_approval_requester(mut self, req: Arc<dyn ApprovalRequester>) -> Self {
         self.approval_requester = Some(req);
+        self
+    }
+
+    /// Announce a Strict consult on the bus so bus-only surfaces can
+    /// render its card (R3 fix, P1-1). A no-op when no bus is wired.
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
         self
     }
 
@@ -308,12 +324,28 @@ impl ShadowAuditor {
                 GuardrailMode::Strict => {
                     // Carrier (Strict): objection blocks unless user explicitly approves with preview
                     if let Some(ref req) = self.approval_requester {
+                        let description = format!("Tuxeshadow OBJECTED in Strict mode: {}", reason);
+                        let preview = raw_preview.or(Some(reason.as_str()));
+                        // R3 fix (P1-1): announce the consult on the bus
+                        // BEFORE waiting, with the same call_id the
+                        // requester waits on. The consult runs inside
+                        // TaskTool, outside the loop's Ask branch, so the
+                        // loop never publishes a ToolCallApprovalRequested
+                        // for it — without this event a bus-only surface
+                        // (the WebUI) stalls on an invisible card until
+                        // the 180 s fail-closed timeout, and the only
+                        // escape was guessing the magic call_id "shadow"
+                        // via a raw POST.
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::ToolCallApprovalRequested {
+                                call_id: "shadow".to_string(),
+                                tool: "tuxeshadow".to_string(),
+                                description: description.clone(),
+                                diff_preview: preview.map(|s| s.to_string()),
+                            });
+                        }
                         let approved = req
-                            .request_approval(
-                                "tuxeshadow",
-                                &format!("Tuxeshadow OBJECTED in Strict mode: {}", reason),
-                                raw_preview.or(Some(reason.as_str())),
-                            )
+                            .request_approval("shadow", "tuxeshadow", &description, preview)
                             .await;
                         if approved {
                             if let Some(ref sink) = self.audit_sink {
@@ -541,6 +573,7 @@ mod tests {
     impl purrcode_core::ApprovalRequester for MockPreviewApprovalRequester {
         async fn request_approval(
             &self,
+            _call_id: &str,
             tool: &str,
             description: &str,
             preview: Option<&str>,
@@ -600,5 +633,51 @@ mod tests {
         // Verify audit sink recorded the approval
         let logged = entries.lock().unwrap();
         assert!(logged.iter().any(|(_, dec, _)| dec == "APPROVED_BY_USER"));
+    }
+
+    #[tokio::test]
+    async fn test_strict_shadow_consult_announces_bus_event() {
+        // R3 fix (P1-1): a Strict consult must announce itself on the
+        // bus with the same call_id the requester waits on, or a
+        // bus-only surface (the WebUI) stalls on an invisible card.
+        use purrcode_core::EventBus;
+        let provider: Arc<dyn ModelProvider> = Arc::new(DummyProvider);
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let requester: Arc<dyn purrcode_core::ApprovalRequester> =
+            Arc::new(MockPreviewApprovalRequester {
+                approve: true,
+                captured: captured.clone(),
+            });
+        let bus = Arc::new(EventBus::new(16));
+        let mut rx = bus.subscribe();
+        let auditor = ShadowAuditor::new(provider, "m", GuardrailMode::Strict)
+            .with_approval_requester(requester)
+            .with_event_bus(bus);
+        let objection = ShadowVerdict::Object {
+            reason: "delete user data".to_string(),
+        };
+        let res = auditor
+            .enforce_verdict_with_preview(&objection, "s-web", None, Some("--- diff"))
+            .await;
+        assert!(res.is_ok());
+        // The event is published before the requester resolves (the
+        // mock resolves immediately), so it must already be queued.
+        let ev = rx
+            .try_recv()
+            .expect("shadow consult must announce a bus event");
+        match ev {
+            AgentEvent::ToolCallApprovalRequested {
+                call_id,
+                tool,
+                description,
+                diff_preview,
+            } => {
+                assert_eq!(call_id, "shadow");
+                assert_eq!(tool, "tuxeshadow");
+                assert!(description.contains("OBJECTED in Strict mode"));
+                assert_eq!(diff_preview.as_deref(), Some("--- diff"));
+            }
+            other => panic!("expected ToolCallApprovalRequested, got {other:?}"),
+        }
     }
 }

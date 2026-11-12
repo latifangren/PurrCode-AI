@@ -550,6 +550,7 @@ impl HeartbeatRunner {
             None,
             false,
             Some(self.deps.workspace_root.clone()),
+            None,
         );
         let ctx = ToolContext {
             session_id: session_id.clone(),

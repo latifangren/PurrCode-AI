@@ -172,7 +172,13 @@ impl TelegramApprovalRequester {
 
 #[async_trait::async_trait]
 impl ApprovalRequester for TelegramApprovalRequester {
-    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
+    async fn request_approval(
+        &self,
+        _call_id: &str,
+        tool: &str,
+        description: &str,
+        preview: Option<&str>,
+    ) -> bool {
         // `Always` from an earlier card in this chat session: no card,
         // no wait.
         if self

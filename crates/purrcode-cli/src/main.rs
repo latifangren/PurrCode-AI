@@ -7,6 +7,7 @@ mod heartbeat_cli;
 mod onboard;
 mod one_shot;
 mod tui_mode;
+mod web_cli;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -241,6 +242,21 @@ async fn main() -> Result<()> {
             }
             Commands::Gateway => {
                 gateway::run_gateway(&config, &workspace_root, args.model).await?;
+                return Ok(());
+            }
+            Commands::Web { host, port, token } => {
+                confirm_god_mode_if_needed(&config.preset)?;
+                web_cli::run_web_command(
+                    &config,
+                    &workspace_root,
+                    use_orchestrator,
+                    args.yolo,
+                    args.model,
+                    host,
+                    port,
+                    token,
+                )
+                .await?;
                 return Ok(());
             }
             Commands::Cron {
