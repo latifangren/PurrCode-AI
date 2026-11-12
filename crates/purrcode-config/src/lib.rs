@@ -8,7 +8,9 @@ pub mod preset_model;
 pub mod validator;
 
 pub use loader::ConfigLoader;
-pub use model::{Config, McpServerConfig, ModelConfig, ProviderConfig};
+pub use model::{
+    Config, GatewayConfig, McpServerConfig, ModelConfig, ProviderConfig, TelegramConfig,
+};
 pub use preset_mode::{ApprovalMode, GuardrailMode, ModePreset, ModePresetLoader, SandboxMode};
 pub use preset_model::{AgentModelSpec, ModelPreset, ModelPresetLoader, ModelTarget};
 pub use validator::{validate_config, MIN_CONTEXT_WINDOW};

@@ -183,7 +183,12 @@ where
             std::env::split_paths(path_var).collect()
         };
         for entry in entries {
-            let bash_p = entry.join("bash.exe");
+            let entry_str = entry.to_string_lossy();
+            let bash_p = if entry_str.contains('\\') {
+                std::path::PathBuf::from(format!(r"{}\bash.exe", entry_str.trim_end_matches('\\')))
+            } else {
+                entry.join("bash.exe")
+            };
             if file_exists(&bash_p) {
                 return (bash_p, vec!["-c".to_string()], WindowsShellKind::GitBash);
             }

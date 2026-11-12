@@ -107,7 +107,10 @@ impl ToolRegistry {
     }
 
     pub fn list(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|t| t.definition()).collect()
+        let mut list: Vec<ToolDefinition> = self.tools.values().map(|t| t.definition()).collect();
+        // Deterministic lexicographical sort ensures byte-level prompt caching invariant
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
     }
 
     pub fn retain<F>(&mut self, mut f: F)

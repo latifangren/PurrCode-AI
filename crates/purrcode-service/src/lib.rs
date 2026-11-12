@@ -1,5 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod cron;
+pub mod curator;
+pub mod heartbeat;
+pub mod sandbox;
+
+pub use cron::{compute_next_run, CronJob, CronJobDispatcher, CronScheduler, CronStore};
+pub use curator::{
+    CandidateSkill, CuratorEngine, SkillAuditReport, SkillStatus, SkillTelemetryRecord,
+    SkillTelemetryStore,
+};
+pub use heartbeat::{HeartbeatLevel, HeartbeatMonitor, HeartbeatNudge};
+pub use sandbox::{OsSandboxAdapter, OsSandboxMode, OsSandboxRuntime};
+
 pub struct ServiceInstaller;
 
 impl ServiceInstaller {

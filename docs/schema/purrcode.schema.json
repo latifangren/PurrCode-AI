@@ -66,6 +66,24 @@
           }
         }
       }
+    },
+    "telegram": {
+      "type": "object",
+      "properties": {
+        "bot_token": { "type": "string" },
+        "allowed_users": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "host": { "type": "string", "default": "127.0.0.1" },
+        "port": { "type": "integer", "default": 8080 }
+      }
     }
   }
 }

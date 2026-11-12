@@ -150,6 +150,12 @@ struct SseFunctionDelta {
 struct SseUsage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    prompt_tokens_details: Option<SsePromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct SsePromptTokensDetails {
+    cached_tokens: Option<u64>,
 }
 
 #[async_trait]
@@ -369,7 +375,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
                             let usage = parsed.usage.map(|u| TokenUsage {
                                 input_tokens: u.prompt_tokens.unwrap_or(0),
                                 output_tokens: u.completion_tokens.unwrap_or(0),
-                                cache_read_tokens: None,
+                                cache_read_tokens: u
+                                    .prompt_tokens_details
+                                    .and_then(|d| d.cached_tokens),
                                 cache_write_tokens: None,
                             });
 

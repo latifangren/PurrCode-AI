@@ -232,6 +232,8 @@ pub async fn run_interactive_onboard() -> Result<()> {
         model: Some(format!("{}:{}", provider_name, model_id)),
         providers: providers_map,
         mcp_servers: HashMap::new(),
+        telegram: None,
+        gateway: None,
     };
 
     let target_path = purrcode_dir.join("purrcode.jsonc");
@@ -397,6 +399,8 @@ mod tests {
             model: Some("custom:model/test".to_string()),
             providers,
             mcp_servers: HashMap::new(),
+            telegram: None,
+            gateway: None,
         };
 
         let json_str = serde_json::to_string_pretty(&config).unwrap();

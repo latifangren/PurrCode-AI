@@ -57,6 +57,8 @@ mod tests {
             model: Some("test-provider:tiny-model".to_string()),
             providers,
             mcp_servers: HashMap::new(),
+            telegram: None,
+            gateway: None,
         };
         assert!(validate_config(&cfg).is_err());
     }

@@ -17,7 +17,14 @@ pub enum ShadowVerdict {
 
 /// Parses Tuxeshadow's raw output into a structured `ShadowVerdict` (ADR-012).
 pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
-    for line in raw.lines() {
+    let trimmed_raw = raw.trim();
+    if trimmed_raw.is_empty() {
+        return ShadowVerdict::Object {
+            reason: "Empty verdict from Tuxeshadow (fail-closed)".to_string(),
+        };
+    }
+
+    for line in trimmed_raw.lines() {
         let trimmed = line
             .trim()
             .trim_start_matches('*')
@@ -29,7 +36,7 @@ pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
                 .split_once(':')
                 .map(|(_, r)| r.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| raw.trim().to_string());
+                .unwrap_or_else(|| trimmed_raw.to_string());
             return ShadowVerdict::Object { reason };
         }
         if upper.starts_with("APPROVE_WITH_NOTES") || upper.contains("VERDICT: APPROVE_WITH_NOTES")
@@ -38,23 +45,36 @@ pub fn parse_shadow_verdict(raw: &str) -> ShadowVerdict {
                 .split_once(':')
                 .map(|(_, r)| r.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| raw.trim().to_string());
+                .unwrap_or_else(|| trimmed_raw.to_string());
             return ShadowVerdict::ApproveWithNotes { notes };
+        }
+        if upper.starts_with("APPROVE") || upper.contains("VERDICT: APPROVE") {
+            return ShadowVerdict::Approve;
         }
     }
 
-    if raw.to_ascii_uppercase().contains("OBJECT:") {
+    let upper = trimmed_raw.to_ascii_uppercase();
+    if upper.contains("OBJECT:") || upper.contains("OBJECT") {
         return ShadowVerdict::Object {
-            reason: raw.trim().to_string(),
+            reason: trimmed_raw.to_string(),
         };
     }
-    if raw.to_ascii_uppercase().contains("APPROVE_WITH_NOTES") {
+    if upper.contains("APPROVE_WITH_NOTES") {
         return ShadowVerdict::ApproveWithNotes {
-            notes: raw.trim().to_string(),
+            notes: trimmed_raw.to_string(),
         };
+    }
+    if upper.contains("APPROVE") {
+        return ShadowVerdict::Approve;
     }
 
-    ShadowVerdict::Approve
+    // Fail-closed default on unparseable/ambiguous output
+    ShadowVerdict::Object {
+        reason: format!(
+            "Ambiguous or unrecognized Tuxeshadow verdict: {}",
+            trimmed_raw
+        ),
+    }
 }
 
 /// Determines whether Tuxeshadow's narrow event-driven trigger fires for a delegation (ADR-012):
@@ -522,5 +542,27 @@ mod tests {
         // Verify audit sink recorded the approval
         let logged = entries.lock().unwrap();
         assert!(logged.iter().any(|(_, dec, _)| dec == "APPROVED_BY_USER"));
+    }
+
+    #[test]
+    fn test_parse_shadow_verdict_fail_closed() {
+        // Empty output should fail-closed to Object
+        let empty_v = parse_shadow_verdict("");
+        assert!(matches!(empty_v, ShadowVerdict::Object { .. }));
+
+        // Ambiguous garbage should fail-closed to Object
+        let garbage_v = parse_shadow_verdict("I think this plan is interesting but maybe not sure");
+        assert!(matches!(garbage_v, ShadowVerdict::Object { .. }));
+
+        // Explicit APPROVE succeeds
+        let approve_v = parse_shadow_verdict("VERDICT: APPROVE\nLooks safe.");
+        assert!(matches!(approve_v, ShadowVerdict::Approve));
+
+        // Explicit OBJECT with reason
+        let object_v = parse_shadow_verdict("VERDICT: OBJECT: Deleting production DB");
+        match object_v {
+            ShadowVerdict::Object { reason } => assert!(reason.contains("Deleting production DB")),
+            _ => panic!("Expected Object"),
+        }
     }
 }

@@ -64,5 +64,18 @@
       "command": "codegraph",
       "args": ["serve", "--mcp"]
     }
+  },
+
+  // Telegram bot gateway integration
+  "telegram": {
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "allowed_users": ["123456789", "@username"]
+  },
+
+  // Daemon HTTP gateway listener
+  "gateway": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080
   }
 }

@@ -985,7 +985,9 @@ dependencies = [
  "async-trait",
  "crossterm",
  "purrcode-api",
+ "purrcode-config",
  "ratatui",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1117,9 +1119,16 @@ dependencies = [
 name = "purrcode-service"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "purrcode-api",
+ "purrcode-config",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1127,6 +1136,7 @@ name = "purrcode-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures-util",
  "purrcode-api",
  "purrcode-approval",

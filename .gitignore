@@ -3,6 +3,7 @@
 *.key
 *.pem
 purrcode.db*
+purrcode.jsonc
 /bin/
 /dist/
 # Rust / Cargo build artifacts

@@ -22,6 +22,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run one-shot non-interactive prompt: `cargo run -p purrcode-cli -- -p "your prompt"`
 - Run onboarding setup wizard: `cargo run -p purrcode-cli -- onboard`
 - Run environment and system diagnostics: `cargo run -p purrcode-cli -- doctor`
+- Run background gateway daemon (Telegram + Cron + HTTP): `cargo run -p purrcode-cli -- gateway`
+- Manage autonomous cron scheduler: `cargo run -p purrcode-cli -- cron [list|add|remove]`
+- Run Curator skill telemetry audit: `cargo run -p purrcode-cli -- curator [audit]`
+- Inspect or list mode presets: `cargo run -p purrcode-cli -- preset [list|show]`
+- Inspect or list model presets: `cargo run -p purrcode-cli -- model-preset [list|show]`
+- Generate daemon service scripts: `cargo run -p purrcode-cli -- service [install|systemd|openrc|windows]`
 - Specify an explicit workspace root: `cargo run -p purrcode-cli -- -w <path>`
 
 ---

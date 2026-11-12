@@ -104,3 +104,53 @@ Dokumen ini mencatat status implementasi tiap sprint beserta nama unit test eksa
 - [x] **9.4 Resolusi Model Deterministik & TUI Approval Ergonomics (`crates/purrcode-cli/` & `crates/purrcode-channel/`)**
   - Resolusi model sesi deterministik berurutan leksikografis & prioritas (`tests::test_resolve_target_model_deterministic_priority`, `tests::test_resolve_target_model_deterministic_lexicographical_fallback`).
   - Dukungan tombol `y`/`Y`/`Enter` dan `n`/`N` pada dialog approval TUI serta layout kartu approval anti-terpotong.
+
+---
+
+## Sprint 10: Hermes Agent Parity, Multi-Channel Gateway, & Core Hardening
+> **Tujuan:** Mengintegrasikan kapabilitas otonom Hermes Agent, channel Telegram, scheduler natural language, curator skill, dan invariant determinisme (86 tests passing di seluruh 12 crate).
+
+- [x] **10.1 Telegram Channel & Remote Interactive Approval (`crates/purrcode-channel/src/telegram/`)**
+  - Klien HTTP native Telegram bot (`get_me`, `get_updates`, `send_message` dengan chunking 4000 karakter, `edit_message_text`, `answer_callback_query`).
+  - Request approval interaktif dengan inline keyboard markup (`allow:<id>` / `deny:<id>`) dan timeout 180s fail-closed (`telegram::channel::tests::test_telegram_approval_resolution`).
+  - Otorisasi pengguna `allowed_users` dengan validasi ID dan @username (`telegram::channel::tests::test_is_user_allowed_matches_id_or_username`).
+- [x] **10.2 Autonomous Cron Scheduler & 60s Background Ticker (`crates/purrcode-service/src/cron.rs`)**
+  - Parser jadwal interval bahasa alami (`"every 30s"`, `"every 5m"`, `"every 2 hours"`, `"daily at HH:MM"`, `"*/15 * * * *"`).
+  - Eksekusi berkala melalui trait `CronJobDispatcher` dengan persistensi JSON ke disk (`cron::tests::test_cron_scheduler_add_and_tick`, `cron::tests::test_compute_next_run_natural_language`).
+  - CLI subcommand: `purrcode-ai cron [list|add|remove]`.
+- [x] **10.3 Self-Improving Skill Curator Engine (`crates/purrcode-service/src/curator.rs` & `crates/purrcode-tools/`)**
+  - Perekaman telemetri otomatis pada pemanggilan `read_skill` ke `.purrcode/skills_telemetry.json` (`skill::tool::tests::test_record_skill_usage_appends_records`).
+  - Deteksi skill usang (> 14 hari tidak digunakan => `Stale`) dan pengarsipan otomatis (> 30 hari => `archive/`) dengan pengecualian `pinned: true` (`curator::tests::test_curator_flags_stale_and_archives_old_skills`).
+  - CLI subcommand: `purrcode-ai curator [audit]`.
+- [x] **10.4 Gateway Daemon & HTTP Health Server (`crates/purrcode-cli/src/gateway.rs`)**
+  - Daemon multithreaded yang menggabungkan Telegram polling loop, 60s cron ticker, event listener streaming, dan HTTP health server di port 8080 (`GET /health`).
+- [x] **10.5 Prompt Caching Invariant & Core Hardening (`crates/purrcode-api/`, `crates/purrcode-core/`, `crates/purrcode-orchestrator/`, `crates/purrcode-provider/`)**
+  - Pengurutan leksikografis deterministik pada definisi tool untuk stabilitas byte-prefix prompt caching provider.
+  - Penangkapan token cache OpenAI-compatible SSE streaming (`prompt_tokens_details.cached_tokens` ke `TokenUsage.cache_read_tokens`).
+  - Pengkabelan `EventBus` broadcast channel pada `AgentLoop` (`loop_engine::tests::test_event_bus_receives_turn_events`).
+  - Parser putusan Tuxeshadow strictly fail-closed (`shadow::tests::test_parse_shadow_verdict_fail_closed`).
+  - Validasi workspace confinement memeriksa semua kunci argumen path (`path`, `file_path`, `file`, `workdir`, `target`, `dest`, `source`, `dir`).
+
+---
+
+## Sprint 11: Milestone v0.3 & v0.4 (Full Autonomy & Sovereign Web Channel)
+> **Tujuan:** Menyelesaikan spesifikasi PRD §4.3 (Milestone v0.3 - Full Autonomy & Sovereign Services) dan §4.4 (Milestone v0.4 - WebUI & Multi-Channel Gateway).
+
+- [x] **11.1 Autonomous Cron Scheduler with Strict Tool Allowlists (`crates/purrcode-service/src/cron.rs`)**
+  - Parsing jadwal natural interval (`every 30s`, `every 5m`, `daily at 03:00`, dsb.) dan ekspresi cron standar 5-field (`*/15 * * * *`).
+  - Evaluasi `allowed_tools` berbasis fail-closed validation (`cron::tests::test_cron_job_tool_allowlist_validation`).
+  - CLI `purrcode-ai cron [list|add|remove] [--tools <tools>]`.
+- [x] **11.2 Self-Improving Skill Curator Lifecycle (`crates/purrcode-service/src/curator.rs`)**
+  - Telemetri otomatis pencatatan penggunaan skill pada `crates/purrcode-tools/src/skill/tool.rs` (`skill::tests::test_record_skill_usage_appends_records`).
+  - Siklus hidup candidate skills: evaluasi berkala, deteksi stale (>14h), pengarsipan otomatis (>30h), dan staging `candidates/` (`curator::tests::test_curator_candidate_lifecycle`, `curator::tests::test_curator_propose_candidate_skill`).
+  - CLI `purrcode-ai curator [audit|candidates|approve|reject]`.
+- [x] **11.3 OS Sandbox Adapter (`crates/purrcode-service/src/sandbox.rs`)**
+  - Deteksi dan pembentukan command sandbox OS (Linux `bwrap`, macOS `sandbox-exec`/seatbelt, Windows path confinement).
+  - Isolasi profil: `ReadOnly`, `WorkspaceWrite`, `DangerFullAccess` (`sandbox::tests::test_sandbox_adapter_profiles`).
+- [x] **11.4 Heartbeat Signal Monitor (`crates/purrcode-service/src/heartbeat.rs`)**
+  - Deteksi sinyal sistem berkala: status workspace root, antrean candidate skills, dan integritas cron scheduler (`heartbeat::tests::test_heartbeat_monitor_detects_candidates_and_cron`).
+- [x] **11.5 Sovereign WebUI & REST/SSE Server (`crates/purrcode-channel/src/web/`)**
+  - Antarmuka web responsif berdesain Catppuccin Mocha sovereign, zero external CDN / script (`web::tests::test_embedded_web_html_contains_critical_elements`).
+  - Kanal `WebChannel` mengimplementasikan trait `Channel` dengan 180s fail-closed approval timeout (`web::tests::test_web_channel_approval_resolution`).
+  - REST API (`/api/health`, `/api/memory`, `/api/skills`, `/api/cron`, `/api/approval`, `/api/prompt`) & Server-Sent Events (`/api/events`) dengan opsi proteksi Bearer / query token (`web::tests::test_web_server_token_auth`).
+  - CLI `purrcode-ai web [--host <host>] [--port <port>] [--token <token>]`.

@@ -188,6 +188,12 @@ impl ConfigLoader {
         for (m_name, m_cfg) in overlay.mcp_servers {
             base.mcp_servers.insert(m_name, m_cfg);
         }
+        if overlay.telegram.is_some() {
+            base.telegram = overlay.telegram;
+        }
+        if overlay.gateway.is_some() {
+            base.gateway = overlay.gateway;
+        }
     }
 
     fn merge_mcp_file(base: &mut Config, path: &Path) {
@@ -257,6 +263,10 @@ mod tests {
         assert_eq!(config.preset, "tabby");
         assert_eq!(config.model_preset.as_deref(), Some("custom-endpoint"));
         assert!(!config.providers.is_empty());
+        assert!(config.telegram.is_some());
+        assert_eq!(config.telegram.as_ref().unwrap().allowed_users.len(), 2);
+        assert!(config.gateway.is_some());
+        assert_eq!(config.gateway.as_ref().unwrap().port, Some(8080));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod cli;
+mod gateway;
 mod onboard;
 
 use clap::Parser;
@@ -223,13 +224,178 @@ async fn main() -> Result<()> {
                 .await?;
                 return Ok(());
             }
-            Commands::Gateway => {
-                let _target_model = resolve_target_model_or_exit(args.model, &config);
-                println!(
-                    "🐾 PurrCode AI Gateway daemon ready (preset: {}). Listening for channel events (Ctrl-C to stop)...",
-                    config.preset
+            Commands::Cron {
+                action,
+                id_or_schedule,
+                prompt,
+                tools,
+            } => {
+                let cron_file = purrcode_dir.join("cron_jobs.json");
+                let scheduler = purrcode_service::CronScheduler::new(&cron_file);
+                match action.as_str() {
+                    "list" => {
+                        let jobs = scheduler.list_jobs().await;
+                        if jobs.is_empty() {
+                            println!("🐾 No scheduled cron jobs found in {}", cron_file.display());
+                        } else {
+                            println!("🐾 Scheduled Cron Jobs ({}):", jobs.len());
+                            for j in jobs {
+                                let next = j
+                                    .next_run
+                                    .map(|t| t.to_rfc3339())
+                                    .unwrap_or_else(|| "none".to_string());
+                                let allowed_str = j
+                                    .allowed_tools
+                                    .as_ref()
+                                    .map(|v| v.join(","))
+                                    .unwrap_or_else(|| "read-only (default)".to_string());
+                                println!(
+                                    "  - [{}] schedule: \"{}\", next: {}, tools: [{}], prompt: \"{}\"",
+                                    j.id, j.schedule, next, allowed_str, j.prompt
+                                );
+                            }
+                        }
+                    }
+                    "add" => {
+                        let sched = id_or_schedule.ok_or_else(|| {
+                            purrcode_api::error::PurrError::Config(
+                                "Usage: purrcode-ai cron add <schedule> <prompt> [--tools tool1,tool2]".to_string(),
+                            )
+                        })?;
+                        let p = prompt.ok_or_else(|| {
+                            purrcode_api::error::PurrError::Config(
+                                "Usage: purrcode-ai cron add <schedule> <prompt> [--tools tool1,tool2]".to_string(),
+                            )
+                        })?;
+                        let allowed = tools.map(|t| {
+                            t.split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect::<Vec<_>>()
+                        });
+                        let job = purrcode_service::CronJob {
+                            id: format!("cron_{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                            schedule: sched.clone(),
+                            prompt: p,
+                            role: None,
+                            model: None,
+                            allowed_tools: allowed,
+                            enabled: true,
+                            next_run: None,
+                            last_run: None,
+                        };
+                        scheduler.add_job(job.clone()).await?;
+                        println!("🐾 Added cron job [{}] with schedule '{}'", job.id, sched);
+                    }
+                    "remove" | "rm" => {
+                        let id = id_or_schedule.ok_or_else(|| {
+                            purrcode_api::error::PurrError::Config(
+                                "Usage: purrcode-ai cron remove <job_id>".to_string(),
+                            )
+                        })?;
+                        let removed = scheduler.remove_job(&id).await?;
+                        if removed {
+                            println!("🐾 Removed cron job [{}]", id);
+                        } else {
+                            println!("⚠️  Job [{}] not found", id);
+                        }
+                    }
+                    _ => {
+                        println!("Usage: purrcode-ai cron [list|add|remove]");
+                    }
+                }
+                return Ok(());
+            }
+            Commands::Curator { action, target } => {
+                let curator = purrcode_service::CuratorEngine::new(&purrcode_dir);
+                match action.as_str() {
+                    "candidates" => {
+                        let candidates = curator.list_candidates().await?;
+                        if candidates.is_empty() {
+                            println!("🐾 No pending candidate skills found in .purrcode/skills/candidates");
+                        } else {
+                            println!("🐾 Pending Candidate Skills ({}):", candidates.len());
+                            for c in candidates {
+                                println!(
+                                    "  - [{}] {} (path: {})",
+                                    c.name,
+                                    c.description,
+                                    c.path.display()
+                                );
+                            }
+                            println!("\nTo approve: purrcode-ai curator approve <name>");
+                            println!("To reject:  purrcode-ai curator reject <name>");
+                        }
+                    }
+                    "approve" => {
+                        let name = target.ok_or_else(|| {
+                            purrcode_api::error::PurrError::Config(
+                                "Usage: purrcode-ai curator approve <name>".to_string(),
+                            )
+                        })?;
+                        let path = curator.approve_candidate(&name).await?;
+                        println!(
+                            "🐾 Approved candidate skill '{}' -> promoted to {}",
+                            name,
+                            path.display()
+                        );
+                    }
+                    "reject" => {
+                        let name = target.ok_or_else(|| {
+                            purrcode_api::error::PurrError::Config(
+                                "Usage: purrcode-ai curator reject <name>".to_string(),
+                            )
+                        })?;
+                        curator.reject_candidate(&name).await?;
+                        println!("🐾 Rejected candidate skill '{}'", name);
+                    }
+                    _ => {
+                        println!("🐾 Evaluating skills with Curator engine...");
+                        let reports = curator.evaluate_skills().await?;
+                        if reports.is_empty() {
+                            println!("  No installed project skills found to evaluate in .purrcode/skills");
+                        } else {
+                            println!("Skill Audit Reports ({}):", reports.len());
+                            for r in reports {
+                                let last = r
+                                    .last_used
+                                    .map(|t| t.to_rfc3339())
+                                    .unwrap_or_else(|| "never".to_string());
+                                let act = r.action_taken.as_deref().unwrap_or("none");
+                                println!(
+                                    "  - {:<18} status: {:<8} calls: {:<4} last_used: {:<20} action: {}",
+                                    r.skill_name,
+                                    format!("{:?}", r.status),
+                                    r.total_calls,
+                                    last,
+                                    act
+                                );
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            Commands::Web { host, port, token } => {
+                confirm_god_mode_if_needed(&config.preset)?;
+                println!("🐾 Starting PurrCode AI WebUI server (Milestone v0.4)...");
+                let channel = std::sync::Arc::new(purrcode_channel::WebChannel::new());
+                let server = purrcode_channel::WebServer::new(
+                    host,
+                    port,
+                    token,
+                    channel,
+                    purrcode_dir,
+                    workspace_root,
                 );
-                let _ = tokio::signal::ctrl_c().await;
+                let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+                server.run(cancel_rx).await?;
+                return Ok(());
+            }
+            Commands::Gateway => {
+                confirm_god_mode_if_needed(&config.preset)?;
+                gateway::run_gateway(&config, &workspace_root, args.orchestrator, args.yolo)
+                    .await?;
                 return Ok(());
             }
         }

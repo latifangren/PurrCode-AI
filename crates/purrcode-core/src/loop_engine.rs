@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::AgentEvent;
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallDelta, ToolCallRequest,
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::steering::SteeringQueue;
+use crate::EventBus;
 
 #[async_trait]
 pub trait ApprovalRequester: Send + Sync {
@@ -41,6 +43,7 @@ pub struct AgentLoop {
     is_yolo: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
     steering_queue: Option<SteeringQueue>,
+    event_bus: Option<Arc<EventBus>>,
 }
 
 impl AgentLoop {
@@ -63,6 +66,7 @@ impl AgentLoop {
             is_yolo: false,
             cancel_flag: None,
             steering_queue: None,
+            event_bus: None,
         }
     }
 
@@ -115,6 +119,11 @@ impl AgentLoop {
 
     pub fn with_steering_queue(mut self, queue: SteeringQueue) -> Self {
         self.steering_queue = Some(queue);
+        self
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
         self
     }
 
@@ -172,6 +181,14 @@ impl AgentLoop {
             tool_call_id: None,
         });
 
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnStarted {
+                session_id: ctx.session_id.clone(),
+                turn_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
         let mut step = 0;
         let mut final_answer = String::new();
 
@@ -219,6 +236,11 @@ impl AgentLoop {
                 }
 
                 if let Some(reasoning) = chunk.reasoning_delta {
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::ReasoningChunk {
+                            thinking: reasoning.clone(),
+                        });
+                    }
                     if let Some(l) = listener {
                         l.on_text_chunk(&reasoning, true);
                     }
@@ -226,6 +248,11 @@ impl AgentLoop {
 
                 if !chunk.delta.is_empty() {
                     step_text.push_str(&chunk.delta);
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::TextChunk {
+                            text: chunk.delta.clone(),
+                        });
+                    }
                     if let Some(l) = listener {
                         l.on_text_chunk(&chunk.delta, false);
                     }
@@ -297,6 +324,16 @@ impl AgentLoop {
                 let call_id = tool_call.id.clone();
                 let tool_name = tool_call.name.clone();
                 let args_str = tool_call.arguments.clone();
+                let args_val: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
+
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallStarted {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        arguments: args_val.clone(),
+                    });
+                }
 
                 if let Some(l) = listener {
                     l.on_tool_call_started(&tool_name, &args_str);
@@ -305,9 +342,6 @@ impl AgentLoop {
                 let (tool_output, is_success) = if let Some(tool) =
                     self.tool_registry.get(&tool_name)
                 {
-                    let args_val: serde_json::Value =
-                        serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
-
                     // 1. Dispatch `pre_tool_use` plugin hook (can veto execution)
                     let plugin_allowed = if let Some(ref pd) = self.plugin_dispatcher {
                         pd.dispatch_pre_tool_use(&tool_name, &args_val).await
@@ -377,13 +411,35 @@ impl AgentLoop {
                                             Ok(dry_res) => dry_res.diff_preview,
                                             Err(_) => None,
                                         };
-                                    let user_ok = req
-                                        .request_approval(
-                                            &tool_name,
-                                            &format!("Run tool '{}'", tool_name),
-                                            preview.as_deref(),
-                                        )
-                                        .await;
+
+                                    let desc = format!("Run tool '{}'", tool_name);
+                                    if let Some(ref bus) = self.event_bus {
+                                        let _ =
+                                            bus.publish(AgentEvent::ToolCallApprovalRequested {
+                                                call_id: call_id.clone(),
+                                                tool: tool_name.clone(),
+                                                description: desc.clone(),
+                                                diff_preview: preview.clone(),
+                                            });
+                                    }
+
+                                    let approval_future =
+                                        req.request_approval(&tool_name, &desc, preview.as_deref());
+                                    let user_ok = match tokio::time::timeout(
+                                        std::time::Duration::from_secs(180),
+                                        approval_future,
+                                    )
+                                    .await
+                                    {
+                                        Ok(decision) => decision,
+                                        Err(_) => {
+                                            tracing::warn!(
+                                                "Approval request timed out after 180s, defaulting to deny (fail-closed)"
+                                            );
+                                            false
+                                        }
+                                    };
+
                                     self.record_audit(
                                         ctx,
                                         "tool_approval",
@@ -456,6 +512,15 @@ impl AgentLoop {
                     )
                 };
 
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallFinished {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        result: serde_json::json!({ "output": tool_output }),
+                        success: is_success,
+                    });
+                }
+
                 if let Some(l) = listener {
                     l.on_tool_call_finished(&tool_name, &tool_output, is_success);
                 }
@@ -484,6 +549,11 @@ impl AgentLoop {
                 while let Some(chunk) = stream.recv().await {
                     if !chunk.delta.is_empty() {
                         final_answer.push_str(&chunk.delta);
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::TextChunk {
+                                text: chunk.delta.clone(),
+                            });
+                        }
                         if let Some(l) = listener {
                             l.on_text_chunk(&chunk.delta, false);
                         }
@@ -499,6 +569,14 @@ impl AgentLoop {
                     self.max_steps
                 );
             }
+        }
+
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnFinished {
+                session_id: ctx.session_id.clone(),
+                turn_id: uuid::Uuid::new_v4().to_string(),
+                tokens_used: None,
+            });
         }
 
         Ok(final_answer)
@@ -549,8 +627,14 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 fn is_args_outside_workspace(args: &serde_json::Value, workspace_root: &Path) -> bool {
     let candidate_str = args
         .get("path")
-        .and_then(|v| v.as_str())
-        .or_else(|| args.get("workdir").and_then(|v| v.as_str()));
+        .or_else(|| args.get("file_path"))
+        .or_else(|| args.get("file"))
+        .or_else(|| args.get("workdir"))
+        .or_else(|| args.get("target"))
+        .or_else(|| args.get("dest"))
+        .or_else(|| args.get("source"))
+        .or_else(|| args.get("dir"))
+        .and_then(|v| v.as_str());
 
     let Some(raw) = candidate_str else {
         return false;
@@ -861,5 +945,62 @@ mod tests {
         assert!(history
             .iter()
             .any(|m| m.role == MessageRole::Tool && m.content.contains("vetoed by pre_tool_use")));
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_receives_turn_events() {
+        let bus = Arc::new(crate::EventBus::new(32));
+        let mut rx = bus.subscribe();
+
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(DryRunMockTool)).unwrap();
+
+        let provider = Arc::new(SingleToolTurnProvider {
+            step: AtomicBool::new(false),
+        });
+
+        let engine = AgentLoop::new(provider, "m", Arc::new(reg))
+            .with_event_bus(bus.clone())
+            .with_yolo(true);
+
+        let ctx = ToolContext {
+            session_id: "s_event_test".to_string(),
+            agent_role: "tinker".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            is_dry_run: false,
+        };
+
+        let mut history = Vec::new();
+        let _ = engine
+            .run_turn_with_history(&mut history, "write file", None, &ctx, None)
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            received.push(ev);
+        }
+
+        assert!(!received.is_empty());
+        let has_turn_started = received
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnStarted { .. }));
+        let has_tool_started = received
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallStarted { .. }));
+        let has_tool_finished = received
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallFinished { .. }));
+        let has_turn_finished = received
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnFinished { .. }));
+
+        assert!(has_turn_started, "EventBus should receive TurnStarted");
+        assert!(has_tool_started, "EventBus should receive ToolCallStarted");
+        assert!(
+            has_tool_finished,
+            "EventBus should receive ToolCallFinished"
+        );
+        assert!(has_turn_finished, "EventBus should receive TurnFinished");
     }
 }

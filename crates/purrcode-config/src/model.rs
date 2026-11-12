@@ -17,6 +17,12 @@ pub struct Config {
 
     #[serde(default, alias = "mcpServers")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    #[serde(default)]
+    pub telegram: Option<TelegramConfig>,
+
+    #[serde(default)]
+    pub gateway: Option<GatewayConfig>,
 }
 
 fn default_preset() -> String {
@@ -31,8 +37,25 @@ impl Default for Config {
             model: None,
             providers: HashMap::new(),
             mcp_servers: HashMap::new(),
+            telegram: None,
+            gateway: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct TelegramConfig {
+    pub bot_token: Option<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct GatewayConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

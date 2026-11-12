@@ -95,6 +95,37 @@ pub enum Commands {
         #[arg()]
         prompt: Option<String>,
     },
+    /// Manage scheduled autonomous cron jobs (list, add, remove)
+    Cron {
+        #[arg(default_value = "list")]
+        action: String,
+        #[arg()]
+        id_or_schedule: Option<String>,
+        #[arg()]
+        prompt: Option<String>,
+        /// Comma-separated list of allowed tools (fail-closed default is read-only)
+        #[arg(long)]
+        tools: Option<String>,
+    },
+    /// Inspect and evaluate skills with the self-improving Curator engine (audit, candidates, approve, reject)
+    Curator {
+        #[arg(default_value = "audit")]
+        action: String,
+        #[arg()]
+        target: Option<String>,
+    },
+    /// Run PurrCode local WebUI channel and REST/SSE server (Milestone v0.4)
+    Web {
+        /// HTTP host to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// HTTP port to bind
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Optional authentication token for remote access
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// Run background gateway daemon for channel adapters (systemd/OpenRC service target)
     Gateway,
 }
