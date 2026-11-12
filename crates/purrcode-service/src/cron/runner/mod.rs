@@ -491,7 +491,29 @@ impl CronRunner {
             Err(e) => (false, format!("{e}")),
         };
         let now = Local::now();
-        let (summary, detail, kind) = if ok {
+        // v0.3 F-1: a turn that returns Ok may still have had its risky
+        // delegation blocked by Tuxeshadow — the audit trail (shadow_audit
+        // OBJECT / OBJECT_BLOCKED for this session) is the ground truth,
+        // not the model's final text, which may summarise a blocked run
+        // without ever mentioning the block. A blocked run is recorded
+        // as blocked everywhere it is recorded, never as a success.
+        // Blocked only counts when the turn itself succeeded: a turn
+        // that errored is a failure, recorded as one (the error already
+        // carries the cause).
+        let objections = self.deps.audit_logger.shadow_objections(&session_id);
+        let blocked = ok && !objections.is_empty();
+        let (summary, detail, kind) = if blocked {
+            let reason = objections.join("; ");
+            (
+                format!(
+                    "Cron job '{}' blocked by Tuxeshadow: {}",
+                    job.name,
+                    summarize(&reason)
+                ),
+                cap_detail(&format!("⛔ Blocked by Tuxeshadow: {reason}\n\n{raw_text}")),
+                DeliveryKind::Failure,
+            )
+        } else if ok {
             (
                 summarize(&raw_text),
                 cap_detail(&raw_text),
@@ -527,7 +549,12 @@ impl CronRunner {
         }
 
         // Advance the schedule and record the outcome, then save.
-        let mut last_status = if ok {
+        // A blocked run is not a failure of the job (the rail worked
+        // as designed), so it does not count toward failure_count —
+        // but its status says "blocked", never "ok".
+        let mut last_status = if blocked {
+            format!("blocked: {}", summarize(&objections.join("; ")))
+        } else if ok {
             "ok".to_string()
         } else {
             format!("failed: {}", summarize(&raw_text))
@@ -567,9 +594,16 @@ impl CronRunner {
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.clone(),
             agent: "meowstro".to_string(),
-            event: if ok { "cron_run_ok" } else { "cron_run_failed" }.to_string(),
+            event: if blocked {
+                "cron_run_blocked"
+            } else if ok {
+                "cron_run_ok"
+            } else {
+                "cron_run_failed"
+            }
+            .to_string(),
             tool: None,
-            decision: if ok { "allow" } else { "deny" }.to_string(),
+            decision: if blocked || !ok { "deny" } else { "allow" }.to_string(),
             detail: format!("job={} ({}) delivery={}", job.name, job.id, delivery.id),
         });
 
@@ -577,7 +611,7 @@ impl CronRunner {
             job_id: job.id,
             job_name: job.name,
             session_id,
-            ok,
+            ok: ok && !blocked,
             summary,
             detail,
         })

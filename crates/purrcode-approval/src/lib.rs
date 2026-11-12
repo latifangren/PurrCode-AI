@@ -74,6 +74,51 @@ impl AuditLogger {
         count
     }
 
+    /// Un-overridden Tuxeshadow objections recorded for one session:
+    /// `shadow_audit` entries with decision `OBJECT` (Default/tabby,
+    /// no override) or `OBJECT_BLOCKED` (Strict/carrier, user did not
+    /// approve), in file order, with the objection reason as `detail`.
+    /// Everything else is excluded on purpose: `APPROVE` /
+    /// `APPROVE_WITH_NOTES` are not objections; `shadow_override`
+    /// (`OVERRIDDEN`) and `shadow_strict_override` (`APPROVED_BY_USER`)
+    /// are objections the run was allowed to proceed past; `shadow_silent_audit`
+    /// (`OBJECT_SILENT`, God mode) never blocks. The cron runner (v0.3
+    /// F-1) uses this after a turn to tell a shadow-blocked run from a
+    /// successful one — the audit trail, not the model's final text, is
+    /// the ground truth, because a model may summarise a blocked run
+    /// without ever mentioning the block. Same best-effort contract as
+    /// `count_tool_calls_since_curator_check`: a missing, unreadable,
+    /// or corrupt file yields an empty list, never an error.
+    pub fn shadow_objections(&self, session_id: &str) -> Vec<String> {
+        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+            return Vec::new();
+        };
+        let mut objections = Vec::new();
+        for line in raw.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+                continue;
+            }
+            if v.get("event").and_then(|e| e.as_str()) != Some("shadow_audit") {
+                continue;
+            }
+            match v.get("decision").and_then(|d| d.as_str()) {
+                Some("OBJECT") | Some("OBJECT_BLOCKED") => {
+                    objections.push(
+                        v.get("detail")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        objections
+    }
+
     pub fn log_entry(&self, mut entry: AuditEntry) -> Result<()> {
         entry.detail = scrub_secrets(&entry.detail);
         if let Some(parent) = self.audit_file.parent() {
@@ -510,6 +555,80 @@ mod tests {
             })
             .unwrap();
         assert_eq!(logger.count_tool_calls_since_curator_check(sid), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_shadow_objections_returns_only_unoverridden_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr_audit_shadow_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let logger = AuditLogger::new(&dir);
+        let sid = "purr_shadow";
+        let other = "purr_other";
+        let entry = |session: &str, event: &str, decision: &str, detail: &str| {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: session.to_string(),
+                    agent: "tuxeshadow".to_string(),
+                    event: event.to_string(),
+                    tool: None,
+                    decision: decision.to_string(),
+                    detail: detail.to_string(),
+                })
+                .unwrap();
+        };
+        // Two real blocks for this session (both decisions count).
+        entry(sid, "shadow_audit", "OBJECT", "plan would delete files");
+        entry(
+            sid,
+            "shadow_audit",
+            "OBJECT_BLOCKED",
+            "strict: rm -rf refused",
+        );
+        // Everything else must NOT count as a block.
+        entry(sid, "shadow_audit", "APPROVE", "fine");
+        entry(sid, "shadow_audit", "APPROVE_WITH_NOTES", "careful");
+        entry(
+            sid,
+            "shadow_override",
+            "OVERRIDDEN",
+            "overridden, run proceeded",
+        );
+        entry(
+            sid,
+            "shadow_strict_override",
+            "APPROVED_BY_USER",
+            "user approved",
+        );
+        entry(
+            sid,
+            "shadow_silent_audit",
+            "OBJECT_SILENT",
+            "god mode, never blocks",
+        );
+        entry(sid, "tool_call", "allow", "not a shadow event");
+        // Another session's OBJECT is invisible to this session.
+        entry(other, "shadow_audit", "OBJECT", "other session");
+        let found = logger.shadow_objections(sid);
+        assert_eq!(
+            found,
+            vec![
+                "plan would delete files".to_string(),
+                "strict: rm -rf refused".to_string()
+            ]
+        );
+        assert_eq!(
+            logger.shadow_objections(other),
+            vec!["other session".to_string()]
+        );
+        assert!(logger.shadow_objections("purr_nobody").is_empty());
+        // A missing audit file is an empty list, never an error.
+        let missing =
+            AuditLogger::new(std::env::temp_dir().join("purr_audit_shadow_missing_dir_xyz"));
+        assert!(missing.shadow_objections(sid).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
