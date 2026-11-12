@@ -209,6 +209,9 @@ impl ShadowAuditor {
             workspace_root: ctx.workspace_root.clone(),
             is_dry_run: true,
             is_cron: ctx.is_cron,
+            // v0.3 F21: the shadow runs its own read-only registry
+            // (no `bash`), so there is no child to sandbox.
+            sandbox: None,
         };
 
         let prompt = format!(

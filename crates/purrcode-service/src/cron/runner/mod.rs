@@ -28,7 +28,7 @@ use chrono::{DateTime, Local};
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::MessageRole;
-use purrcode_api::tool::{AuditSink, ToolContext};
+use purrcode_api::tool::{AuditSink, SandboxStrictness, ToolContext};
 use purrcode_approval::{ApprovalGate, AuditEntry, AuditLogger};
 use purrcode_channel::telegram::TelegramChannel;
 use purrcode_config::{
@@ -212,6 +212,29 @@ fn parse_preset_enums(
     ))
 }
 
+/// Parse the OS-sandbox strictness pinned in the job snapshot.
+/// Fail-closed: a job whose snapshot claims `sandbox: "os"` must
+/// carry a known mode; a missing or unknown mode fails the run
+/// rather than running the job unsandboxed. For any other sandbox
+/// the returned value is the `ReadOnly` placeholder — the caller
+/// only reads it when `sandbox == Os`.
+fn sandbox_mode_from_snapshot(snapshot: &PresetSnapshot) -> Result<SandboxStrictness> {
+    if snapshot.sandbox != "os" {
+        return Ok(SandboxStrictness::ReadOnly);
+    }
+    let mode = snapshot.sandbox_mode.as_deref().ok_or_else(|| {
+        PurrError::Config(
+            "Cron job preset has sandbox 'os' but no sandbox_mode; refusing to run it unsandboxed"
+                .to_string(),
+        )
+    })?;
+    SandboxStrictness::from_kebab(mode).ok_or_else(|| {
+        PurrError::Config(format!(
+            "Cron job preset has an unknown sandbox_mode value '{mode}'"
+        ))
+    })
+}
+
 /// First non-empty line, capped at 200 chars, for the delivery summary.
 /// Shared by the cron runner and the heartbeat runner (v0.3 F22).
 pub(crate) fn summarize(text: &str) -> String {
@@ -312,6 +335,7 @@ impl CronRunner {
             )));
         }
         let (approval, guardrail, sandbox) = parse_preset_enums(&job.preset)?;
+        let sandbox_mode = sandbox_mode_from_snapshot(&job.preset)?;
         let preset = ModePreset {
             schema: "preset/v1".to_string(),
             name: job.preset.name.clone(),
@@ -319,6 +343,7 @@ impl CronRunner {
             approval,
             guardrail,
             sandbox,
+            sandbox_mode,
             tools: job.tools.clone(),
             model: None,
         };
@@ -403,6 +428,13 @@ impl CronRunner {
             workspace_root: self.deps.workspace_root.clone(),
             is_dry_run: false,
             is_cron: true,
+            // v0.3 F21: the job's pinned snapshot carries its sandbox
+            // (rebuilt into `preset` above from `job.preset`).
+            sandbox: if preset.sandbox == SandboxMode::Os {
+                Some(preset.sandbox_mode)
+            } else {
+                None
+            },
         };
 
         self.deps

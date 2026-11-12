@@ -265,6 +265,7 @@ mod tests {
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
             is_cron: false,
+            sandbox: None,
         };
 
         // 1. Mismatched hash must fail
@@ -322,6 +323,7 @@ mod tests {
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
             is_cron: false,
+            sandbox: None,
         };
 
         // LLM provides 2 spaces indentation and LF endings

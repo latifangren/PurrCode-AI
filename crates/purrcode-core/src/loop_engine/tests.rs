@@ -173,6 +173,7 @@ async fn test_dry_run_diff_preview_and_audit_sink() {
         workspace_root: std::path::PathBuf::from("."),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     let out = engine
@@ -211,6 +212,7 @@ async fn test_policy_gate_deny_blocks_tool_and_audits() {
         workspace_root: std::path::PathBuf::from("."),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     let mut history = Vec::new();
@@ -249,6 +251,7 @@ async fn test_plugin_pre_tool_use_veto_blocks_execution() {
         workspace_root: std::path::PathBuf::from("."),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     let mut history = Vec::new();
@@ -313,6 +316,7 @@ async fn test_event_bus_receives_turn_events() {
         workspace_root: std::path::PathBuf::from("."),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     let mut history = Vec::new();
@@ -391,6 +395,7 @@ async fn test_event_bus_approval_carries_loop_call_id() {
         workspace_root: std::path::PathBuf::from("."),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     let mut history = Vec::new();

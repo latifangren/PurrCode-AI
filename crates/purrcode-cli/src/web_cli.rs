@@ -87,6 +87,9 @@ struct WebState {
     plugin_dispatcher: Arc<dyn PluginHookDispatcher>,
     unenforced_caps: Vec<(String, Vec<&'static str>)>,
     model_preset: Option<purrcode_config::ModelPreset>,
+    /// v0.3 F21: the OS-sandbox strictness for this server's turns
+    /// (`Some` when the active preset declares `sandbox: "os"`).
+    sandbox: Option<purrcode_api::tool::SandboxStrictness>,
     system_prompt: String,
     use_orchestrator: bool,
     yolo: bool,
@@ -134,10 +137,7 @@ pub async fn run_web_command(
 
     let purrcode_dir = onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
-    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, workspace_root) {
-        Ok(p) => p,
-        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
-    };
+    let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, workspace_root)?;
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
 
     let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
@@ -222,6 +222,13 @@ pub async fn run_web_command(
         plugin_dispatcher,
         unenforced_caps,
         model_preset,
+        // v0.3 F21: pin the OS-sandbox strictness at startup so every
+        // turn's `bash` children get the same ruleset.
+        sandbox: if mode_preset.sandbox == purrcode_config::SandboxMode::Os {
+            Some(mode_preset.sandbox_mode)
+        } else {
+            None
+        },
         system_prompt,
         use_orchestrator,
         yolo,
@@ -350,12 +357,7 @@ impl WebState {
             let mut tool_registry =
                 ToolRegistry::with_defaults_and_options(None, Some(&self.workspace_root));
             let mode_preset =
-                match ModePresetLoader::load_by_name(&self.config.preset, &self.workspace_root) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?
-                    }
-                };
+                ModePresetLoader::load_by_name_or_tabby(&self.config.preset, &self.workspace_root)?;
             if !mode_preset.tools.is_empty() {
                 let mode_tools = mode_preset.tools.clone();
                 tool_registry
@@ -389,6 +391,7 @@ impl WebState {
             workspace_root: self.workspace_root.clone(),
             is_dry_run: false,
             is_cron: false,
+            sandbox: self.sandbox,
         };
 
         // Load the chat's history (empty for a new session) and run the

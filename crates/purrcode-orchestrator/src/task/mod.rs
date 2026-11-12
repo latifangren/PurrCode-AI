@@ -502,6 +502,9 @@ impl Tool for TaskTool {
             workspace_root: ctx.workspace_root.clone(),
             is_dry_run: ctx.is_dry_run,
             is_cron: ctx.is_cron,
+            // v0.3 F21: a child may only narrow the parent's policy —
+            // it inherits the parent's OS sandbox, never a looser one.
+            sandbox: ctx.sandbox,
         };
 
         let mut child_loop = AgentLoop::new(child_provider, &child_model, child_tools)

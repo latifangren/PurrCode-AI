@@ -130,10 +130,7 @@ pub(crate) async fn run_one_shot(
     let purrcode_dir =
         crate::onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
-    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, workspace_root) {
-        Ok(p) => p,
-        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
-    };
+    let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, workspace_root)?;
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
     let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
 
@@ -195,6 +192,13 @@ pub(crate) async fn run_one_shot(
         workspace_root: workspace_root.to_path_buf(),
         is_dry_run: false,
         is_cron: false,
+        // v0.3 F21: `sandbox: "os"` presets get a Landlock ruleset on
+        // every `bash` child; `confinement` presets get none.
+        sandbox: if mode_preset.sandbox == purrcode_config::SandboxMode::Os {
+            Some(mode_preset.sandbox_mode)
+        } else {
+            None
+        },
     };
 
     let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> =

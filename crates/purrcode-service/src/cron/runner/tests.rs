@@ -23,6 +23,7 @@ fn test_job(at: DateTime<Local>, once: bool, expr: Option<&str>) -> CronJob {
             approval: "supervised".to_string(),
             guardrail: "default".to_string(),
             sandbox: "confinement".to_string(),
+            sandbox_mode: None,
         },
         delivery: DeliveryTarget::QueueOnly,
         created_at: at,
@@ -139,6 +140,7 @@ fn test_parse_preset_enums_roundtrip() {
         approval: "supervised".to_string(),
         guardrail: "default".to_string(),
         sandbox: "confinement".to_string(),
+        sandbox_mode: None,
     };
     let (a, g, s) = parse_preset_enums(&snapshot).expect("parses");
     assert_eq!(a, ApprovalMode::Supervised);
@@ -149,6 +151,43 @@ fn test_parse_preset_enums_roundtrip() {
         ..snapshot
     };
     assert!(parse_preset_enums(&bad).is_err());
+}
+
+#[test]
+fn test_sandbox_mode_from_snapshot_fail_closed() {
+    // v0.3 F21: a snapshot claiming `sandbox: "os"` must pin a known
+    // mode; a missing or unknown mode fails the run, never runs the
+    // job unsandboxed. Any other sandbox ignores the mode field.
+    let os = PresetSnapshot {
+        name: "os-test".to_string(),
+        approval: "supervised".to_string(),
+        guardrail: "default".to_string(),
+        sandbox: "os".to_string(),
+        sandbox_mode: Some("workspace-write".to_string()),
+    };
+    assert_eq!(
+        sandbox_mode_from_snapshot(&os).expect("known mode parses"),
+        SandboxStrictness::WorkspaceWrite
+    );
+    let missing = PresetSnapshot {
+        sandbox_mode: None,
+        ..os.clone()
+    };
+    assert!(sandbox_mode_from_snapshot(&missing).is_err());
+    let unknown = PresetSnapshot {
+        sandbox_mode: Some("everything".to_string()),
+        ..os.clone()
+    };
+    assert!(sandbox_mode_from_snapshot(&unknown).is_err());
+    let confined = PresetSnapshot {
+        sandbox: "confinement".to_string(),
+        sandbox_mode: None,
+        ..os
+    };
+    assert_eq!(
+        sandbox_mode_from_snapshot(&confined).expect("confinement ignores the mode"),
+        SandboxStrictness::ReadOnly
+    );
 }
 
 #[test]

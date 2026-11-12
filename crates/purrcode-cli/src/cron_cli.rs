@@ -214,6 +214,14 @@ fn cmd_add(args: &CronArgs<'_>) -> Result<()> {
         approval: format!("{:?}", preset.approval).to_lowercase(),
         guardrail: format!("{:?}", preset.guardrail).to_lowercase(),
         sandbox: format!("{:?}", preset.sandbox).to_lowercase(),
+        // v0.3 F21: pin the OS-sandbox strictness at creation, like the
+        // other rails — a later config change must not silently widen
+        // or narrow a scheduled job's sandbox.
+        sandbox_mode: if preset.sandbox == purrcode_config::SandboxMode::Os {
+            Some(preset.sandbox_mode.as_kebab_str().to_string())
+        } else {
+            None
+        },
     };
 
     // Tool allowlist: explicit --allow wins; `--allow ""` = explicit empty

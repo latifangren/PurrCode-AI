@@ -151,10 +151,7 @@ pub(crate) async fn run_tui(
         event_tx: event_tx.clone(),
     });
 
-    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, &workspace_root) {
-        Ok(p) => p,
-        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
-    };
+    let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, &workspace_root)?;
     let model_preset_name = config
         .model_preset
         .clone()
@@ -251,6 +248,13 @@ pub(crate) async fn run_tui(
         workspace_root: workspace_root.clone(),
         is_dry_run: false,
         is_cron: false,
+        // v0.3 F21: `sandbox: "os"` presets get a Landlock ruleset on
+        // every `bash` child; `confinement` presets get none.
+        sandbox: if mode_preset.sandbox == purrcode_config::SandboxMode::Os {
+            Some(mode_preset.sandbox_mode)
+        } else {
+            None
+        },
     };
 
     let mut skill_mgr = purrcode_tools::skill::SkillManager::new();

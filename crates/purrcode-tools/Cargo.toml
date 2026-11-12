@@ -21,3 +21,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# v0.3 F21: Landlock ruleset for the OS-sandboxed `bash` child.
+landlock.workspace = true

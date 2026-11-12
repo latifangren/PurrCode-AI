@@ -50,6 +50,9 @@ struct GatewayState {
     /// batch 2a).
     unenforced_caps: Vec<(String, Vec<&'static str>)>,
     model_preset: Option<purrcode_config::ModelPreset>,
+    /// v0.3 F21: the OS-sandbox strictness for this gateway's turns
+    /// (`Some` when the active preset declares `sandbox: "os"`).
+    sandbox: Option<purrcode_api::tool::SandboxStrictness>,
     system_prompt: String,
     channel: Arc<TelegramChannel>,
     /// One lock per chat: turns in the same chat run sequentially.
@@ -110,10 +113,7 @@ pub async fn run_gateway(
 
     let purrcode_dir = onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
 
-    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, workspace_root) {
-        Ok(p) => p,
-        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
-    };
+    let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, workspace_root)?;
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, false));
 
     let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
@@ -182,6 +182,13 @@ pub async fn run_gateway(
         plugin_dispatcher,
         unenforced_caps,
         model_preset,
+        // v0.3 F21: pin the OS-sandbox strictness at startup so every
+        // turn's `bash` children get the same ruleset.
+        sandbox: if mode_preset.sandbox == purrcode_config::SandboxMode::Os {
+            Some(mode_preset.sandbox_mode)
+        } else {
+            None
+        },
         system_prompt,
         channel: channel.clone(),
         chat_locks: Mutex::new(HashMap::new()),
@@ -457,6 +464,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         workspace_root: state.workspace_root.clone(),
         is_dry_run: false,
         is_cron: false,
+        sandbox: state.sandbox,
     };
 
     // Typing indicator while the turn runs.

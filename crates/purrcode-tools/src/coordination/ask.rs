@@ -217,6 +217,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
             is_cron: false,
+            sandbox: None,
         };
 
         let res = tool
@@ -249,6 +250,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
             is_cron: false,
+            sandbox: None,
         };
 
         let res = tool
@@ -289,6 +291,7 @@ mod tests {
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
             is_cron: true,
+            sandbox: None,
         };
         let res = tool
             .execute(

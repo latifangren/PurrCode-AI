@@ -280,6 +280,7 @@ mod tests {
             is_dry_run: false,
             is_cron: false,
             agent_role: "tinker".to_string(),
+            sandbox: None,
         }
     }
 

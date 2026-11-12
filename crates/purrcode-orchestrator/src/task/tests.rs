@@ -180,6 +180,7 @@ async fn test_subagent_chain_handoff_and_resume_by_id() {
         workspace_root: temp_dir.clone(),
         is_dry_run: false,
         is_cron: false,
+        sandbox: None,
     };
 
     // Step 1: Delegate to Whisker
@@ -326,6 +327,7 @@ async fn test_task_tool_dry_run_returns_preview_without_side_effects() {
         workspace_root: PathBuf::from("."),
         is_dry_run: true,
         is_cron: false,
+        sandbox: None,
     };
 
     let result = task_tool

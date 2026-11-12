@@ -2,6 +2,7 @@
 
 use crate::jsonc::clean_jsonc;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::tool::SandboxStrictness;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +51,12 @@ pub struct ModePreset {
     pub approval: ApprovalMode,
     pub guardrail: GuardrailMode,
     pub sandbox: SandboxMode,
+    /// Strictness of the OS sandbox, only meaningful when
+    /// `sandbox == Os` (ADR-014 item 8, v0.3 F21). Defaults to
+    /// `ReadOnly` (fail-closed) when a preset declares `"os"` without
+    /// naming a mode. Ignored for `confinement` presets.
+    #[serde(default)]
+    pub sandbox_mode: SandboxStrictness,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -73,17 +80,9 @@ impl ModePresetLoader {
                 preset.schema
             )));
         }
-        // ADR-014 item 8: `sandbox: "os"` is parsed but unenforced until
-        // the F21 OS sandbox lands — today it silently WEAKENS confinement
-        // (the outside-workspace denial only fires for `confinement`).
-        // Reject it loudly at load time instead of letting a preset claim
-        // protection it does not have.
-        if preset.sandbox == SandboxMode::Os {
-            return Err(PurrError::Config(format!(
-                "Mode preset '{}' declares sandbox 'os', which is not enforced yet (v0.3 F21 OS sandbox). Use sandbox 'confinement' until then.",
-                preset.name
-            )));
-        }
+        // ADR-014 item 8 / v0.3 F21: `sandbox: "os"` is now enforced
+        // (Landlock ruleset on every `bash` child, via `ToolContext`).
+        // The pre-F21 loader rejected it; that rejection is gone.
         Ok(preset)
     }
 
@@ -112,15 +111,10 @@ impl ModePresetLoader {
         if let Some(preset) = all.remove(name) {
             return Ok(preset);
         }
-        // The preset may exist on disk but fail to parse (e.g. it declares
-        // sandbox "os", rejected until the F21 OS sandbox lands). Surface
-        // the REAL parse error instead of a misleading "not found".
-        let mut candidate_dirs = vec![workspace_root.join("presets")];
-        if let Some(home) = crate::loader::dirs_home() {
-            candidate_dirs.push(home.join(".purrcode").join("presets"));
-        }
-        candidate_dirs.push(workspace_root.join(".purrcode").join("presets"));
-        for dir in candidate_dirs {
+        // The preset may exist on disk but fail to parse (e.g. an
+        // unknown sandbox mode). Surface the REAL parse error instead
+        // of a misleading "not found".
+        for dir in Self::preset_dirs(workspace_root) {
             for ext in ["jsonc", "json"] {
                 let path = dir.join(format!("{name}.{ext}"));
                 if path.is_file() {
@@ -134,6 +128,48 @@ impl ModePresetLoader {
         Err(PurrError::Config(format!(
             "Mode preset '{name}' not found (available: carrier, tabby, oyen, or custom files in presets/)"
         )))
+    }
+
+    /// Directories a preset file may live in, in discovery order
+    /// (same order as `discover_all` / `load_by_name`).
+    fn preset_dirs(workspace_root: &Path) -> Vec<PathBuf> {
+        let mut dirs = vec![workspace_root.join("presets")];
+        if let Some(home) = crate::loader::dirs_home() {
+            dirs.push(home.join(".purrcode").join("presets"));
+        }
+        dirs.push(workspace_root.join(".purrcode").join("presets"));
+        dirs
+    }
+
+    /// Whether a preset file with this name exists in any discovery
+    /// directory, regardless of whether it parses.
+    pub fn preset_file_exists(name: &str, workspace_root: &Path) -> bool {
+        Self::preset_dirs(workspace_root).iter().any(|dir| {
+            ["jsonc", "json"]
+                .iter()
+                .any(|ext| dir.join(format!("{name}.{ext}")).is_file())
+        })
+    }
+
+    /// Load a preset by name, falling back to bundled tabby ONLY when
+    /// no preset file with that name exists anywhere. A preset file
+    /// that exists but fails to parse (e.g. an unknown `sandbox_mode`)
+    /// is a hard error: silently falling back would drop a protection
+    /// the user explicitly declared — and run the turn without the OS
+    /// sandbox they asked for (v0.3 F21, re-checker P1-1). Same pattern
+    /// the heartbeat tick fixed in F22 (a load failure must never
+    /// silently become a different preset).
+    pub fn load_by_name_or_tabby(name: &str, workspace_root: &Path) -> Result<ModePreset> {
+        match Self::load_by_name(name, workspace_root) {
+            Ok(preset) => Ok(preset),
+            Err(e) => {
+                if Self::preset_file_exists(name, workspace_root) {
+                    Err(e)
+                } else {
+                    Self::parse_str(include_str!("../../../presets/tabby.jsonc"))
+                }
+            }
+        }
     }
 
     fn scan_dir(dir: &Path, map: &mut HashMap<String, ModePreset>) {
@@ -176,29 +212,54 @@ mod tests {
     }
 
     #[test]
-    fn test_sandbox_os_preset_is_rejected_until_f21() {
-        // ADR-014 item 8: `sandbox: "os"` parses but is unenforced today —
-        // it must fail loudly at load time, never silently weaken
-        // confinement. A preset with `confinement` still loads fine.
+    fn test_sandbox_os_preset_is_accepted_after_f21() {
+        // ADR-014 item 8 / v0.3 F21: `sandbox: "os"` is now enforced
+        // (Landlock on every `bash` child). A preset declaring it loads,
+        // and without an explicit `sandbox_mode` it defaults to the
+        // strictest ruleset (`read-only`, fail-closed).
         let os_raw = r#"{
             "$schema": "preset/v1", "name": "os-test",
             "approval": "supervised", "guardrail": "default",
             "sandbox": "os", "tools": ["read"]
         }"#;
-        let err = ModePresetLoader::parse_str(os_raw)
-            .expect_err("sandbox 'os' must be rejected until F21 lands");
-        assert!(err.to_string().contains("not enforced yet"));
+        let preset = ModePresetLoader::parse_str(os_raw).expect("os preset loads after F21");
+        assert_eq!(preset.sandbox, SandboxMode::Os);
+        assert_eq!(preset.sandbox_mode, SandboxStrictness::ReadOnly);
 
-        let ok_raw = os_raw.replace("\"os\"", "\"confinement\"");
-        let preset = ModePresetLoader::parse_str(&ok_raw).expect("confinement preset loads");
-        assert_eq!(preset.sandbox, SandboxMode::Confinement);
+        let write_raw = os_raw.replace(
+            "\"sandbox\": \"os\"",
+            "\"sandbox\": \"os\", \"sandbox_mode\": \"workspace-write\"",
+        );
+        let preset = ModePresetLoader::parse_str(&write_raw).expect("explicit sandbox_mode loads");
+        assert_eq!(preset.sandbox_mode, SandboxStrictness::WorkspaceWrite);
+        assert_eq!(preset.sandbox_mode.as_kebab_str(), "workspace-write");
+        assert_eq!(
+            SandboxStrictness::from_kebab("danger-full-access"),
+            Some(SandboxStrictness::DangerFullAccess)
+        );
+        assert_eq!(SandboxStrictness::from_kebab("bogus"), None);
     }
 
     #[test]
-    fn test_load_by_name_surfaces_os_rejection() {
+    fn test_sandbox_os_unknown_mode_is_rejected() {
+        // A misspelled `sandbox_mode` must fail loudly at load time,
+        // never silently fall back to a looser ruleset.
+        let raw = r#"{
+            "$schema": "preset/v1", "name": "os-test",
+            "approval": "supervised", "guardrail": "default",
+            "sandbox": "os", "sandbox_mode": "everything",
+            "tools": ["read"]
+        }"#;
+        let err =
+            ModePresetLoader::parse_str(raw).expect_err("unknown sandbox_mode must be rejected");
+        assert!(err.to_string().contains("Invalid mode preset JSONC"));
+    }
+
+    #[test]
+    fn test_load_by_name_loads_os_preset_after_f21() {
         // `discover_all` silently skips unparseable presets, so a preset
-        // file declaring sandbox "os" would look "not found" from
-        // `load_by_name` — the real rejection must surface instead.
+        // file declaring sandbox "os" must load through `load_by_name`
+        // like any other preset — with its explicit mode intact.
         let dir = std::env::temp_dir().join(format!(
             "purr-preset-os-test-{}-{}",
             std::process::id(),
@@ -214,16 +275,71 @@ mod tests {
             r#"{
                 "$schema": "preset/v1", "name": "os-test",
                 "approval": "supervised", "guardrail": "default",
-                "sandbox": "os", "tools": ["read"]
+                "sandbox": "os", "sandbox_mode": "workspace-write",
+                "tools": ["read"]
             }"#,
         )
         .expect("write preset file");
-        let err = ModePresetLoader::load_by_name("os-test", &dir)
-            .expect_err("os preset must be rejected with the real reason");
-        assert!(
-            err.to_string().contains("not enforced yet"),
-            "unexpected error: {err}"
-        );
+        let preset = ModePresetLoader::load_by_name("os-test", &dir)
+            .expect("os preset loads through load_by_name after F21");
+        assert_eq!(preset.sandbox, SandboxMode::Os);
+        assert_eq!(preset.sandbox_mode, SandboxStrictness::WorkspaceWrite);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_preset_file_exists_distinguishes_present_from_absent() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr-preset-exists-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let presets_dir = dir.join("presets");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        assert!(!ModePresetLoader::preset_file_exists("os-bad", &dir));
+        std::fs::write(presets_dir.join("os-bad.jsonc"), "{}").expect("write preset file");
+        assert!(ModePresetLoader::preset_file_exists("os-bad", &dir));
+        assert!(!ModePresetLoader::preset_file_exists("other", &dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_by_name_or_tabby_fails_hard_on_unparseable_preset() {
+        // F21 re-checker P1-1: a preset file that EXISTS but fails to
+        // parse (unknown sandbox_mode) must be a hard error, never a
+        // silent fallback to tabby — the fallback would run the turn
+        // without the OS sandbox the user declared.
+        let dir = std::env::temp_dir().join(format!(
+            "purr-preset-or-tabby-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let presets_dir = dir.join("presets");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        std::fs::write(
+            presets_dir.join("os-bad.jsonc"),
+            r#"{
+                "$schema": "preset/v1", "name": "os-bad",
+                "approval": "supervised", "guardrail": "default",
+                "sandbox": "os", "sandbox_mode": "everything",
+                "tools": ["read"]
+            }"#,
+        )
+        .expect("write preset file");
+        let err = ModePresetLoader::load_by_name_or_tabby("os-bad", &dir)
+            .expect_err("unparseable preset fails hard");
+        assert!(err.to_string().contains("Invalid mode preset JSONC"));
+        // A name with no preset file anywhere still falls back to tabby
+        // (unchanged pre-F21 behaviour for a typo / missing preset).
+        let fallback = ModePresetLoader::load_by_name_or_tabby("missing-preset", &dir)
+            .expect("missing preset falls back to tabby");
+        assert_eq!(fallback.name, "tabby");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

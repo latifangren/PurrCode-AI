@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::execution::sandbox::OsSandbox;
 use crate::fs::read::resolve_confined_path;
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
@@ -57,6 +58,21 @@ impl Tool for BashTool {
             None => ctx.workspace_root.clone(),
         };
 
+        // v0.3 F21, fail-closed: on any platform without Landlock, a
+        // preset demanding the OS sandbox must error here, before the
+        // command is built or spawned — never run unsandboxed.
+        #[cfg(not(target_os = "linux"))]
+        if let Some(strictness) = ctx.sandbox {
+            return Err(PurrError::Tool {
+                tool: "bash".to_string(),
+                message: format!(
+                    "OS sandbox requested (sandbox_mode '{}') but Landlock is Linux-only; \
+                     this platform cannot enforce it. Use a confinement preset.",
+                    strictness.as_kebab_str()
+                ),
+            });
+        }
+
         let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(30_000).max(1000));
 
         #[cfg(windows)]
@@ -78,6 +94,20 @@ impl Tool for BashTool {
         let (mut cmd, shell_name) = {
             let mut c = tokio::process::Command::new("sh");
             c.args(["-c", &args.command]);
+            // v0.3 F21: the Landlock ruleset is built in the parent,
+            // BEFORE the spawn (any build failure aborts the run), and
+            // enforced in the child from pre_exec. The `take()` makes
+            // the closure FnMut, as pre_exec requires; it runs once.
+            if let Some(strictness) = ctx.sandbox {
+                let sandbox = OsSandbox::build(&ctx.workspace_root, strictness)?;
+                let mut slot = Some(sandbox);
+                unsafe {
+                    c.pre_exec(move || match slot.take() {
+                        Some(s) => s.restrict_self(),
+                        None => Ok(()),
+                    });
+                }
+            }
             (c, "sh")
         };
 

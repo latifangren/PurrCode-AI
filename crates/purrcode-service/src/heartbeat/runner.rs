@@ -263,13 +263,14 @@ impl HeartbeatRunner {
         // Unattended runs never use God guardrail or yolo approval:
         // this is a configuration error, so it fails the whole tick
         // before Phase-1 spends a model call (not per-item).
-        // A preset that fails to load (unknown name, unparseable file,
-        // `sandbox: "os"` — rejected by the loader, ADR-014 item 8)
+        // A preset that fails to load (unknown name, unparseable file)
         // FAILS the tick loudly: silently falling back to tabby would
         // hide the rejection and quietly replace a configured Strict
-        // preset with Default (v0.3 F22 fix, re-checker F2). The
-        // gateway's own startup still falls back (pre-4a pattern);
-        // the heartbeat tick does not.
+        // preset with Default (v0.3 F22 fix, re-checker F2). Since the
+        // F21 P1-1 fix the gateway fails hard too for a preset file
+        // that exists but fails to parse; only a preset name with no
+        // file anywhere still falls back to tabby. The heartbeat
+        // tick does not.
         let preset = ModePresetLoader::load_by_name(
             &self.deps.config.preset,
             &self.deps.workspace_root,
@@ -560,6 +561,13 @@ impl HeartbeatRunner {
             // Unattended daemon turn, like a cron run: Tuxeshadow is
             // mandatory and a model-supplied override reason is ignored.
             is_cron: true,
+            // v0.3 F21: the heartbeat turn inherits the loaded preset's
+            // OS sandbox, like any other turn.
+            sandbox: if preset.sandbox == purrcode_config::SandboxMode::Os {
+                Some(preset.sandbox_mode)
+            } else {
+                None
+            },
         };
 
         self.deps

@@ -79,6 +79,13 @@ pub struct PresetSnapshot {
     pub approval: String,
     pub guardrail: String,
     pub sandbox: String,
+    /// v0.3 F21: the OS-sandbox strictness (`"read-only"`,
+    /// `"workspace-write"`, `"danger-full-access"`), only meaningful
+    /// when `sandbox == "os"`. `None` for pre-F21 jobs and for
+    /// `confinement` presets (no OS sandbox). A hand-edited job with
+    /// `sandbox == "os"` but no mode fails the run (fail-closed).
+    #[serde(default)]
+    pub sandbox_mode: Option<String>,
 }
 
 /// Where a job result is delivered. `Telegram` = send to that chat via the
@@ -291,6 +298,24 @@ pub fn validate_job(job: &CronJob) -> Result<()> {
             job.name, job.preset.name
         )));
     }
+    // v0.3 F21, fail-closed: a job pinned to the OS sandbox must pin a
+    // known strictness too — a hand-edited job with `sandbox: "os"` and
+    // a missing or unknown mode is rejected here (and again by the
+    // runner at run time), never run unsandboxed.
+    if job.preset.sandbox == "os" {
+        let mode_ok = job
+            .preset
+            .sandbox_mode
+            .as_deref()
+            .and_then(purrcode_api::tool::SandboxStrictness::from_kebab)
+            .is_some();
+        if !mode_ok {
+            return Err(PurrError::Session(format!(
+                "Cron job '{}' pins sandbox 'os' but has no known sandbox_mode; refusing to run it unsandboxed",
+                job.name
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -341,6 +366,7 @@ mod tests {
                 approval: "supervised".to_string(),
                 guardrail: "default".to_string(),
                 sandbox: "confinement".to_string(),
+                sandbox_mode: None,
             },
             delivery: DeliveryTarget::QueueOnly,
             created_at: fixed_now(),
@@ -409,6 +435,25 @@ mod tests {
         assert!(validate_job(&job).is_ok()); // explicit [] = nothing allowed
         let mut job = sample_job();
         job.prompt = "   ".to_string();
+        assert!(validate_job(&job).is_err());
+    }
+
+    #[test]
+    fn test_validate_job_rejects_os_sandbox_without_known_mode() {
+        // v0.3 F21, fail-closed (defense in depth with the runner):
+        // a hand-edited job pinning `sandbox: "os"` without a known
+        // mode is rejected at validation time, not just at run time.
+        let mut job = sample_job();
+        job.preset.sandbox = "os".to_string();
+        job.preset.sandbox_mode = Some("workspace-write".to_string());
+        assert!(validate_job(&job).is_ok());
+        let mut job = sample_job();
+        job.preset.sandbox = "os".to_string();
+        job.preset.sandbox_mode = None;
+        assert!(validate_job(&job).is_err());
+        let mut job = sample_job();
+        job.preset.sandbox = "os".to_string();
+        job.preset.sandbox_mode = Some("everything".to_string());
         assert!(validate_job(&job).is_err());
     }
 
