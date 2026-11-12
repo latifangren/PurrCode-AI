@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 06:51:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 08:02:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,6 MiB** (4.826.088 byte stripped dynamic GNU ELF di Linux) / **~4,7 MiB** (4.949.152 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 4.949.152 byte = 4,72 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 135/135 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (135 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,8 MiB** (4.993.696 byte stripped dynamic GNU ELF di Linux) / **~4,9 MiB** (5.121.184 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 5.121.184 byte = 4,88 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 153/153 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (153 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,9 +19,9 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 135 unit/integration tests hermetis lintas platform. |
-| **Milestone v0.2: Telegram Channel & Gateway Daemon** | **90%** | **Selesai & Terverifikasi Mock End-to-End** | F15–F18 selesai: gateway daemon + channel Telegram hand-rolled (poll, allowlist fail-closed, sesi per chat, kartu approval Ya/Tidak/Selalu, chunking 4096), terverifikasi 2 checker independen + E2E mock 11 kasus (38/38 asersi). Tersisa uji live Telegram asli (butuh token + chat ID user) dan `service install` live. |
-| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **10%** | **Fondasi Skill Manager & Service Siap** | Tool dynamic skill synthesis (`manage_skill`), shared concurrency mutex, shadow auditor (Tuxeshadow), dan generator service daemon sudah aktif. Background cron scheduler daemon dan isolasi sandbox OS dijadwalkan pada v0.3. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 153 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.2: Telegram Channel & Gateway Daemon** | **90%** | **Selesai & Terverifikasi Mock End-to-End** | F15–F18 selesai: gateway daemon + channel Telegram hand-rolled (poll, allowlist fail-closed, sesi per chat, kartu approval Ya/Tidak/Selalu, chunking 4096), terverifikasi 2 checker independen + E2E mock 11 kasus (38/38 asersi). Uji live pertama BERHASIL 2026-11-12 07:28 WIB (turn "Hello" dijawab Meowstro lewat gateway + Magpie). Tersisa kartu approval live (HELLO.md) dan `service install` live. |
+| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **15%** | **F19 Cron — Permukaan Manajemen Selesai** | F19 (cron): parser jadwal bahasa alami ID+EN, store job atomik, delivery queue claim-first, CLI `cron add/list/remove/enable/disable/deliveries`, allowlist fail-closed + guard `sandbox: "os"` (ditolak sampai F21) selesai dan terverifikasi 2 checker (item 21). Runner job + tick gateway + drain delivery (batch 3b) belum ada — job yang dibuat belum bisa dieksekusi. F20/F21/F22 belum dimulai; sandbox tetap fitur akhiran. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
 | **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~45%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti. Tersisa v0.3 (cron/sandbox, akhiran) + v0.4 (WebUI). |
 
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (135 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (153 Unit/Integration Tests)
 
-Hasil pengujian otomatis per 2026-11-12 06:36:00 +07:00 (135/135 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per 2026-11-12 08:02:00 +07:00 (153/153 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api`** (4 tests):
    - `error::tests::test_purr_error_formatting` (Format error standard)
@@ -101,9 +101,23 @@ Hasil pengujian otomatis per 2026-11-12 06:36:00 +07:00 (135/135 lolos di Linux;
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
    - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
 
-4. **`purrcode_ai` (CLI binary) (8 tests):
+4. **`purrcode_ai` (CLI binary) (22 tests):
    - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
    - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
+   - `cron::cli::tests::test_truncate` (Pemotongan tampilan prompt di output `cron list`)
+   - `cron::queue::tests::test_delivery_queue_claim_deliver_fold` (Antrean delivery: created → claimed → delivered; claimed tanpa delivered dianggap terkirim, bukan dikirim ulang)
+   - `cron::queue::tests::test_delivery_queue_survives_reload` (Antrean delivery bertahan di-reload dari disk)
+   - `cron::schedule::tests::test_cron_expr_parse_and_next` (Parse cron 5-field + next-run; `to_expr` merender step 2-elemen sebagai `*/n`, bukan list)
+   - `cron::schedule::tests::test_parse_daily_time_markers` (Marker waktu harian: pagi/siang/sore/malam, am/pm, noon/midnight)
+   - `cron::schedule::tests::test_parse_intervals_id_and_en` (Interval ID+EN; asersi `expr` yang tersimpan, bukan hanya display; interval yang tak ter-ekspresikan ditolak — bukan disimpan dengan periode salah; detik hanya kelipatan 60 yang lolos)
+   - `cron::schedule::tests::test_parse_invalid_time_is_an_error_not_a_default` (Marker `jam`/`at` dengan jam tak valid = error, bukan diam-diam default 09:00; "every day" tanpa marker tetap default 09:00)
+   - `cron::schedule::tests::test_parse_raw_cron_passthrough` (Cron 5-field mentah diteruskan apa adanya)
+   - `cron::schedule::tests::test_parse_relative_and_tomorrow_and_iso` (One-shot relatif "in 10 minutes"/"dalam 2 jam", "besok jam 8", ISO)
+   - `cron::schedule::tests::test_parse_ununderstood_is_an_error` (Input tak dikenal ditolak dengan pesan contoh yang benar)
+   - `cron::schedule::tests::test_parse_weekdays_id_and_en` (Hari kerja/weekday/weekend + hari bernama, ID+EN)
+   - `cron::store::tests::test_default_allowlist_has_no_writes` (Allowlist default job = read-only Meowstro, tanpa write)
+   - `cron::store::tests::test_job_roundtrip_atomic_save` (Job tersimpan atomik (tmp+rename) dan terbaca kembali utuh)
+   - `cron::store::tests::test_validate_job_rejects_god_yolo_and_unknown_tools` (Job menolak preset guardrail God, approval yolo, dan tool tak dikenal)
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
    - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
@@ -111,16 +125,20 @@ Hasil pengujian otomatis per 2026-11-12 06:36:00 +07:00 (135/135 lolos di Linux;
    - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
    - `tests::test_resolve_target_model_deterministic_priority` (Resolusi deterministik prioritas model sesi)
 
-5. **`purrcode_config`** (11 tests):
+5. **`purrcode_config`** (15 tests):
    - `jsonc::tests::test_clean_jsonc_comments`
    - `jsonc::tests::test_strip_trailing_commas`
    - `loader::tests::test_expand_env_vars`
    - `loader::tests::test_hierarchical_merge`
+   - `loader::tests::test_merge_into_keeps_cron` (Lapisan config project yang membawa section `cron` tidak hilang saat merge — jebakan yang sama pernah menimpa section `telegram`)
    - `loader::tests::test_merge_into_keeps_telegram` (Lapisan config project yang membawa section `telegram` tidak hilang saat merge (regresi E2E batch Telegram))
    - `loader::tests::test_parse_example_file`
+   - `model::tests::test_cron_config_defaults` (Default section `cron`: enabled, tick 60 dtk, min 5 dtk)
    - `model::tests::test_resolve_model_bare_name_is_deterministic_across_providers` (Resolusi deterministik nama model telanjang antar-provider)
    - `model::tests::test_telegram_config_defaults_and_fail_closed_allowlist` (Default config Telegram (api_base, timeout 120/30 dtk) + `allow_from` kosong = tidak ada yang boleh)
    - `preset_mode::tests::test_bundled_mode_presets_load`
+   - `preset_mode::tests::test_load_by_name_surfaces_os_rejection` (`load_by_name` menampilkan error parse asli preset `sandbox: "os"`, bukan "not found" — `discover_all` diam-diam melewati preset yang gagal parse)
+   - `preset_mode::tests::test_sandbox_os_preset_is_rejected_until_f21` (Preset `sandbox: "os"` DITOLAK dengan pesan jelas sampai F21 menegakkannya — menutup lubang downgrade confinement diam-diam)
    - `preset_model::tests::test_bundled_model_presets_load`
    - `validator::tests::test_rejects_model_under_64k`
 
@@ -310,6 +328,13 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Amendemen ADR-013 (dokumen, D1/D2/F5/D3):** (a) SSRF pinning TIDAK berlaku untuk `api_base` (deviasi disengaja + alasan); (b) klaim `on_subagent_event` dihapus (tidak ada di kode; baris status subagent ditunda); (c) "maks 2 retry" = jalur kirim saja; (d) cadangan chunk 14 + probe retry + Ctrl-C abort dicatat.
     - **TERBUKA / hanya bisa dicek live (Telegram asli):** konektivitas `api.telegram.org` dari PC user (VM ini tidak bisa egress langsung — reqwest tanpa proxy), rendering keyboard di aplikasi Telegram, perilaku 429/grup asli, `service install` + daemon systemd/OpenRC, `TelegramAskRequester` live (tanpa skenario E2E), `/resume <id>` dengan id tak ada, `/stop` saat turn berjalan, turn paralel lintas chat. Bot `@purrcodeai_bot` dibuat user 2026-11-12 via BotFather; token TIDAK disimpan di mana pun (tempat benar: `~/.purrcode/credentials`); uji live butuh chat ID user (kirim satu pesan ke bot → baca dari `getUpdates` → masukkan `allow_from`).
     - **Hasil ukur:** check 0 warning, test **135/135**, clippy `-D warnings` bersih, fmt bersih, release GNU 4.826.088 byte (4,60 MiB); suite musl **135/135**, rilis musl 4.949.152 byte (4,72 MiB) static-pie stripped, `ldd` = statically linked.
+
+21. **F19 cron — permukaan manajemen (batch 3a) 2026-11-12 (workplan item 26, ADR-014):**
+    - **Implementasi (branch `dev-muse`):** modul baru `crates/purrcode-cli/src/cron/` (schedule, store, queue, cli) + subcommand `purrcode-ai cron add/list/remove/enable/disable/deliveries`; config `cron` di `model.rs` + merge di `loader.rs`; `purrcode.jsonc.example` + JSON schema diperbarui. Parser jadwal deterministik ID+EN ala Hermes (`parse_schedule`): cron 5-field mentah, ISO one-shot, interval ("every 30m"/"tiap 2 jam"), hari kerja/weekend, marker pagi/siang/sore/malam + am/pm/noon/midnight, relatif "in 10 minutes"/"dalam 2 jam", "besok jam 8". Store `~/.purrcode/cron/jobs.jsonc` (simpan atomik tmp+rename) + delivery queue append-only `deliveries.jsonl` (claim-first ala Hermes: claimed tanpa delivered = dianggap terkirim, bukan dikirim ulang). Allowlist fail-closed: `--allow ""` = tidak ada tool yang boleh; tanpa `--allow` = read-only Meowstro; job menolak preset guardrail God, approval yolo, dan tool tak dikenal; Tuxeshadow wajib (`is_cron=true`) saat runner tiba (batch 3b). **Guard `sandbox: "os"`:** preset yang mendeklarasikan `sandbox: "os"` DITOLAK dengan pesan jelas — nilai itu hari ini adalah no-op yang MELEMAHKAN confinement (satu-satunya konsumen adalah cabang Confinement, `approval/src/lib.rs:203`); `load_by_name` kini menampilkan error parse asli (sebelumnya `discover_all` diam-diam melewati preset gagal-parse sehingga preset tampak "not found"). Konfirmasi interaktif `cron add` tanpa `--yes` memakai TTY asli (input pipe DITOLAK — `y` yang di-pipe tidak dihitung).
+    - **Verifikasi 2 checker independen (diam-diam, tree dibekukan):** semua angka direproduksi persis (152/152 GNU saat itu, clippy/fmt bersih, GNU 4.992.928 byte; konfirmasi PTY dua arah — `y` membuat job, `n` membatalkan tanpa job tersimpan; parser 8/8 input sendiri benar + 10 input wajib-ditolak ditolak; sandbox-os guard benar di kedua permukaan; atomic save 0 file `.tmp` setelah ~35 save).
+    - **Temuan checker yang DIPERBAIKI (sebelum commit):** (a) **Waktu invalid diam-diam jadi 09:00** (build F1, MEDIUM): `"every day at 25:00"`, `"setiap hari jam 8:75"`, `"setiap hari jam 99"` membuat job `0 9 * * *`, exit 0 — `parse_clock` gagal tapi kode jatuh ke cabang default "tanpa waktu → 09:00" yang tidak membedakan "tanpa waktu" dari "waktu invalid". Perbaikan: bila token `jam`/`at` ada tapi clock tak ter-parse → error. Regression test `test_parse_invalid_time_is_an_error_not_a_default`. (b) **Detik terpotong diam-diam** (build F2, LOW): `"tiap 90 detik"` jadi tiap 1 menit (`n / 60` integer division) sementara `"every 45 seconds"` ditolak — inkonsisten. Perbaikan: detik hanya diterima bila kelipatan 60 yang eksak (120 dtk = 2 menit); sisanya `parse_duration` mengembalikan None → error. (c) **Interval tak ter-ekspresikan disimpan dengan periode SALAH** (re-check F1, MODERATE): `"every 45 minutes"` → `0,45 * * * *` (gap asli 45,15), `"every 90 minutes"` → tiap jam, `"every 5 hours"` → `0 */5` (gap terakhir 4 jam), `"every 7 days"` → `0 0 */7 * *` (29 Nov → 1 Des = 2 hari). Akar masalah: test interval hanya mengasersi `display`, bukan `expr` yang tersimpan — padahal expr adalah kontrak yang akan dipakai runner batch 3b. Perbaikan: `interval_expr` kini mengembalikan `Result` — menit harus membagi 60 habis, jam harus membagi 24 habis, multi-hari selain harian ditolak; display interval kini manusiawi ("every 2 hour(s)", bukan "every 120 minute(s)"); test mengasersi `expr` untuk semua kasus valid + reject. (d) **EPIPE panic, exit 134** (re-check F2, MINOR): `purrcode-ai cron list | head -1` (28 job) panic `failed printing to stdout: Broken pipe` — Rust mengabaikan SIGPIPE secara default. Perbaikan: `main()` mengembalikan SIGPIPE ke default (`libc::signal(SIGPIPE, SIG_DFL)`, Unix saja; crate `libc` ditambahkan sebagai workspace dep) — kini exit 141 (SIGPIPE), tanpa panic/backtrace, terverifikasi live. (e) **Kosmetik:** `to_expr` merender step 2-elemen sebagai list (`0,30`) — kini `*/30` (syarat step: len ≥ 2).
+    - **TERBUKA (batch 3b):** runner job + tick gateway (60 dtk, error boundary sendiri) + drain delivery + `cron run`; perilaku one-shot yang sudah lewat waktunya (jangan dieksekusi terlambat — cf. ZeroClaw `MissedTickBehavior::Skip`); `cron.tick_secs` hasil merge dua lapis belum punya permukaan CLI yang menampilkannya (diperiksa ulang di 3b).
+    - **Hasil ukur:** check 0 warning, `cargo test --workspace` **153/153 lolos, 0 failed** (152 + 1 baru: invalid-time), clippy `-D warnings` lolos, fmt bersih, release GNU 4.993.696 byte (4,76 MiB); suite musl **153/153**, rilis musl 5.121.184 byte (4,88 MiB) static-pie stripped, `ldd` = statically linked.
 
 ---
 

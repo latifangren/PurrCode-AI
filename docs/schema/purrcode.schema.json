@@ -76,6 +76,13 @@
         "approval_timeout_secs": { "type": "integer", "minimum": 1 },
         "poll_timeout_secs": { "type": "integer", "minimum": 0 }
       }
+    },
+    "cron": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "tick_secs": { "type": "integer", "minimum": 5 }
+      }
     }
   }
 }

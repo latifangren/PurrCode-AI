@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod cli;
+mod cron;
 mod gateway;
 mod onboard;
 
@@ -68,6 +69,15 @@ fn log_unenforced_plugin_capabilities(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Rust ignores SIGPIPE by default, which turns a closed stdout pipe
+    // (e.g. `purrcode-ai cron list | head -1`) into a panic with exit 134.
+    // Restore the default disposition so the process dies with SIGPIPE
+    // (exit 141) like any other Unix command. No-op on Windows.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     #[cfg(windows)]
     init_windows_console();
 
@@ -267,6 +277,29 @@ async fn main() -> Result<()> {
             }
             Commands::Gateway => {
                 gateway::run_gateway(&config, &workspace_root, args.model).await?;
+                return Ok(());
+            }
+            Commands::Cron {
+                action,
+                name,
+                schedule,
+                prompt,
+                allow,
+                preset,
+                yes,
+            } => {
+                cron::cli::run_cron_command(cron::cli::CronArgs {
+                    action: &action,
+                    name,
+                    schedule,
+                    prompt,
+                    allow,
+                    preset,
+                    yes,
+                    config: &config,
+                    workspace_root: &workspace_root,
+                    purrcode_dir: &purrcode_dir,
+                })?;
                 return Ok(());
             }
         }

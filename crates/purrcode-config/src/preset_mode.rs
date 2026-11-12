@@ -73,6 +73,17 @@ impl ModePresetLoader {
                 preset.schema
             )));
         }
+        // ADR-014 item 8: `sandbox: "os"` is parsed but unenforced until
+        // the F21 OS sandbox lands — today it silently WEAKENS confinement
+        // (the outside-workspace denial only fires for `confinement`).
+        // Reject it loudly at load time instead of letting a preset claim
+        // protection it does not have.
+        if preset.sandbox == SandboxMode::Os {
+            return Err(PurrError::Config(format!(
+                "Mode preset '{}' declares sandbox 'os', which is not enforced yet (v0.3 F21 OS sandbox). Use sandbox 'confinement' until then.",
+                preset.name
+            )));
+        }
         Ok(preset)
     }
 
@@ -98,12 +109,31 @@ impl ModePresetLoader {
 
     pub fn load_by_name(name: &str, workspace_root: &Path) -> Result<ModePreset> {
         let mut all = Self::discover_all(workspace_root);
-        all.remove(name).ok_or_else(|| {
-            PurrError::Config(format!(
-                "Mode preset '{}' not found (available: carrier, tabby, oyen, or custom files in presets/)",
-                name
-            ))
-        })
+        if let Some(preset) = all.remove(name) {
+            return Ok(preset);
+        }
+        // The preset may exist on disk but fail to parse (e.g. it declares
+        // sandbox "os", rejected until the F21 OS sandbox lands). Surface
+        // the REAL parse error instead of a misleading "not found".
+        let mut candidate_dirs = vec![workspace_root.join("presets")];
+        if let Some(home) = crate::loader::dirs_home() {
+            candidate_dirs.push(home.join(".purrcode").join("presets"));
+        }
+        candidate_dirs.push(workspace_root.join(".purrcode").join("presets"));
+        for dir in candidate_dirs {
+            for ext in ["jsonc", "json"] {
+                let path = dir.join(format!("{name}.{ext}"));
+                if path.is_file() {
+                    let raw = std::fs::read_to_string(&path).map_err(|e| {
+                        PurrError::Config(format!("Failed to read preset {}: {e}", path.display()))
+                    })?;
+                    return Self::parse_str(&raw);
+                }
+            }
+        }
+        Err(PurrError::Config(format!(
+            "Mode preset '{name}' not found (available: carrier, tabby, oyen, or custom files in presets/)"
+        )))
     }
 
     fn scan_dir(dir: &Path, map: &mut HashMap<String, ModePreset>) {
@@ -143,5 +173,57 @@ mod tests {
         assert_eq!(presets["carrier"].approval, ApprovalMode::Manual);
         assert_eq!(presets["tabby"].approval, ApprovalMode::Supervised);
         assert_eq!(presets["oyen"].guardrail, GuardrailMode::God);
+    }
+
+    #[test]
+    fn test_sandbox_os_preset_is_rejected_until_f21() {
+        // ADR-014 item 8: `sandbox: "os"` parses but is unenforced today —
+        // it must fail loudly at load time, never silently weaken
+        // confinement. A preset with `confinement` still loads fine.
+        let os_raw = r#"{
+            "$schema": "preset/v1", "name": "os-test",
+            "approval": "supervised", "guardrail": "default",
+            "sandbox": "os", "tools": ["read"]
+        }"#;
+        let err = ModePresetLoader::parse_str(os_raw)
+            .expect_err("sandbox 'os' must be rejected until F21 lands");
+        assert!(err.to_string().contains("not enforced yet"));
+
+        let ok_raw = os_raw.replace("\"os\"", "\"confinement\"");
+        let preset = ModePresetLoader::parse_str(&ok_raw).expect("confinement preset loads");
+        assert_eq!(preset.sandbox, SandboxMode::Confinement);
+    }
+
+    #[test]
+    fn test_load_by_name_surfaces_os_rejection() {
+        // `discover_all` silently skips unparseable presets, so a preset
+        // file declaring sandbox "os" would look "not found" from
+        // `load_by_name` — the real rejection must surface instead.
+        let dir = std::env::temp_dir().join(format!(
+            "purr-preset-os-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let presets_dir = dir.join("presets");
+        std::fs::create_dir_all(&presets_dir).expect("create presets dir");
+        std::fs::write(
+            presets_dir.join("os-test.jsonc"),
+            r#"{
+                "$schema": "preset/v1", "name": "os-test",
+                "approval": "supervised", "guardrail": "default",
+                "sandbox": "os", "tools": ["read"]
+            }"#,
+        )
+        .expect("write preset file");
+        let err = ModePresetLoader::load_by_name("os-test", &dir)
+            .expect_err("os preset must be rejected with the real reason");
+        assert!(
+            err.to_string().contains("not enforced yet"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

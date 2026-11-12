@@ -169,6 +169,9 @@ impl ConfigLoader {
         if overlay.telegram.is_some() {
             base.telegram = overlay.telegram;
         }
+        if overlay.cron.is_some() {
+            base.cron = overlay.cron;
+        }
         for (p_name, p_cfg) in overlay.providers {
             base.providers
                 .entry(p_name)
@@ -327,5 +330,21 @@ mod tests {
         assert_eq!(tg.api_base.as_deref(), Some("http://127.0.0.1:3481"));
         assert_eq!(tg.approval_timeout_secs(), 120);
         assert_eq!(tg.poll_timeout_secs(), 5);
+    }
+
+    #[test]
+    fn test_merge_into_keeps_cron() {
+        // Regression test for the merge trap (ADR-014 item 9): a new
+        // section must survive merge_into, or cron settings defined in
+        // ~/.purrcode/purrcode.jsonc vanish under a project config.
+        let mut base = Config::default();
+        let overlay =
+            ConfigLoader::load_from_str(r#"{"cron": {"enabled": false, "tick_secs": 30}}"#)
+                .unwrap();
+        assert!(overlay.cron.is_some());
+        ConfigLoader::merge_into(&mut base, overlay);
+        let cron = base.cron.expect("merge_into must keep the cron section");
+        assert!(!cron.enabled);
+        assert_eq!(cron.tick_secs(), 30);
     }
 }

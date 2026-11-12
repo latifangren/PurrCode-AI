@@ -59,6 +59,7 @@ mod tests {
             providers,
             mcp_servers: HashMap::new(),
             telegram: None,
+            cron: None,
         };
         assert!(validate_config(&cfg).is_err());
     }

@@ -106,5 +106,12 @@
     "api_base": "https://api.telegram.org",
     "approval_timeout_secs": 120,
     "poll_timeout_secs": 30
+  },
+  // Cron daemon settings (v0.3 F19, ADR-014). Absent = cron disabled.
+  // Job definitions live in a dedicated store, NOT here:
+  // ~/.purrcode/cron/jobs.jsonc (managed via `purrcode-ai cron`).
+  "cron": {
+    "enabled": true,
+    "tick_secs": 60
   }
 }

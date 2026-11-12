@@ -23,6 +23,39 @@ pub struct Config {
     /// via `${TELEGRAM_BOT_TOKEN}` — never commit a literal token here.
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
+
+    /// Cron daemon settings (v0.3, ADR-014). Absent = cron disabled.
+    /// Job definitions live in a dedicated store, NOT here:
+    /// `~/.purrcode/cron/jobs.jsonc` (see `purrcode-cli/src/cron/`).
+    /// This section only tunes the daemon (tick interval, on/off).
+    #[serde(default)]
+    pub cron: Option<CronConfig>,
+}
+
+/// Cron daemon settings (PRD F19, ADR-014).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronConfig {
+    /// Master switch for the cron tick inside the gateway daemon.
+    /// Default true when the section is present (jobs still need to exist
+    /// and be enabled individually to fire).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Seconds between due-checks in the gateway tick. Default 60
+    /// (minute granularity — cron expressions are minute-resolved).
+    /// Minimum 5 (ZeroClaw's MIN_POLL_SECONDS).
+    #[serde(default)]
+    pub tick_secs: Option<u64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl CronConfig {
+    pub fn tick_secs(&self) -> u64 {
+        self.tick_secs.unwrap_or(60).max(5)
+    }
 }
 
 /// Telegram gateway configuration (PRD F15–F18, ADR-013).
@@ -86,6 +119,7 @@ impl Default for Config {
             providers: HashMap::new(),
             mcp_servers: HashMap::new(),
             telegram: None,
+            cron: None,
         }
     }
 }
@@ -272,5 +306,29 @@ mod tests {
         assert_eq!(tg.api_base(), "http://127.0.0.1:9");
         assert_eq!(tg.approval_timeout_secs(), 60);
         assert_eq!(tg.poll_timeout_secs(), 10);
+    }
+
+    #[test]
+    fn test_cron_config_defaults() {
+        // No cron section at all -> cron disabled.
+        let cfg: Config = serde_json::from_str("{}").expect("empty config parses");
+        assert!(cfg.cron.is_none());
+
+        // Explicit values win over defaults; tick clamps to a 5s minimum.
+        let cfg: Config = serde_json::from_str(r#"{"cron": {"enabled": true, "tick_secs": 30}}"#)
+            .expect("cron section parses");
+        let cron = cfg.cron.expect("cron present");
+        assert!(cron.enabled);
+        assert_eq!(cron.tick_secs(), 30);
+
+        let cfg: Config = serde_json::from_str(r#"{"cron": {"enabled": true, "tick_secs": 1}}"#)
+            .expect("cron section parses");
+        assert_eq!(cfg.cron.expect("cron present").tick_secs(), 5);
+
+        // Defaults: enabled true when the section exists, tick 60s.
+        let cfg: Config = serde_json::from_str(r#"{"cron": {}}"#).expect("cron parses");
+        let cron = cfg.cron.expect("cron present");
+        assert!(cron.enabled);
+        assert_eq!(cron.tick_secs(), 60);
     }
 }

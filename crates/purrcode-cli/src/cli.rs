@@ -141,4 +141,21 @@ pub enum Commands {
     },
     /// Run background gateway daemon for channel adapters (systemd/OpenRC service target)
     Gateway,
+    /// Manage scheduled cron jobs (v0.3 F19): add/list/remove/enable/disable + delivery queue
+    Cron {
+        #[arg(default_value = "list")]
+        action: String,
+        #[arg()]
+        name: Option<String>,
+        #[arg(long)]
+        schedule: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        allow: Option<String>,
+        #[arg(long)]
+        preset: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
