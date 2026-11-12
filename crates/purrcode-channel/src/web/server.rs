@@ -9,6 +9,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+#[async_trait::async_trait]
+pub trait PromptDispatcher: Send + Sync {
+    async fn dispatch(&self, prompt: String, channel: Arc<WebChannel>) -> Result<()>;
+}
+
 pub struct WebServer {
     host: String,
     port: u16,
@@ -16,6 +21,7 @@ pub struct WebServer {
     channel: Arc<WebChannel>,
     purrcode_dir: PathBuf,
     workspace_root: PathBuf,
+    dispatcher: Option<Arc<dyn PromptDispatcher>>,
 }
 
 impl WebServer {
@@ -34,7 +40,13 @@ impl WebServer {
             channel,
             purrcode_dir: purrcode_dir.into(),
             workspace_root: workspace_root.into(),
+            dispatcher: None,
         }
+    }
+
+    pub fn with_dispatcher(mut self, dispatcher: Arc<dyn PromptDispatcher>) -> Self {
+        self.dispatcher = Some(dispatcher);
+        self
     }
 
     pub async fn run(&self, mut cancel_rx: watch::Receiver<bool>) -> Result<()> {
@@ -64,6 +76,7 @@ impl WebServer {
                         let token = self.token.clone();
                         let purrcode_dir = self.purrcode_dir.clone();
                         let workspace_root = self.workspace_root.clone();
+                        let dispatcher = self.dispatcher.clone();
 
                         tokio::spawn(async move {
                             let _ = handle_http_connection(
@@ -72,6 +85,7 @@ impl WebServer {
                                 token,
                                 purrcode_dir,
                                 workspace_root,
+                                dispatcher,
                             ).await;
                         });
                     }
@@ -89,6 +103,7 @@ async fn handle_http_connection(
     token: Option<String>,
     purrcode_dir: PathBuf,
     workspace_root: PathBuf,
+    dispatcher: Option<Arc<dyn PromptDispatcher>>,
 ) -> Result<()> {
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf).await?;
@@ -131,7 +146,7 @@ async fn handle_http_connection(
             );
             stream.write_all(resp.as_bytes()).await?;
         }
-        ("GET", "/api/status") | ("GET", "/api/health") => {
+        ("GET", "/health") | ("GET", "/api/status") | ("GET", "/api/health") => {
             let body = serde_json::json!({
                 "status": "ok",
                 "channel": "web",
@@ -183,7 +198,7 @@ async fn handle_http_connection(
             );
             stream.write_all(resp.as_bytes()).await?;
         }
-        ("GET", "/api/skills") => {
+        ("GET", "/api/skills") | ("GET", "/api/skills/candidates") => {
             let candidates_dir = purrcode_dir.join("skills").join("candidates");
             let mut candidates = Vec::new();
             if candidates_dir.exists() {
@@ -220,7 +235,55 @@ async fn handle_http_connection(
                     }
                 }
             }
-            let body = serde_json::json!({ "candidates": candidates }).to_string();
+
+            let mut active_skills = Vec::new();
+            let skills_dir = purrcode_dir.join("skills");
+            if skills_dir.exists() {
+                if let Ok(mut rd) = tokio::fs::read_dir(&skills_dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            if name != "candidates" && name != "archive" {
+                                let skill_file = path.join("SKILL.md");
+                                let desc = if skill_file.exists() {
+                                    tokio::fs::read_to_string(&skill_file)
+                                        .await
+                                        .ok()
+                                        .and_then(|c| {
+                                            c.lines()
+                                                .find(|l| l.trim().starts_with("description:"))
+                                                .map(|l| {
+                                                    l.trim()
+                                                        .trim_start_matches("description:")
+                                                        .trim()
+                                                        .to_string()
+                                                })
+                                        })
+                                        .unwrap_or_else(|| "Active custom skill".to_string())
+                                } else {
+                                    "Active custom skill".to_string()
+                                };
+                                active_skills.push(serde_json::json!({
+                                    "name": name,
+                                    "description": desc,
+                                    "path": path.display().to_string()
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let body = serde_json::json!({
+                "candidates": candidates,
+                "skills": active_skills
+            })
+            .to_string();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -251,6 +314,96 @@ async fn handle_http_connection(
                             stream.write_all(resp.as_bytes()).await?;
                             return Ok(());
                         }
+                    }
+                }
+            }
+            let resp = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await?;
+        }
+        ("POST", "/api/skills/reject") => {
+            let body_str = extract_body(&request);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
+                    let cand_path = purrcode_dir.join("skills").join("candidates").join(name);
+                    if cand_path.exists() {
+                        let _ = tokio::fs::remove_dir_all(&cand_path).await;
+                        let body = format!("{{\"rejected\":true,\"name\":\"{}\"}}", name);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
+                    }
+                }
+            }
+            let resp = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes()).await?;
+        }
+        ("GET", "/api/plugins") => {
+            let mut plugins = Vec::new();
+            let p_dir = purrcode_dir.join("plugins");
+            if p_dir.exists() {
+                if let Ok(mut rd) = tokio::fs::read_dir(&p_dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let manifest = path.join("plugin.yaml");
+                            if manifest.exists() {
+                                if let Ok(yaml) = tokio::fs::read_to_string(&manifest).await {
+                                    plugins.push(serde_json::json!({
+                                        "name": entry.file_name().to_string_lossy().to_string(),
+                                        "path": path.display().to_string(),
+                                        "manifest": yaml
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let body = serde_json::json!({ "plugins": plugins }).to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).await?;
+        }
+        ("POST", "/api/prompt") => {
+            let body_str = extract_body(&request);
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                if let Some(prompt) = val.get("prompt").and_then(|p| p.as_str()) {
+                    if let Some(ref disp) = dispatcher {
+                        let disp = disp.clone();
+                        let p = prompt.to_string();
+                        let chan = channel.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = disp.dispatch(p, chan).await {
+                                tracing::error!("Web prompt execution error: {}", e);
+                            }
+                        });
+                        let body = serde_json::json!({ "status": "dispatched" }).to_string();
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
+                    } else {
+                        let body = serde_json::json!({
+                            "error": "No prompt dispatcher registered on web server"
+                        })
+                        .to_string();
+                        let resp = format!(
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
                     }
                 }
             }

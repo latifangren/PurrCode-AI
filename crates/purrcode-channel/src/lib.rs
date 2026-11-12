@@ -11,7 +11,7 @@ pub use telegram::{
 pub use tui::{
     ApprovalRequest, AskPromptRequest, MessageItem, ToolStatus, TuiApp, TuiEvent, TuiRunner,
 };
-pub use web::{WebChannel, WebServer, WEB_INDEX_HTML};
+pub use web::{PromptDispatcher, WebChannel, WebServer, WEB_INDEX_HTML};
 
 use purrcode_api::channel::Channel;
 use std::sync::Arc;

@@ -380,6 +380,12 @@ async fn main() -> Result<()> {
                 confirm_god_mode_if_needed(&config.preset)?;
                 println!("🐾 Starting PurrCode AI WebUI server (Milestone v0.4)...");
                 let channel = std::sync::Arc::new(purrcode_channel::WebChannel::new());
+                let dispatcher = std::sync::Arc::new(CliWebPromptDispatcher {
+                    config: config.clone(),
+                    workspace_root: workspace_root.clone(),
+                    orchestrator: args.orchestrator,
+                    yolo: args.yolo,
+                });
                 let server = purrcode_channel::WebServer::new(
                     host,
                     port,
@@ -387,7 +393,8 @@ async fn main() -> Result<()> {
                     channel,
                     purrcode_dir,
                     workspace_root,
-                );
+                )
+                .with_dispatcher(dispatcher);
                 let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
                 server.run(cancel_rx).await?;
                 return Ok(());
@@ -735,6 +742,33 @@ async fn main() -> Result<()> {
     );
     plugin_dispatcher.dispatch_session_stop(&session_id).await;
     tui_res
+}
+
+struct CliWebPromptDispatcher {
+    config: purrcode_config::Config,
+    workspace_root: PathBuf,
+    orchestrator: bool,
+    yolo: bool,
+}
+
+#[async_trait::async_trait]
+impl purrcode_channel::PromptDispatcher for CliWebPromptDispatcher {
+    async fn dispatch(
+        &self,
+        prompt: String,
+        channel: std::sync::Arc<purrcode_channel::WebChannel>,
+    ) -> Result<()> {
+        gateway::execute_channel_agent_turn(
+            &self.config,
+            &self.workspace_root,
+            self.orchestrator,
+            self.yolo,
+            &prompt,
+            channel as std::sync::Arc<dyn purrcode_api::channel::Channel>,
+        )
+        .await
+        .map(|_| ())
+    }
 }
 
 fn confirm_god_mode_if_needed(preset_name: &str) -> Result<()> {

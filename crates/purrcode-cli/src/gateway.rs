@@ -24,12 +24,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
-struct TelegramApprovalRequester {
-    channel: Arc<TelegramChannel>,
+pub struct ChannelApprovalRequester {
+    pub channel: Arc<dyn Channel>,
 }
 
 #[async_trait::async_trait]
-impl ApprovalRequester for TelegramApprovalRequester {
+impl ApprovalRequester for ChannelApprovalRequester {
     async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool {
         let call_id = uuid::Uuid::new_v4().to_string();
         self.channel
@@ -39,11 +39,11 @@ impl ApprovalRequester for TelegramApprovalRequester {
     }
 }
 
-struct TelegramEventListener {
-    channel: Arc<TelegramChannel>,
+pub struct ChannelEventListener {
+    pub channel: Arc<dyn Channel>,
 }
 
-impl purrcode_core::AgentEventListener for TelegramEventListener {
+impl purrcode_core::AgentEventListener for ChannelEventListener {
     fn on_text_chunk(&self, chunk: &str, is_reasoning: bool) {
         let ch = self.channel.clone();
         let ev = if is_reasoning {
@@ -198,177 +198,191 @@ impl TelegramMessageHandler for GatewayTelegramHandler {
         _username: Option<&str>,
         prompt: &str,
     ) -> Result<String> {
-        let target_model = self
-            .config
-            .model
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+        execute_channel_agent_turn(
+            &self.config,
+            &self.workspace_root,
+            self.use_orchestrator,
+            self.yolo,
+            prompt,
+            self.channel.clone() as Arc<dyn Channel>,
+        )
+        .await
+    }
+}
 
-        let registry = ProviderRegistry::from_config(&self.config);
-        let (provider_name, wire_model, _provider_cfg, _model_cfg) =
-            match self.config.resolve_model(&target_model) {
-                Some(resolved) => resolved,
-                None => {
-                    return Ok(format!(
-                        "⚠️ Model '{}' could not be resolved from configuration.",
-                        target_model
-                    ));
-                }
-            };
+pub async fn execute_channel_agent_turn(
+    config: &Config,
+    workspace_root: &Path,
+    use_orchestrator: bool,
+    yolo: bool,
+    prompt: &str,
+    channel: Arc<dyn Channel>,
+) -> Result<String> {
+    let target_model = config
+        .model
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
-        let provider = match registry.get(provider_name) {
-            Some(p) => p,
+    let registry = ProviderRegistry::from_config(config);
+    let (provider_name, wire_model, _provider_cfg, _model_cfg) =
+        match config.resolve_model(&target_model) {
+            Some(resolved) => resolved,
             None => {
                 return Ok(format!(
-                    "⚠️ Provider '{}' has no base_url or client configured.",
-                    provider_name
+                    "⚠️ Model '{}' could not be resolved from configuration.",
+                    target_model
                 ));
             }
         };
 
-        let purrcode_dir =
-            crate::onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
-        let mode_preset =
-            match ModePresetLoader::load_by_name(&self.config.preset, &self.workspace_root) {
-                Ok(p) => p,
-                Err(_) => {
-                    ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?
-                }
-            };
-
-        let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, self.yolo));
-        let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
-        let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
-        let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
-
-        let mut plugin_mgr = PluginManager::new();
-        plugin_mgr.discover_all(&self.workspace_root);
-        let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
-
-        let model_preset_name = self
-            .config
-            .model_preset
-            .clone()
-            .unwrap_or_else(|| "free".to_string());
-        let model_preset =
-            ModelPresetLoader::load_by_name(&model_preset_name, &self.workspace_root).ok();
-
-        let mut tool_registry =
-            ToolRegistry::with_defaults_and_options(None, Some(&self.workspace_root));
-        if !mode_preset.tools.is_empty() {
-            tool_registry.retain(|name| {
-                name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
-            });
+    let provider = match registry.get(provider_name) {
+        Some(p) => p,
+        None => {
+            return Ok(format!(
+                "⚠️ Provider '{}' has no base_url or client configured.",
+                provider_name
+            ));
         }
+    };
 
-        let session_id = format!("purr_gw_{}", &uuid::Uuid::new_v4().to_string()[..6]);
-        plugin_dispatcher.dispatch_session_start(&session_id).await;
+    let purrcode_dir =
+        crate::onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
+    let mode_preset = match ModePresetLoader::load_by_name(&config.preset, workspace_root) {
+        Ok(p) => p,
+        Err(_) => ModePresetLoader::parse_str(include_str!("../../../presets/tabby.jsonc"))?,
+    };
 
-        let approver: Arc<dyn ApprovalRequester> = Arc::new(TelegramApprovalRequester {
-            channel: self.channel.clone(),
+    let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
+    let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
+
+    let mut plugin_mgr = PluginManager::new();
+    plugin_mgr.discover_all(workspace_root);
+    let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
+
+    let model_preset_name = config
+        .model_preset
+        .clone()
+        .unwrap_or_else(|| "free".to_string());
+    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, workspace_root).ok();
+
+    let mut tool_registry = ToolRegistry::with_defaults_and_options(None, Some(workspace_root));
+    if !mode_preset.tools.is_empty() {
+        tool_registry.retain(|name| {
+            name == "read_skill" || mode_preset.tools.iter().any(|allowed| allowed == name)
         });
+    }
 
-        let session_dir = purrcode_dir.join("sessions").join(&session_id);
-        let _ = tokio::fs::create_dir_all(&session_dir).await;
+    let session_id = format!("purr_gw_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+    plugin_dispatcher.dispatch_session_start(&session_id).await;
 
-        let registry_arc = Arc::new(registry);
-        let meowstro = if self.use_orchestrator {
-            Some(MeowstroOrchestrator::with_complete_options(
-                provider.clone(),
-                wire_model,
-                &session_dir,
-                Some(approver.clone()),
-                None,
-                Some(approval_gate),
-                Some(audit_sink.clone()),
-                Some(plugin_dispatcher.clone()),
-                model_preset,
-                Some(self.config.clone()),
-                Some(registry_arc),
-                None,
-                None,
-                self.yolo,
-                Some(self.workspace_root.clone()),
-            ))
-        } else {
-            None
-        };
+    let approver: Arc<dyn ApprovalRequester> = Arc::new(ChannelApprovalRequester {
+        channel: channel.clone(),
+    });
 
-        let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry))
-            .with_approval_requester(approver)
-            .with_policy_gate(policy_gate)
-            .with_audit_sink(audit_sink)
-            .with_plugin_dispatcher(plugin_dispatcher.clone())
-            .with_yolo(self.yolo);
+    let session_dir = purrcode_dir.join("sessions").join(&session_id);
+    let _ = tokio::fs::create_dir_all(&session_dir).await;
 
-        let mut skill_mgr = SkillManager::new();
-        skill_mgr.discover_all(&self.workspace_root);
-        let skills_index = skill_mgr.format_prompt_index();
+    let registry_arc = Arc::new(registry);
+    let meowstro = if use_orchestrator {
+        Some(MeowstroOrchestrator::with_complete_options(
+            provider.clone(),
+            wire_model,
+            &session_dir,
+            Some(approver.clone()),
+            None,
+            Some(approval_gate),
+            Some(audit_sink.clone()),
+            Some(plugin_dispatcher.clone()),
+            model_preset,
+            Some(config.clone()),
+            Some(registry_arc),
+            None,
+            None,
+            yolo,
+            Some(workspace_root.to_path_buf()),
+        ))
+    } else {
+        None
+    };
 
-        let memory = MarkdownMemory::new(&purrcode_dir);
-        let mem_context = memory.load_context(Some(&self.workspace_root)).await;
+    let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry))
+        .with_approval_requester(approver)
+        .with_policy_gate(policy_gate)
+        .with_audit_sink(audit_sink)
+        .with_plugin_dispatcher(plugin_dispatcher.clone())
+        .with_yolo(yolo);
 
-        let mut system_prompt = if self.use_orchestrator {
-            MeowstroOrchestrator::system_prompt(&skills_index)
-        } else {
-            let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately.");
-            if !skills_index.is_empty() {
-                base.push_str("\n\n");
-                base.push_str(&skills_index);
-            }
-            base
-        };
-        if !mem_context.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&mem_context);
+    let mut skill_mgr = SkillManager::new();
+    skill_mgr.discover_all(workspace_root);
+    let skills_index = skill_mgr.format_prompt_index();
+
+    let memory = MarkdownMemory::new(&purrcode_dir);
+    let mem_context = memory.load_context(Some(workspace_root)).await;
+
+    let mut system_prompt = if use_orchestrator {
+        MeowstroOrchestrator::system_prompt(&skills_index)
+    } else {
+        let mut base = String::from(
+            "You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately.",
+        );
+        if !skills_index.is_empty() {
+            base.push_str("\n\n");
+            base.push_str(&skills_index);
         }
+        base
+    };
+    if !mem_context.is_empty() {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&mem_context);
+    }
 
-        let loop_runner = if let Some(ref m) = meowstro {
-            m.agent_loop()
-        } else {
-            &agent_loop
-        };
+    let loop_runner = if let Some(ref m) = meowstro {
+        m.agent_loop()
+    } else {
+        &agent_loop
+    };
 
-        let tool_context = ToolContext {
-            session_id: session_id.clone(),
-            agent_role: "meowstro".to_string(),
-            workspace_root: self.workspace_root.clone(),
-            is_dry_run: false,
-        };
+    let tool_context = ToolContext {
+        session_id: session_id.clone(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: workspace_root.to_path_buf(),
+        is_dry_run: false,
+    };
 
-        let mut messages = Vec::new();
-        let listener = TelegramEventListener {
-            channel: self.channel.clone(),
-        };
+    let mut messages = Vec::new();
+    let listener = ChannelEventListener {
+        channel: channel.clone(),
+    };
 
-        let result = loop_runner
-            .run_turn_with_history(
-                &mut messages,
-                prompt,
-                Some(&system_prompt),
-                &tool_context,
-                Some(&listener),
-            )
-            .await;
+    let result = loop_runner
+        .run_turn_with_history(
+            &mut messages,
+            prompt,
+            Some(&system_prompt),
+            &tool_context,
+            Some(&listener),
+        )
+        .await;
 
-        plugin_dispatcher.dispatch_session_stop(&session_id).await;
+    plugin_dispatcher.dispatch_session_stop(&session_id).await;
 
-        match result {
-            Ok(answer) => {
-                if answer.trim().is_empty() {
-                    let last_text = messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == MessageRole::Assistant && !m.content.trim().is_empty())
-                        .map(|m| m.content.clone())
-                        .unwrap_or_else(|| "🐾 Task completed successfully.".to_string());
-                    Ok(last_text)
-                } else {
-                    Ok(answer)
-                }
+    match result {
+        Ok(answer) => {
+            if answer.trim().is_empty() {
+                let last_text = messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant && !m.content.trim().is_empty())
+                    .map(|m| m.content.clone())
+                    .unwrap_or_else(|| "🐾 Task completed successfully.".to_string());
+                Ok(last_text)
+            } else {
+                Ok(answer)
             }
-            Err(e) => Err(e),
         }
+        Err(e) => Err(e),
     }
 }
 

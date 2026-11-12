@@ -6,4 +6,4 @@ pub mod server;
 
 pub use channel::WebChannel;
 pub use html::WEB_INDEX_HTML;
-pub use server::WebServer;
+pub use server::{PromptDispatcher, WebServer};
