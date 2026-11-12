@@ -30,6 +30,15 @@ pub struct Config {
     /// This section only tunes the daemon (tick interval, on/off).
     #[serde(default)]
     pub cron: Option<CronConfig>,
+
+    /// Heartbeat daemon settings (v0.3 F22, ADR-014 item 6). Absent =
+    /// enabled (the tick is a no-op without a `HEARTBEAT.md` task
+    /// file, so an absent section costs no LLM call). The task file
+    /// itself lives outside config: `.purrcode/HEARTBEAT.md` in the
+    /// workspace, else `~/.purrcode/HEARTBEAT.md` (see
+    /// `purrcode-cli/src/heartbeat/`).
+    #[serde(default)]
+    pub heartbeat: Option<HeartbeatConfig>,
 }
 
 /// Cron daemon settings (PRD F19, ADR-014).
@@ -55,6 +64,28 @@ fn default_true() -> bool {
 impl CronConfig {
     pub fn tick_secs(&self) -> u64 {
         self.tick_secs.unwrap_or(60).max(5)
+    }
+}
+
+/// Heartbeat daemon settings (PRD F22, ADR-014 item 6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatConfig {
+    /// Master switch for the heartbeat tick inside the gateway daemon.
+    /// Default true when the section is present (and when it is absent:
+    /// the tick is a no-op without a `HEARTBEAT.md` task file, so an
+    /// absent section costs no LLM call).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Minutes between heartbeat ticks. Default 30 (PicoClaw/ZeroClaw
+    /// default). Minimum 5 (PicoClaw's minimum).
+    #[serde(default)]
+    pub interval_mins: Option<u64>,
+}
+
+impl HeartbeatConfig {
+    pub fn interval_mins(&self) -> u64 {
+        self.interval_mins.unwrap_or(30).max(5)
     }
 }
 
@@ -120,6 +151,7 @@ impl Default for Config {
             mcp_servers: HashMap::new(),
             telegram: None,
             cron: None,
+            heartbeat: None,
         }
     }
 }

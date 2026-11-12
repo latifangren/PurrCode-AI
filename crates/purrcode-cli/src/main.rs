@@ -3,6 +3,7 @@
 mod cli;
 mod cron;
 mod gateway;
+mod heartbeat;
 mod onboard;
 
 use clap::Parser;
@@ -300,6 +301,14 @@ async fn main() -> Result<()> {
                     workspace_root: &workspace_root,
                     purrcode_dir: &purrcode_dir,
                 })
+                .await?;
+                return Ok(());
+            }
+            Commands::Heartbeat { action } => {
+                heartbeat::cli::run_heartbeat_command(
+                    &config,
+                    heartbeat::cli::HeartbeatArgs { action },
+                )
                 .await?;
                 return Ok(());
             }
@@ -641,9 +650,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    let app =
+    let mut app =
         purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id.clone())
             .with_model_preset(model_preset_name);
+    // Pending deliveries at open (v0.3 F22, ADR-014 item 10): the
+    // delivery queue is the second endpoint of the shared delivery
+    // path (the gateway is the first). Showing a delivery here IS its
+    // delivery, so it is marked delivered right after seeding — the
+    // same at-most-once rule as the Telegram drain: showing it twice
+    // would be worse than the TUI crashing before the user reads it.
+    seed_pending_deliveries(&mut app, &purrcode_dir);
     let tui_res = purrcode_channel::TuiRunner::run_with_controls(
         app,
         Some(event_rx),
@@ -653,6 +669,47 @@ async fn main() -> Result<()> {
     );
     plugin_dispatcher.dispatch_session_stop(&session_id).await;
     tui_res
+}
+
+/// Seed pending queue deliveries into the TUI transcript at open
+/// (v0.3 F22, ADR-014 item 10). One assistant line per delivery
+/// (summary first, detail capped at 400 chars so a long cron result
+/// does not flood the first screen). Each seeded delivery is marked
+/// delivered: the TUI showing it IS the delivery, and the queue is
+/// shared with the Telegram drain — whoever reaches the user first
+/// consumes it.
+fn seed_pending_deliveries(app: &mut purrcode_channel::TuiApp, purrcode_dir: &std::path::Path) {
+    let queue = crate::cron::DeliveryQueue::new(purrcode_dir);
+    let pending = match queue.pending() {
+        Ok(p) => p,
+        Err(_) => return, // a broken queue file must not block the TUI
+    };
+    for delivery in &pending {
+        let kind = match delivery.kind {
+            crate::cron::queue::DeliveryKind::Result => "📬 Cron",
+            crate::cron::queue::DeliveryKind::Failure => "⚠️ Cron (failed)",
+            crate::cron::queue::DeliveryKind::Heartbeat => "💓 Heartbeat",
+        };
+        let detail: String = delivery.detail.chars().take(400).collect();
+        let text = if detail.is_empty() {
+            format!("{kind}: {} — {}", delivery.job_name, delivery.summary)
+        } else {
+            format!(
+                "{kind}: {} — {}\n{}",
+                delivery.job_name, delivery.summary, detail
+            )
+        };
+        app.items.push(purrcode_channel::MessageItem::Assistant {
+            text,
+            reasoning: None,
+        });
+        if let Err(e) = queue.mark_delivered(&delivery.id) {
+            tracing::warn!(
+                "tui: failed to mark delivery {} delivered: {e}",
+                delivery.id
+            );
+        }
+    }
 }
 
 fn confirm_god_mode_if_needed(preset_name: &str) -> Result<()> {

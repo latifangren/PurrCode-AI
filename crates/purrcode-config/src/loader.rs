@@ -172,6 +172,9 @@ impl ConfigLoader {
         if overlay.cron.is_some() {
             base.cron = overlay.cron;
         }
+        if overlay.heartbeat.is_some() {
+            base.heartbeat = overlay.heartbeat;
+        }
         for (p_name, p_cfg) in overlay.providers {
             base.providers
                 .entry(p_name)
@@ -346,5 +349,39 @@ mod tests {
         let cron = base.cron.expect("merge_into must keep the cron section");
         assert!(!cron.enabled);
         assert_eq!(cron.tick_secs(), 30);
+    }
+
+    #[test]
+    fn test_merge_into_keeps_heartbeat() {
+        // Same merge-trap regression test, for the heartbeat section
+        // (ADR-014 item 9): without its own arm, a heartbeat section
+        // defined in ~/.purrcode/purrcode.jsonc would vanish under a
+        // project config.
+        let mut base = Config::default();
+        let overlay = ConfigLoader::load_from_str(
+            r#"{"heartbeat": {"enabled": false, "interval_mins": 45}}"#,
+        )
+        .unwrap();
+        assert!(overlay.heartbeat.is_some());
+        ConfigLoader::merge_into(&mut base, overlay);
+        let hb = base
+            .heartbeat
+            .expect("merge_into must keep the heartbeat section");
+        assert!(!hb.enabled);
+        assert_eq!(hb.interval_mins(), 45);
+    }
+
+    #[test]
+    fn test_heartbeat_config_defaults() {
+        let cfg = crate::model::HeartbeatConfig {
+            enabled: true,
+            interval_mins: None,
+        };
+        assert_eq!(cfg.interval_mins(), 30);
+        let cfg = crate::model::HeartbeatConfig {
+            enabled: true,
+            interval_mins: Some(2),
+        };
+        assert_eq!(cfg.interval_mins(), 5);
     }
 }

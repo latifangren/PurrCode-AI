@@ -158,13 +158,27 @@ impl DeliveryQueue {
             if line.is_empty() {
                 continue;
             }
-            let event: DeliveryEvent = serde_json::from_str(line).map_err(|e| {
-                PurrError::Session(format!(
-                    "Invalid delivery queue line {} in {}: {e}",
-                    i + 1,
-                    self.path.display()
-                ))
-            })?;
+            // A corrupt line must not kill the whole queue: the file is
+            // append-only and a single bad write (crash mid-append, a
+            // hand edit) would otherwise make every valid delivery —
+            // before and after the bad line — unreadable forever, and
+            // both the TUI seed and the gateway drain would silently
+            // return nothing (v0.3 F22 fix, re-checker F4). The
+            // delivery on the bad line itself is lost; the rest still
+            // loads. The warning goes to tracing (visible with
+            // RUST_LOG); the queue has no audit sink at this level.
+            let event: DeliveryEvent = match serde_json::from_str(line) {
+                Ok(event) => event,
+                Err(e) => {
+                    tracing::warn!(
+                        "delivery queue {}: skipping corrupt line {} ({}); the delivery on that line is lost",
+                        self.path.display(),
+                        i + 1,
+                        e
+                    );
+                    continue;
+                }
+            };
             events.push(event);
         }
         Ok(events)
@@ -281,6 +295,23 @@ mod tests {
         let pending = queue2.pending().expect("pending after reload");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_corrupt_line_does_not_kill_the_queue() {
+        // A corrupt line between two valid events (crash mid-append, a
+        // hand edit): the queue skips it and still loads the valid
+        // deliveries on both sides (v0.3 F22 fix, re-checker F4).
+        let (queue, dir) = queue_in_tmp();
+        let d1 = sample_delivery();
+        let d2 = sample_delivery();
+        let line1 = serde_json::to_string(&DeliveryEvent::Created(d1)).unwrap();
+        let line2 = serde_json::to_string(&DeliveryEvent::Created(d2)).unwrap();
+        std::fs::create_dir_all(queue.path.parent().unwrap()).unwrap();
+        std::fs::write(&queue.path, format!("{line1}\n{{not json\n{line2}\n")).unwrap();
+        let pending = queue.pending().expect("pending with a corrupt line");
+        assert_eq!(pending.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

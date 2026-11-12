@@ -215,6 +215,22 @@ pub async fn run_gateway(
         println!("   Cron scheduler disabled in config ([cron] enabled = false).");
     }
 
+    // Heartbeat tick task (v0.3 F22, ADR-014 item 6): the proactive
+    // two-phase check (decide, then run only what is worth running),
+    // on its own interval inside its own error boundary — a broken
+    // heartbeat can never kill the poll loop, and vice versa. Not
+    // waited for on shutdown: like the poll task, it is aborted with
+    // the daemon.
+    if config.heartbeat.as_ref().map(|c| c.enabled).unwrap_or(true) {
+        let hb_state = state.clone();
+        let hb_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            heartbeat_tick_loop(hb_state, hb_shutdown).await;
+        });
+    } else {
+        println!("   Heartbeat disabled in config ([heartbeat] enabled = false).");
+    }
+
     // Poll task: on a fatal Telegram error (bad token mid-run), log it
     // and shut the daemon down instead of retrying forever.
     let channel_poll = channel.clone();
@@ -298,6 +314,47 @@ async fn cron_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::Receiv
             _ = shutdown_rx.changed() => break,
             _ = interval.tick() => {
                 runner.tick_once(&channel, tick_secs).await;
+            }
+        }
+    }
+}
+
+/// Heartbeat tick loop (v0.3 F22, ADR-014 item 6). The first tick
+/// runs immediately (to catch checks that became due while the daemon
+/// was down), then every `interval_mins` on a steady cadence —
+/// missed ticks are skipped, never burst-fired. `tick_once` never
+/// fails (its errors are logged inside), so this task only ends on
+/// shutdown. The tick is a no-op without a `HEARTBEAT.md` task file,
+/// so a gateway with no heartbeat configured costs no LLM call.
+async fn heartbeat_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::Receiver<bool>) {
+    let interval_mins = state
+        .config
+        .heartbeat
+        .as_ref()
+        .map(|c| c.interval_mins())
+        .unwrap_or(30);
+    let deps = crate::cron::CronRunnerDeps {
+        config: state.config.clone(),
+        workspace_root: state.workspace_root.clone(),
+        purrcode_dir: state.purrcode_dir.clone(),
+        registry: state.registry.clone(),
+        provider_name: state.provider_name.clone(),
+        wire_model: state.wire_model.clone(),
+        audit_logger: state.audit_logger.clone(),
+        plugin_dispatcher: state.plugin_dispatcher.clone(),
+        unenforced_caps: state.unenforced_caps.clone(),
+        model_preset: state.model_preset.clone(),
+        system_prompt: state.system_prompt.clone(),
+    };
+    let runner = crate::heartbeat::HeartbeatRunner::new(deps);
+    let channel = state.channel.clone();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_mins * 60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => break,
+            _ = interval.tick() => {
+                runner.tick_once(&channel).await;
             }
         }
     }

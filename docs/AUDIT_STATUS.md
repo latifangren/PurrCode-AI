@@ -1,10 +1,10 @@
 # PurrCode AI — Status Audit & Laporan Kesiapan Proyek (AUDIT_STATUS.md)
 
-- **Timestamp Audit:** `2026-11-12 11:21:00 +07:00`
+- **Timestamp Audit:** `2026-11-12 12:02:00 +07:00`
 - **Lisensi:** GNU GPL-3.0
-- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,8 MiB** (5.033.184 byte stripped dynamic GNU ELF di Linux) / **~4,9 MiB** (5.166.256 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
-- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 5.166.256 byte = 4,93 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 166/166 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
-- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (166 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
+- **Ukuran Binary Rilis Terverifikasi:** ✅ **~3,7 MB** (`.exe` di Windows — belum terverifikasi dari Linux) / **~4,8 MiB** (5.075.192 byte stripped dynamic GNU ELF di Linux) / **~5,0 MiB** (5.203.104 byte stripped static-pie musl ELF di Linux), semuanya diukur pada build rilis branch `dev-muse` dan jauh di bawah pagu target $\le 25$ MB
+- **Target Distribusi:** Linux Single Static musl Binary (TERBUKTI 2026-11-12: 5.203.104 byte = 4,96 MiB, `static-pie linked`, stripped, `ldd` = statically linked, suite 184/184 di target musl; build lokal via `musl-gcc`, CI membangunnya tiap push) & Windows Native Standalone Binary (`.exe`)
+- **Status Kompilasi & Tes:** ✅ `cargo test --workspace` (184 tests lolos, 0 failed di seluruh 12 crate — diukur di Linux; Windows belum dijalankan dari VM ini)
 - **Status Linter:** ✅ `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings)
 - **Status Formatting:** ✅ `cargo fmt --check` (Clean)
 
@@ -19,11 +19,11 @@ Kita berada pada **tahap akhir penyelesaian Milestone v0.1 (Terminal CLI & TUI C
 
 | Lingkup Evaluasi | Progres | Status | Catatan Teknis |
 |---|---|---|---|
-| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 166 unit/integration tests hermetis lintas platform. |
+| **Milestone v0.1: Terminal CLI & TUI Coding Agent** | **98%** | **Core Engine Selesai & Terverifikasi (Hardened)** | Seluruh 12 crate, arsitektur multi-agent The Clowder, engine streaming SSE, fail-closed approval gate, audit log, onboard wizard, dan 13 core tools (termasuk `manage_skill` untuk self-improvement) sudah berfungsi dan tervalidasi dengan 184 unit/integration tests hermetis lintas platform. |
 | **Milestone v0.2: Telegram Channel & Gateway Daemon** | **90%** | **Selesai & Terverifikasi Mock End-to-End** | F15–F18 selesai: gateway daemon + channel Telegram hand-rolled (poll, allowlist fail-closed, sesi per chat, kartu approval Ya/Tidak/Selalu, chunking 4096), terverifikasi 2 checker independen + E2E mock 11 kasus (38/38 asersi). Uji live pertama BERHASIL 2026-11-12 07:28 WIB (turn "Hello" dijawab Meowstro lewat gateway + Magpie). Tersisa kartu approval live (HELLO.md) dan `service install` live. |
-| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **25%** | **F19 Cron — Selesai Penuh** | F19 (cron) selesai penuh: parser jadwal bahasa alami ID+EN, store job atomik, delivery queue claim-first, CLI `cron add/list/remove/enable/disable/deliveries/run`, allowlist fail-closed + guard `sandbox: "os"` (ditolak sampai F21), runner job + tick gateway + drain delivery, semua terverifikasi 2 checker (item 21–22). E2E mock 9 kasus, 58/58 asersi. F22 berikutnya; F20/F21 sesudahnya; sandbox tetap fitur akhiran. |
+| **Milestone v0.3: Autonomous Intelligence & OS Sandboxing** | **50%** | **F19 Cron + F22 Heartbeat — Selesai** | F19 (cron) selesai penuh: parser jadwal bahasa alami ID+EN, store job atomik, delivery queue claim-first, CLI `cron add/list/remove/enable/disable/deliveries/run`, allowlist fail-closed + guard `sandbox: "os"` (ditolak sampai F21), runner job + tick gateway + drain delivery, semua terverifikasi 2 checker (item 21–22). E2E mock 9 kasus, 58/58 asersi. F22 heartbeat selesai (item 23): ticker gateway + two-phase run/skip + `PROACTIVE_PREFERENCES.md` + delivery bersama + TUI seed, terverifikasi 2 checker + E2E mock 15 kasus (94/94 asersi), termasuk perbaikan grup-privasi + preset-fallback + antrean rusak. F20 berikutnya; F21 akhiran. |
 | **Milestone v0.4: WebUI Khusus (DeepSeek Harness Style)** | **0%** | **Terencana (Planned)** | Embedded web server (Axum/Actix), web dashboard canvas, hot-reloading plugin. |
-| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~47%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti; v0.3 F19 selesai. Tersisa v0.3 (F22/F20/F21, akhiran) + v0.4 (WebUI). |
+| **TOTAL KESELURUHAN VISI PROJEK (v0.1 – v0.4)** | **~52%** | **Fondasi Inti Sangat Solid** | Fondasi v0.1 adalah bagian paling berat dan kompleks (agent loop, tool execution, safety gate, multi-agent, coding ergonomics, procedural skills); v0.2 selesai inti; v0.3 F19 + F22 selesai. Tersisa v0.3 (F20/F21, akhiran) + v0.4 (WebUI). |
 
 ---
 
@@ -42,9 +42,9 @@ Di bawah ini adalah evaluasi pemenuhan kapabilitas PurrCode AI terhadap referens
 
 ---
 
-## 3. Bukti Verifikasi Codebase (166 Unit/Integration Tests)
+## 3. Bukti Verifikasi Codebase (184 Unit/Integration Tests)
 
-Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux; Windows belum dijalankan dari VM ini):
+Hasil pengujian otomatis per 2026-11-12 12:02:00 +07:00 (184/184 lolos di Linux; Windows belum dijalankan dari VM ini):
 
 1. **`purrcode_api`** (4 tests):
    - `error::tests::test_purr_error_formatting` (Format error standard)
@@ -58,7 +58,7 @@ Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux;
    - `tests::test_tool_allowlist_denies_undeclared_tools` (Allowlist tool di gate: tool di luar set → Deny, sebelum deny rule/tier/axis)
    - `tests::test_tool_allowlist_propagates_to_child_gate` (Allowlist diwariskan ke child gate via `narrowed_child_gate`)
 
-3. **`purrcode_channel`** (43 tests):
+3. **`purrcode_channel`** (44 tests):
    - `telegram::approval::tests::test_always_set_is_per_chat_session` (Always dikunci (chat, sesi): sesi baru lewat /new mulai bersih)
    - `telegram::approval::tests::test_pending_claim_drops_receiver` (Klaim pending tanpa resolve menutup receiver (penonton timeout))
    - `telegram::approval::tests::test_pending_register_resolve_is_single_claim` (Resolve pending klaim-tunggal: resolve kedua gagal)
@@ -85,6 +85,7 @@ Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux;
    - `telegram::render::tests::test_draft_head_short_is_whole` (Draft pendek dikirim utuh saat flush)
    - `telegram::sessions::tests::test_corrupt_index_loads_empty` (File chats.json rusak = indeks kosong (tidak crash))
    - `telegram::sessions::tests::test_roundtrip_and_new_session_archives` (Roundtrip + /new mengarsipkan sesi lama ke history)
+   - `telegram::sessions::tests::test_touch_and_last_active_private_chat` (Touch mencatat kind chat; hanya chat privat yang jadi target delivery terakhir-aktif — grup yang lebih baru tidak menang, touch tanpa kind tidak mempromosikan; entri tanpa kind tidak eligible)
    - `telegram::types::tests::test_bot_api_response_parses` (Parse respons Bot API (ok/result))
    - `telegram::types::tests::test_command_parsing` (Parse perintah + strip @BotName)
    - `telegram::types::tests::test_error_response_parses_retry_after` (Parse error 429 + retry_after)
@@ -103,12 +104,13 @@ Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux;
    - `tui::tests::test_approval_key_action_other_keys_ignored` (Tombol lain diabaikan, kartu tetap terbuka)
    - `tui::tests::test_approval_key_action_reject_keys` (Pemetaan tombol reject `t`/`n`/`Esc` di kartu approval)
 
-4. **`purrcode_ai` (CLI binary) (32 tests):
+4. **`purrcode_ai` (CLI binary) (47 tests):
    - `cli::tests::test_agent_role_for_is_honest` (Label audit jujur: `meowstro` vs `agent`)
    - `cli::tests::test_use_orchestrator_defaults_to_orchestrator` (Default orchestrator; `--direct` opt-out; `--orchestrator` menang bila keduanya dikasih)
    - `cron::cli::tests::test_truncate` (Pemotongan tampilan prompt di output `cron list`)
    - `cron::queue::tests::test_delivery_queue_claim_deliver_fold` (Antrean delivery: created → claimed → delivered; claimed tanpa delivered dianggap terkirim, bukan dikirim ulang)
    - `cron::queue::tests::test_delivery_queue_survives_reload` (Antrean delivery bertahan di-reload dari disk)
+   - `cron::queue::tests::test_corrupt_line_does_not_kill_the_queue` (Baris rusak di `deliveries.jsonl` dilewati dengan warn — antrean tetap memuat delivery valid di kedua sisinya)
    - `cron::runner::tests::test_classify_due_fresh_lease_blocks_and_stale_marker_fires` (Lease fresh memblokir firing ganda; marker basi/tanpa timestamp diklasifikasi normal)
    - `cron::runner::tests::test_classify_due_not_due_future_and_disabled` (Belum waktunya + job disabled = NotDue)
    - `cron::runner::tests::test_classify_due_one_shot_grace_and_missed` (One-shot: grace 300 dtk, lewat dari itu = Missed)
@@ -130,6 +132,20 @@ Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux;
    - `cron::store::tests::test_job_roundtrip_atomic_save` (Job tersimpan atomik (tmp+rename) dan terbaca kembali utuh)
    - `cron::store::tests::test_validate_job_rejects_god_yolo_and_unknown_tools` (Job menolak preset guardrail God, approval yolo, dan tool tak dikenal)
    - `cron::store::tests::test_validate_job_rejects_manage_skill_in_allowlist` (Job menolak `manage_skill` di allowlist, di creation dan di run-time)
+   - `heartbeat::cli::tests::test_bare_heartbeat_defaults_to_status` (Subcommand `heartbeat` tanpa aksi benar-benar default ke `status` — di-parse lewat clap, bukan ditegaskan terhadap struct literal)
+   - `heartbeat::prefs::tests::test_is_denied_substring_case_insensitive` ("Never tell me about" cocok substring case-insensitive)
+   - `heartbeat::prefs::tests::test_is_in_window_day_and_overnight` (Jendela siang + overnight membungkus tengah malam)
+   - `heartbeat::prefs::tests::test_parse_prefs_missing_file_is_defaults` (File prefs hilang = default (tanpa filter, tanpa jendela))
+   - `heartbeat::prefs::tests::test_parse_prefs_sections` (Parse section Tell/Never/When/How dari PROACTIVE_PREFERENCES.md)
+   - `heartbeat::prefs::tests::test_parse_window_accepts_seconds` (Jendela "09:00:30 to 21:30:00" ter-parse dengan detik, bukan diam-diam hilang)
+   - `heartbeat::runner::tests::test_is_silence` (HEARTBEAT_OK/NO_REPLY/skip/kosong = sunyi)
+   - `heartbeat::runner::tests::test_parse_decision_invalid_is_skip` (Jawaban decider sampah/di luar jangkauan = Skip fail-closed)
+   - `heartbeat::runner::tests::test_parse_decision_run_forms` (Bentuk `run: 1, 3` ter-parse (urut, dedup))
+   - `heartbeat::runner::tests::test_parse_decision_skip_forms` (Bentuk `skip`/`HEARTBEAT_OK`/`NO_REPLY`/`run: none` = Skip)
+   - `heartbeat::tasks::tests::test_parse_tasks_comments_blanks_and_markers` (Komentar/baris kosong/marker list diabaikan)
+   - `heartbeat::tasks::tests::test_parse_tasks_empty_and_comment_only` (File kosong/komentar saja = 0 tugas)
+   - `heartbeat::tasks::tests::test_parse_tasks_marker_gates_the_header` (Marker PicoClaw: hanya baris di bawahnya yang dihitung)
+   - `heartbeat::tasks::tests::test_parse_tasks_plain_lines` (Baris biasa jadi tugas bernomor 1-based)
    - `onboard::tests::test_config_serialization_escaping` (Escape serialisasi config JSONC)
    - `onboard::tests::test_save_credential_safe` (Penyimpanan credentials mode 0600)
    - `onboard::tests::test_validate_endpoint_connectivity_rejects_dead_endpoint` (Validasi konektivitas HTTP & 4xx/5xx guard)
@@ -137,12 +153,14 @@ Hasil pengujian otomatis per 2026-11-12 11:21:00 +07:00 (166/166 lolos di Linux;
    - `tests::test_resolve_target_model_deterministic_lexicographical_fallback` (Resolusi deterministik urutan leksikografis fallback model sesi)
    - `tests::test_resolve_target_model_deterministic_priority` (Resolusi deterministik prioritas model sesi)
 
-5. **`purrcode_config`** (15 tests):
+5. **`purrcode_config`** (17 tests):
    - `jsonc::tests::test_clean_jsonc_comments`
    - `jsonc::tests::test_strip_trailing_commas`
    - `loader::tests::test_expand_env_vars`
+   - `loader::tests::test_heartbeat_config_defaults` (Default section `heartbeat`: enabled, interval 30 menit, min 5 menit)
    - `loader::tests::test_hierarchical_merge`
    - `loader::tests::test_merge_into_keeps_cron` (Lapisan config project yang membawa section `cron` tidak hilang saat merge — jebakan yang sama pernah menimpa section `telegram`)
+   - `loader::tests::test_merge_into_keeps_heartbeat` (Lapisan config project yang membawa section `heartbeat` tidak hilang saat merge)
    - `loader::tests::test_merge_into_keeps_telegram` (Lapisan config project yang membawa section `telegram` tidak hilang saat merge (regresi E2E batch Telegram))
    - `loader::tests::test_parse_example_file`
    - `model::tests::test_cron_config_defaults` (Default section `cron`: enabled, tick 60 dtk, min 5 dtk)
@@ -355,6 +373,14 @@ Semua temuan dari verifikasi independen Muse Code (`purrcode-ai-verifikasi-070d6
     - **Temuan checker yang DIPERBAIKI (sebelum commit):** re-check F1 (MEDIUM, blocking — `run_job` tidak mengecek lease/enabled: dua `cron run` bersamaan sama-sama jalan + job disabled/belum-waktunya bisa di-fire manual; kini guard lease + enabled di kepala `run_job`, `is_lease_fresh` dipakai bersama `classify_due`, dan docstring `cmd_run` dikoreksi); re-check F2 (`manage_skill` bisa dideklarasikan di allowlist — job tanpa pengawasan sempat membuat skill; kini `CRON_FORBIDDEN_TOOLS`, ditolak di creation DAN run-time lewat `validate_tools`/`validate_job`; ADR-014 ditempel); build F1 (`cron run` menyelesaikan model dulu sehingga job tak dikenal salah dilaporkan "No model configured"; kini lookup job dulu); build F2 (drain mengabaikan hasil kirim — kegagalan hilang diam-diam; kini `send_standalone_reported` + audit `cron_delivery_failed`, at-most-once tetap dipertahankan); build F3 (marker running tanpa `last_run` lolos ke klasifikasi normal tanpa disadari; kini eksplisit: malformed = basi, self-healing).
     - **Batasan yang dicatat jujur:** dua `cron run` yang dimulai dalam milidetik yang sama (sebelum penanda running tersimpan) masih bisa balapan — lease menutup jeda ≥ detik, bukan klaim atomik O_EXCL; `cron run` tidak mencetak detail penuh bila turn gagal (hanya summary); observasi re-checker — Ask yang disetujui tidak meninggalkan event audit `tool_call` (perilaku loop v0.1 yang sudah ada), dan shadow mengecualikan peran read-only bahkan saat `is_cron=true` (desain, bukan celah).
     - **Hasil ukur:** check 0 warning, test **166/166** (163 + 3 baru: 2 lease, 1 manage_skill), clippy `-D warnings` bersih, fmt bersih, release GNU 5.033.184 byte; suite musl **166/166**, rilis musl 5.166.256 byte static-pie stripped, `ldd` = statically linked.
+
+23. **F22 heartbeat/proactive (batch 4a) 2026-11-12 (workplan item 28, ADR-014):**
+    - **Implementasi (branch `dev-muse`):** modul baru `crates/purrcode-cli/src/heartbeat/` (tasks, prefs, runner, cli) + `heartbeat status|run` + tick di `gateway.rs` + `seed_pending_deliveries` di TUI (`main.rs`) + `last_active_at` di `telegram/sessions.rs` + config `heartbeat` di `model.rs` + merge di `loader.rs`. Tick gateway (default 30 menit, min 5, pertama langsung, `MissedTickBehavior::Skip`, error boundary sendiri) membaca `.purrcode/HEARTBEAT.md` (proyek dulu, lalu global `~/.purrcode/HEARTBEAT.md`; hilang → template global dibuat sekali, tick berakhir sunyi tanpa LLM call — aturan PicoClaw); parse tugas (baris `#`/kosong diabaikan, marker PicoClaw, strip marker list/bernomor); `PROACTIVE_PREFERENCES.md` (Never = hard-deny substring case-insensitive SEBELUM Phase-1, Tell = konteks advisory, jendela `HH:MM` — di luar jendela seluruh tick dilewati SEBELUM ada LLM call, overnight membungkus tengah malam); Phase-1 satu call tool-less (temperature 0, max_tokens 256) + `parse_decision` ketat fail-closed (`skip`/`HEARTBEAT_OK`/`NO_REPLY`/`run: none` → Skip; `run: <csv>` hanya bila semua indeks valid; sisanya Skip; **error provider/stream → Skip, bukan jalankan semua — deviasi disengaja dari ZeroClaw** yang menjalankan semua tugas saat Phase-1 gagal: eksekusi tanpa pengawasan tidak boleh default ke "jalankan semuanya" saat decider-nya gagal); Phase-2 satu turn Meowstro per item terpilih (SERI, sesi `purr_hb_<8hex>`) dengan rails persis cron (`is_cron=true` — Tuxeshadow wajib, override reason dari model diabaikan; allowlist read-only default Meowstro; `yolo=false`; requester deny-always `CronApprovalRequester`/`CronAskRequester` dipakai ulang; guard preset God/yolo dicek sekali di awal tick SEBELUM Phase-1); hasil sunyi (`HEARTBEAT_OK`/kosong) = tanpa baris; turn error = baris `⚠️` + audit `heartbeat_run_failed` (tick tidak gagal karenanya); delivery gabungan ke antrean yang sama (`kind: heartbeat`, detail cap 32.768 karakter, summary baris pertama ≤ 200) dengan routing last-active → `allow_from[0]` → QueueOnly; TUI menampilkan pending deliveries saat dibuka (menampilkan = delivery, at-most-once, antrean jadi delivered); `heartbeat status` read-only (tidak membuat template, tidak memanggil model). **`sandbox: "os"` tetap ditolak loader** (tidak dilemahkan batch ini).
+    - **Verifikasi 2 checker independen (diam-diam, tree dibekukan):** semua angka direproduksi persis (184/184 GNU + musl setelah fix pass, clippy/fmt bersih, GNU 5.075.192 byte, musl 5.203.104 byte static-pie). **E2E mock 15 kasus, 94/94 asersi PASS** (A run_ok, B run_skip, C run_garbage, D run_silent, E run_window, F run_denied, G run_notasks, H gateway, I run_god, J run_global, K group_delivery, L preset_sandbox_os, M preset_unknown, N run_disabled, O corrupt_queue) — mock LLM + mock Telegram di `~/workspace/purr-tmp/b4a-e2e/` (bukan file repo). Build checker juga membuktikan live: multi-select `run: 1, 2` + filter Never me-renumber dengan benar, preset custom `approval: yolo` ditolak sebelum LLM call (exit 1, 0 call), gateway tanpa section heartbeat tetap tick (default enabled, delivery ke `allow_from[0]`), dan TUI seeding (baris `💓 Heartbeat` tampil, antrean jadi delivered). Re-checker membuktikan live P1–P10: Phase-1 fail-closed (23/23 — `run: 0/99`, `1`, `Yes, run them all`, kosong, `run: 1, 9` → Skip, mock log hanya phase1; HTTP 500 Phase-1 → Skip + audit `heartbeat_decide_failed`), window/Never = 0 LLM call (6/6, overnight kedua kaki), guard God/yolo sebelum Phase-1 (oyen + custom yolo/god → non-zero, mock log kosong), Phase-2 tanpa pengawasan (14/14 — shadow OBJECT blokir tanpa child, delegasi ter-APPROVE yang memanggil `bash` tidak membuat file, `write` langsung diblokir, `ask` error `No answer available` di PTY dan non-PTY tanpa hang), at-most-once drain (TG 500 → tepat 1 upaya, claimed+delivered, audit `cron_delivery_failed`; gateway kedua → 0 upaya resend), template dibuat sekali tanpa LLM call, dan tidak ada kebocoran secret (marker rahasia tidak sampai ke model; token/key tidak ada di file hasil/log gateway/log TG).
+    - **Temuan checker yang DIPERBAIKI (sebelum commit):** re-check F1 (MEDIUM — delivery heartbeat dikirim ke GRUP: mention grup dari user yang diizinkan membuat grup (-100) ter-touch sebagai last-active; tick berikutnya mengirim ringkasan heartbeat ke grup. Perbaikan: `ChatSessions` kini menyimpan `kind` chat (`private`/`group`/...; `touch(chat_id, kind)`); `last_active_private_chat()` hanya mengembalikan chat privat — grup/supergroup/channel dan entri tanpa kind TIDAK eligible (fail-closed, fallback `allow_from[0]` menutupi kasus user tunggal); E2E case K: grup yang LEBIH BARU dari chat privat tetap dilewati, delivery ke 111; mention grup live mencatat kind `group`); re-check F2 (LOW — preset gagal load diam-diam diganti tabby: preset `sandbox: "os"` yang ditolak loader dan preset bernama tak ada tetap jalan di bawah tabby, exit 0. Perbaikan: `run_once` kini mengembalikan error load preset — tick GAGAL dengan pesan yang menyebut presetnya; pola fallback yang sama di `gateway.rs`/`main.rs` adalah pra-4a, sengaja tidak diubah); re-check F3 (LOW — `heartbeat run` mengabaikan `[heartbeat] enabled = false` sementara gateway menghormatinya. Perbaikan: `cmd_run` menolak dengan pesan `disabled` bila flag mati; `status` tetap jalan); re-check F4 (LOW — satu baris rusak di `deliveries.jsonl` melumpuhkan permanen antrean: `read_events` gagal di baris rusak pertama → `pending()` gagal → TUI seed + drain gateway sama-sama return diam-diam. Perbaikan: baris rusak dilewati dengan `tracing::warn` (delivery pada baris itu hilang, sisanya tetap termuat); E2E case O: 2 delivery pre-seed + tick tetap terkirim lewat baris rusak); build F1 (LOW, kosmetik — test `test_args_default_is_status` adalah tautologi (menguji nilai yang test itu sendiri tulis); kini `test_bare_heartbeat_defaults_to_status` mem-parse argv lewat clap dan mengasersi default `status`); build OBS-1 (minor — `parse_window` diam-diam membuang waktu berformat detik (`"09:00:30"` gagal parse `%H:%M`) sehingga seluruh jendela bisa hilang tanpa pesan; kini coba `%H:%M:%S` dulu, baru `%H:%M`; test `test_parse_window_accepts_seconds`). Observasi non-blocking yang dicatat (bukan perbaikan): urutan window-check vs preset-guard hanya memengaruhi pesan deny (keduanya menolak sebelum LLM call); item Phase-2 yang error tetap jadi baris delivery (by-design — user diberi tahu check-nya gagal); parser Phase-1 menerima `RUN: 1`/`run: 01` (longgar case/leading zero, tetap bounded ke daftar tugas).
+    - **Live (di luar audit batch ini):** gateway live v0.2 di-restart 2026-11-12 11:49 WIB dengan binary batch 4a (rig persisten `~/workspace/purr-tmp/purr-tg-live/`, bridge 3457/3458, token + kunci Magpie dari user) — banner `🐾 PurrCode AI Gateway — bot @purrcodeai_bot (preset: tabby, model: magpie:antigravity/gemini-3.8-flash-tiered)` + tick heartbeat pertama berjalan live (audit `heartbeat_tick` deny "no HEARTBEAT.md found; created template", tanpa LLM call). Uji kartu approval HELLO.md menunggu perintah tugas dari user. Catatan jujur dari restart itu: start pertama gagal probe getMe karena bridge sempat putus (`RemoteDisconnected` proxy — bridge memegang kredensial proxy lama; perbaikan: restart bridge dengan env segar), dan `getMe` di startup adalah one-shot fail-fast (tanpa retry — retry hanya ada di probe getUpdates sesudahnya); proses gateway yang tampak "hidup tapi error" saat diagnosis ternyata adalah gateway spot-check build checker yang tertinggal (stdout ke `b4a-build/spot3-gw.log`), bukan gateway live — sudah dimatikan.
+    - **Hasil ukur:** check 0 warning, test **184/184** (182 + 2 baru: 1 antrean rusak, 1 jendela detik), clippy `-D warnings` bersih, fmt bersih, release GNU 5.075.192 byte; suite musl **184/184**, rilis musl 5.203.104 byte static-pie stripped, `ldd` = statically linked.
+
 
 ---
 

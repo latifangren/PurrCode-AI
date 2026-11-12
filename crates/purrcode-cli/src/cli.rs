@@ -158,4 +158,9 @@ pub enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    /// Proactive heartbeat checks (v0.3 F22): status | run
+    Heartbeat {
+        #[arg(default_value = "status")]
+        action: String,
+    },
 }

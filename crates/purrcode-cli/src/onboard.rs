@@ -235,6 +235,7 @@ pub async fn run_interactive_onboard() -> Result<()> {
         mcp_servers: HashMap::new(),
         telegram: None,
         cron: None,
+        heartbeat: None,
     };
 
     let target_path = purrcode_dir.join("purrcode.jsonc");
@@ -403,6 +404,7 @@ mod tests {
             mcp_servers: HashMap::new(),
             telegram: None,
             cron: None,
+            heartbeat: None,
         };
 
         let json_str = serde_json::to_string_pretty(&config).unwrap();

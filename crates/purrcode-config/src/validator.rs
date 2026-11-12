@@ -60,6 +60,7 @@ mod tests {
             mcp_servers: HashMap::new(),
             telegram: None,
             cron: None,
+            heartbeat: None,
         };
         assert!(validate_config(&cfg).is_err());
     }

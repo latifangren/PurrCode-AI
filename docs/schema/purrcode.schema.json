@@ -83,6 +83,13 @@
         "enabled": { "type": "boolean" },
         "tick_secs": { "type": "integer", "minimum": 5 }
       }
+    },
+    "heartbeat": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval_mins": { "type": "integer", "minimum": 5 }
+      }
     }
   }
 }

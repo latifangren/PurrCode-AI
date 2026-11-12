@@ -112,6 +112,16 @@ impl TelegramChannel {
         TelegramRenderer::new(self.api.clone(), chat_id)
     }
 
+    /// The most recently active private chat (an accepted message or
+    /// command), if any. Heartbeat delivery routes here first, falling
+    /// back to the first `allow_from` entry when no private chat has
+    /// been active yet (v0.3 F22). Groups are never returned: a
+    /// heartbeat summary may quote the user's private checks and must
+    /// not land in a group (F22 fix, re-checker F1).
+    pub async fn last_active_private_chat(&self) -> Option<i64> {
+        self.index.lock().await.last_active_private_chat()
+    }
+
     /// An approval requester bound to one chat + session.
     pub fn approval_requester(
         &self,
@@ -322,7 +332,17 @@ impl TelegramChannel {
         }
 
         // 4. Plain prompt: resolve the chat's session and hand the turn
-        // to the gateway.
+        // to the gateway. The touch also records the chat kind: only
+        // private chats become heartbeat delivery targets (a group
+        // mention is recorded as a group — v0.3 F22 fix, re-checker F1).
+        if let Err(e) = self
+            .index
+            .lock()
+            .await
+            .touch(chat_id, Some(msg.chat.kind.as_str()))
+        {
+            tracing::warn!("telegram: failed to record activity for chat {chat_id}: {e}");
+        }
         let session_id = self.session_for(chat_id).await;
         let inbound = InboundMessage {
             chat_id,
@@ -405,6 +425,18 @@ impl TelegramChannel {
     /// sent directly — commands never reach the agent loop.
     async fn process_command(&self, msg: &Message, _text: &str) {
         let chat_id = msg.chat.id;
+        // A command is activity too: it refreshes the chat's timestamp
+        // (and records its kind). A group command is recorded as a
+        // group — it never becomes a heartbeat delivery target (v0.3
+        // F22 fix, re-checker F1); only private chats do.
+        if let Err(e) = self
+            .index
+            .lock()
+            .await
+            .touch(chat_id, Some(msg.chat.kind.as_str()))
+        {
+            tracing::warn!("telegram: failed to record activity for chat {chat_id}: {e}");
+        }
         match msg.command().as_deref() {
             Some("/new") => {
                 let id = format!("purr_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);

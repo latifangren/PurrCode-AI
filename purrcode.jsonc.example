@@ -113,5 +113,14 @@
   "cron": {
     "enabled": true,
     "tick_secs": 60
+  },
+  // Heartbeat daemon settings (v0.3 F22, ADR-014 item 6). Absent =
+  // enabled (the tick is a no-op without a HEARTBEAT.md task file).
+  // The task file lives outside config: .purrcode/HEARTBEAT.md in the
+  // workspace, else ~/.purrcode/HEARTBEAT.md. Preferences
+  // (Tell/Never/When) live in ~/.purrcode/PROACTIVE_PREFERENCES.md.
+  "heartbeat": {
+    "enabled": true,
+    "interval_mins": 30
   }
 }

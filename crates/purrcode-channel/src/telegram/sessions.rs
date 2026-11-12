@@ -23,6 +23,22 @@ pub struct ChatSessions {
     pub current: Option<String>,
     #[serde(default)]
     pub history: Vec<String>,
+    /// Unix seconds of the last accepted message/command from this
+    /// chat. Drives heartbeat delivery routing ("last active chat").
+    /// Absent for chats last seen before this field existed (v0.3 F22).
+    #[serde(default)]
+    pub last_active_at: Option<i64>,
+    /// Telegram chat type as reported by the Bot API (`private`,
+    /// `group`, `supergroup`, `channel`). Recorded at touch time
+    /// (v0.3 F22 fix): only private chats are heartbeat delivery
+    /// targets — a group mention must never make a group the "home
+    /// chat", or a heartbeat summary (which may quote the user's
+    /// private checks) would leak to the group's members. Absent for
+    /// chats last seen before this field existed; those chats are NOT
+    /// eligible for delivery routing (fail-closed — the
+    /// `allow_from[0]` fallback covers the normal single-user case).
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// The `chat_id → ChatSessions` index.
@@ -91,6 +107,38 @@ impl ChatSessionIndex {
         entry.current = Some(new_session_id.to_string());
         self.save()?;
         Ok(new_session_id.to_string())
+    }
+
+    /// Record activity from a chat (an accepted message or command)
+    /// and persist the index atomically. One small write per accepted
+    /// message — human-paced, and the file is tiny. `kind` is the
+    /// Telegram chat type (`private`, `group`, ...); a `None` touch
+    /// refreshes the timestamp without overwriting a recorded kind.
+    pub fn touch(&mut self, chat_id: i64, kind: Option<&str>) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let entry = self.map.entry(chat_id).or_default();
+        entry.last_active_at = Some(now);
+        if let Some(kind) = kind {
+            entry.kind = Some(kind.to_string());
+        }
+        self.save()
+    }
+
+    /// The most recently active PRIVATE chat, if any. Groups,
+    /// supergroups and channels are never delivery targets, and chats
+    /// whose kind was never recorded are not eligible either
+    /// (fail-closed). The caller falls back to the first `allow_from`
+    /// entry then.
+    pub fn last_active_private_chat(&self) -> Option<i64> {
+        self.map
+            .iter()
+            .filter(|(_, s)| s.kind.as_deref() == Some("private"))
+            .filter_map(|(id, s)| s.last_active_at.map(|t| (*id, t)))
+            .max_by_key(|(_, t)| *t)
+            .map(|(id, _)| id)
     }
 
     /// End a chat's current session (`/stop`): the current session is
@@ -172,6 +220,48 @@ mod tests {
 
         // No temp file left behind after atomic saves.
         assert!(!dir.join("chats.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_touch_and_last_active_private_chat() {
+        let dir = tmp_dir();
+        let mut idx = ChatSessionIndex::load(&dir);
+        // No timestamp anywhere yet: no last-active chat.
+        assert_eq!(idx.last_active_private_chat(), None);
+        idx.attach(100, "purr_aaa111").unwrap();
+        assert_eq!(idx.last_active_private_chat(), None);
+
+        idx.touch(100, Some("private")).unwrap();
+        assert_eq!(idx.last_active_private_chat(), Some(100));
+        // A later touch in another PRIVATE chat wins.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        idx.touch(200, Some("private")).unwrap();
+        assert_eq!(idx.last_active_private_chat(), Some(200));
+
+        // A NEWER touch in a GROUP does not win: groups are never
+        // delivery targets (v0.3 F22 fix, re-checker F1).
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        idx.touch(-100, Some("group")).unwrap();
+        assert_eq!(idx.last_active_private_chat(), Some(200));
+        // A touch without a kind refreshes the timestamp but never
+        // promotes the chat to a delivery target.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        idx.touch(-100, None).unwrap();
+        assert_eq!(idx.last_active_private_chat(), Some(200));
+
+        // The timestamp + kind survive a reload (and a file written
+        // before these fields existed loads as None, never as an
+        // error — and a kind-less entry is not eligible).
+        let idx = ChatSessionIndex::load(&dir);
+        assert_eq!(idx.last_active_private_chat(), Some(200));
+        std::fs::write(
+            dir.join("chats.json"),
+            r#"{"300": {"current": "purr_ccc333", "history": []}}"#,
+        )
+        .unwrap();
+        let idx = ChatSessionIndex::load(&dir);
+        assert_eq!(idx.last_active_private_chat(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

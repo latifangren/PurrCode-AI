@@ -129,6 +129,24 @@ pub struct CronApprovalRequester {
     session_id: String,
 }
 
+impl CronApprovalRequester {
+    /// Build the deny-always requester for an unattended daemon run
+    /// (cron job or heartbeat item): a tool in `tools` is approved,
+    /// anything else is denied. Shared by the cron runner and the
+    /// heartbeat runner (v0.3 F22) — the rails are identical.
+    pub fn new(
+        tools: HashSet<String>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+        session_id: String,
+    ) -> Self {
+        Self {
+            tools,
+            audit_sink,
+            session_id,
+        }
+    }
+}
+
 #[async_trait]
 impl ApprovalRequester for CronApprovalRequester {
     async fn request_approval(
@@ -190,7 +208,8 @@ fn parse_preset_enums(
 }
 
 /// First non-empty line, capped at 200 chars, for the delivery summary.
-fn summarize(text: &str) -> String {
+/// Shared by the cron runner and the heartbeat runner (v0.3 F22).
+pub(crate) fn summarize(text: &str) -> String {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     let short: String = first.chars().take(200).collect();
     if first.chars().count() > 200 {
@@ -200,7 +219,10 @@ fn summarize(text: &str) -> String {
     }
 }
 
-fn cap_detail(text: &str) -> String {
+/// Cap the delivery detail at 32 KiB (a runaway turn must not bloat
+/// the queue file). Shared by the cron runner and the heartbeat
+/// runner (v0.3 F22).
+pub(crate) fn cap_detail(text: &str) -> String {
     if text.chars().count() > MAX_DETAIL_CHARS {
         let kept: String = text.chars().take(MAX_DETAIL_CHARS).collect();
         format!("{kept}\n… (truncated, full text in the session transcript)")
@@ -220,6 +242,10 @@ pub struct CronRunOutcome {
 }
 
 /// Everything one cron firing needs that outlives the firing itself.
+/// Shared by the heartbeat runner (v0.3 F22), which needs the same
+/// daemon-scoped dependencies. Clone only (no Debug: the registry,
+/// audit logger and plugin dispatcher do not implement it).
+#[derive(Clone)]
 pub struct CronRunnerDeps {
     pub config: Config,
     pub workspace_root: PathBuf,
@@ -627,8 +653,10 @@ impl CronRunner {
     /// Send pending Telegram deliveries (claim-first, Hermes rule).
     /// Queue-only deliveries stay pending for the next TUI open.
     /// A send that fails halfway is still marked delivered — losing
-    /// beats duplicating a possibly-completed send.
-    async fn drain_deliveries(&self, channel: &TelegramChannel) {
+    /// beats duplicating a possibly-completed send. Shared by the
+    /// heartbeat tick (v0.3 F22), which enqueues its own deliveries
+    /// into the same queue.
+    pub async fn drain_deliveries(&self, channel: &TelegramChannel) {
         let queue = DeliveryQueue::new(&self.deps.purrcode_dir);
         let pending = match queue.pending() {
             Ok(p) => p,
