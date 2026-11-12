@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod cron;
+pub mod curator;
+pub mod heartbeat;
+
+use purrcode_approval::{AuditEntry, AuditLogger};
+use std::path::PathBuf;
+
 pub struct ServiceInstaller;
 
 impl ServiceInstaller {
@@ -78,6 +85,55 @@ Write-Host "PurrCode AI Gateway task registered successfully. To run now: Start-
                 "not installed (run `purrcode-ai service install` to inspect unit)".to_string()
             }
         }
+    }
+}
+
+/// The user's PurrCode home directory (`~/.purrcode`, falling back to
+/// a relative `.purrcode` when no home directory can be determined).
+/// Moved here from the CLI (`onboard::get_purrcode_dir`) in the R2
+/// service extraction (merge basis dev-muse) so the background
+/// runners can find it without depending on the CLI crate.
+pub fn purrcode_dir() -> PathBuf {
+    let home = {
+        #[cfg(windows)]
+        {
+            std::env::var_os("USERPROFILE").map(PathBuf::from)
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var_os("HOME").map(PathBuf::from)
+        }
+    };
+    match home {
+        Some(h) => h.join(".purrcode"),
+        None => PathBuf::from(".purrcode"),
+    }
+}
+
+/// Audit-log a warning for every plugin whose declared capabilities
+/// are not enforced yet (v0.1: process plugins run with full user
+/// rights; enforcement comes with the v0.3 OS sandbox). Moved here
+/// from the CLI in the R2 service extraction; the runners and the
+/// CLI call it alike.
+pub fn log_unenforced_plugin_capabilities(
+    logger: &AuditLogger,
+    session_id: &str,
+    agent: &str,
+    unenforced: &[(String, Vec<&'static str>)],
+) {
+    for (name, kinds) in unenforced {
+        let _ = logger.log_entry(AuditEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_id: session_id.to_string(),
+            agent: agent.to_string(),
+            event: "plugin_capability_unenforced".to_string(),
+            tool: None,
+            decision: "warn".to_string(),
+            detail: format!(
+                "plugin '{name}' declares {} capabilities, which are NOT enforced in v0.1: process plugins run with full user rights; enforcement comes with the v0.3 OS sandbox",
+                kinds.join(" + ")
+            ),
+        });
     }
 }
 

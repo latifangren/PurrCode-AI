@@ -1122,9 +1122,24 @@ dependencies = [
 name = "purrcode-service"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "purrcode-api",
+ "purrcode-approval",
+ "purrcode-channel",
+ "purrcode-config",
+ "purrcode-core",
+ "purrcode-memory",
+ "purrcode-orchestrator",
+ "purrcode-plugin",
+ "purrcode-provider",
+ "purrcode-tools",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

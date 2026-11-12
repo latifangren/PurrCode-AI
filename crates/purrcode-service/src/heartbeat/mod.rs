@@ -6,8 +6,9 @@
 //! worth running), and delivers one line per item that produced
 //! something — through the same delivery queue cron uses — to the
 //! last active Telegram chat, or queue-only for the next TUI open.
+//! The `purrcode heartbeat` CLI lives in purrcode-cli
+//! (`heartbeat_cli.rs`) and calls into this module.
 
-pub mod cli;
 pub mod prefs;
 pub mod runner;
 pub mod tasks;

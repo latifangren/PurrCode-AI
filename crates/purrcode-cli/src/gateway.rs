@@ -292,7 +292,7 @@ async fn cron_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::Receiv
         .as_ref()
         .map(|c| c.tick_secs())
         .unwrap_or(60);
-    let deps = crate::cron::CronRunnerDeps {
+    let deps = purrcode_service::cron::CronRunnerDeps {
         config: state.config.clone(),
         workspace_root: state.workspace_root.clone(),
         purrcode_dir: state.purrcode_dir.clone(),
@@ -305,7 +305,7 @@ async fn cron_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::Receiv
         model_preset: state.model_preset.clone(),
         system_prompt: state.system_prompt.clone(),
     };
-    let runner = crate::cron::CronRunner::new(deps);
+    let runner = purrcode_service::cron::CronRunner::new(deps);
     let channel = state.channel.clone();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -333,7 +333,7 @@ async fn heartbeat_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::R
         .as_ref()
         .map(|c| c.interval_mins())
         .unwrap_or(30);
-    let deps = crate::cron::CronRunnerDeps {
+    let deps = purrcode_service::cron::CronRunnerDeps {
         config: state.config.clone(),
         workspace_root: state.workspace_root.clone(),
         purrcode_dir: state.purrcode_dir.clone(),
@@ -346,7 +346,7 @@ async fn heartbeat_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::R
         model_preset: state.model_preset.clone(),
         system_prompt: state.system_prompt.clone(),
     };
-    let runner = crate::heartbeat::HeartbeatRunner::new(deps);
+    let runner = purrcode_service::heartbeat::HeartbeatRunner::new(deps);
     let channel = state.channel.clone();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_mins * 60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -385,7 +385,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                 .plugin_dispatcher
                 .dispatch_session_start(&session_id)
                 .await;
-            super::log_unenforced_plugin_capabilities(
+            purrcode_service::log_unenforced_plugin_capabilities(
                 &state.audit_logger,
                 &session_id,
                 "meowstro",
@@ -513,12 +513,13 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
     // turn — so two turns in one chat never interleave.
     // The runner is hoisted out of the outcome block: it is needed
     // again after the save turn (F3: consume its calls).
-    let curator_runner = crate::curator::CuratorRunner::new(crate::curator::CuratorDeps {
-        provider: curator_provider,
-        model: state.wire_model.clone(),
-        purrcode_dir: state.purrcode_dir.clone(),
-        audit_logger: state.audit_logger.clone(),
-    });
+    let curator_runner =
+        purrcode_service::curator::CuratorRunner::new(purrcode_service::curator::CuratorDeps {
+            provider: curator_provider,
+            model: state.wire_model.clone(),
+            purrcode_dir: state.purrcode_dir.clone(),
+            audit_logger: state.audit_logger.clone(),
+        });
     let curator_outcome = {
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
         skill_mgr.discover_all(&state.workspace_root);
@@ -531,7 +532,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
     // observable while debugging, and reading the fields keeps the
     // enum honest).
     match curator_outcome {
-        crate::curator::CuratorOutcome::DraftStaged { meta, path: _ } => {
+        purrcode_service::curator::CuratorOutcome::DraftStaged { meta, path: _ } => {
             let draft_approver = state.channel.skill_draft_requester(
                 inbound.chat_id,
                 session_id.clone(),
@@ -542,7 +543,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                 .request_approval(&meta.name, &meta.description, Some(&preview))
                 .await;
             if approved {
-                let save_prompt = crate::curator::save_prompt_for(&meta);
+                let save_prompt = purrcode_service::curator::save_prompt_for(&meta);
                 let prev_save = messages.len();
                 let save_result = meowstro
                     .agent_loop()
@@ -572,8 +573,11 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                     )
                     .await;
                 } else {
-                    let _ =
-                        crate::curator::discard_draft(&state.purrcode_dir, &session_id, &meta.name);
+                    let _ = purrcode_service::curator::discard_draft(
+                        &state.purrcode_dir,
+                        &session_id,
+                        &meta.name,
+                    );
                 }
                 for msg in messages.iter().skip(prev_save) {
                     if let Err(e) = session_store.append_message(&session_id, msg) {
@@ -581,7 +585,11 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                     }
                 }
             } else {
-                let _ = crate::curator::discard_draft(&state.purrcode_dir, &session_id, &meta.name);
+                let _ = purrcode_service::curator::discard_draft(
+                    &state.purrcode_dir,
+                    &session_id,
+                    &meta.name,
+                );
                 let _ = state.audit_logger.log_entry(purrcode_approval::AuditEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     session_id: session_id.clone(),
@@ -593,16 +601,16 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
                 });
             }
         }
-        crate::curator::CuratorOutcome::BelowThreshold { count } => {
+        purrcode_service::curator::CuratorOutcome::BelowThreshold { count } => {
             tracing::debug!("curator: below threshold ({count} tool calls)");
         }
-        crate::curator::CuratorOutcome::DecideFailed { reason } => {
+        purrcode_service::curator::CuratorOutcome::DecideFailed { reason } => {
             tracing::debug!("curator: decide failed: {reason}");
         }
-        crate::curator::CuratorOutcome::NoDraft => {
+        purrcode_service::curator::CuratorOutcome::NoDraft => {
             tracing::debug!("curator: model answered NO_SKILL");
         }
-        crate::curator::CuratorOutcome::DraftRejected { reason } => {
+        purrcode_service::curator::CuratorOutcome::DraftRejected { reason } => {
             tracing::debug!("curator: draft rejected: {reason}");
         }
     }

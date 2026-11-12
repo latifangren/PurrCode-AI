@@ -12,13 +12,13 @@
 //!   drain (or the next TUI open when there is no Telegram chat) —
 //!   this command does not send to Telegram itself.
 
-use crate::cron::runner::build_runner_deps;
-use crate::heartbeat::prefs::ProactivePrefs;
-use crate::heartbeat::runner::{HeartbeatOutcome, HeartbeatRunner};
-use crate::heartbeat::tasks::find_task_file;
 use crate::onboard;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_config::Config;
+use purrcode_service::cron::runner::build_runner_deps;
+use purrcode_service::heartbeat::prefs::ProactivePrefs;
+use purrcode_service::heartbeat::runner::{HeartbeatOutcome, HeartbeatRunner};
+use purrcode_service::heartbeat::tasks::find_task_file;
 
 /// Bundled CLI args for `purrcode-ai heartbeat <action>`.
 /// (Bundled into one struct: clippy rejects too many fn args.)
@@ -50,7 +50,7 @@ fn cmd_status(config: &Config) -> Result<()> {
     match find_task_file(&workspace_root, &purrcode_dir) {
         Some(path) => {
             let raw = std::fs::read_to_string(&path).unwrap_or_default();
-            let tasks = crate::heartbeat::tasks::parse_tasks(&raw);
+            let tasks = purrcode_service::heartbeat::tasks::parse_tasks(&raw);
             println!("   tasks: {} in {}", tasks.len(), path.display());
             for (i, task) in tasks.iter().enumerate() {
                 println!("     {}. {}", i + 1, task);
@@ -69,12 +69,17 @@ fn cmd_status(config: &Config) -> Result<()> {
     if !prefs.never_about.is_empty() {
         println!("   never tell me about: {}", prefs.never_about.join("; "));
     }
-    let queue = crate::cron::queue::DeliveryQueue::new(&purrcode_dir);
+    let queue = purrcode_service::cron::queue::DeliveryQueue::new(&purrcode_dir);
     match queue.pending() {
         Ok(pending) => {
             let hb = pending
                 .iter()
-                .filter(|d| matches!(d.kind, crate::cron::queue::DeliveryKind::Heartbeat))
+                .filter(|d| {
+                    matches!(
+                        d.kind,
+                        purrcode_service::cron::queue::DeliveryKind::Heartbeat
+                    )
+                })
                 .count();
             println!(
                 "   pending heartbeat deliveries: {hb} ({} total pending)",
@@ -105,7 +110,7 @@ async fn cmd_run(config: &Config) -> Result<()> {
 }
 
 fn print_outcome(outcome: &HeartbeatOutcome) {
-    use crate::heartbeat::runner::HeartbeatDecision as D;
+    use purrcode_service::heartbeat::runner::HeartbeatDecision as D;
     match outcome.decision {
         D::NoTasks => println!("🐾 Heartbeat: no tasks — nothing to check."),
         D::OutsideWindow => println!("🐾 Heartbeat: outside the proactive window — skipped."),

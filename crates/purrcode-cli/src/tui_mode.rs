@@ -185,7 +185,7 @@ pub(crate) async fn run_tui(
 
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
     plugin_dispatcher.dispatch_session_start(&session_id).await;
-    crate::log_unenforced_plugin_capabilities(
+    purrcode_service::log_unenforced_plugin_capabilities(
         &audit_logger,
         &session_id,
         agent_role,
@@ -360,12 +360,14 @@ pub(crate) async fn run_tui(
             // skill drafts only — never tool calls. The runner is
             // hoisted out of the outcome block: it is needed again
             // after the save turn (F3: consume its calls).
-            let curator_runner = crate::curator::CuratorRunner::new(crate::curator::CuratorDeps {
-                provider: curator_provider.clone(),
-                model: curator_model.clone(),
-                purrcode_dir: curator_purrcode_dir.clone(),
-                audit_logger: curator_audit.clone(),
-            });
+            let curator_runner = purrcode_service::curator::CuratorRunner::new(
+                purrcode_service::curator::CuratorDeps {
+                    provider: curator_provider.clone(),
+                    model: curator_model.clone(),
+                    purrcode_dir: curator_purrcode_dir.clone(),
+                    audit_logger: curator_audit.clone(),
+                },
+            );
             let curator_outcome = {
                 let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
                 skill_mgr.discover_all(&tool_context.workspace_root);
@@ -378,7 +380,7 @@ pub(crate) async fn run_tui(
             // decision observable while debugging, and reading the
             // fields keeps the enum honest).
             match curator_outcome {
-                crate::curator::CuratorOutcome::DraftStaged { meta, path } => {
+                purrcode_service::curator::CuratorOutcome::DraftStaged { meta, path } => {
                     let skill_approver = TuiApprovalRequester {
                         event_tx: event_tx_worker.clone(),
                         session_allow: Arc::new(AtomicBool::new(false)),
@@ -399,7 +401,7 @@ pub(crate) async fn run_tui(
                     if approved {
                         // Save turn: a normal turn (Meowstro delegates to
                         // Tinker, who runs manage_skill action=create).
-                        let save_prompt = crate::curator::save_prompt_for(&meta);
+                        let save_prompt = purrcode_service::curator::save_prompt_for(&meta);
                         let prev_save = session_messages.len();
                         let _ = runner
                             .run_turn_with_history(
@@ -418,13 +420,13 @@ pub(crate) async fn run_tui(
                         // it does not count toward the next turn's
                         // threshold.
                         curator_runner.consume_save_turn(&sid_worker);
-                        let _ = crate::curator::discard_draft(
+                        let _ = purrcode_service::curator::discard_draft(
                             &curator_purrcode_dir,
                             &sid_worker,
                             &meta.name,
                         );
                     } else {
-                        let _ = crate::curator::discard_draft(
+                        let _ = purrcode_service::curator::discard_draft(
                             &curator_purrcode_dir,
                             &sid_worker,
                             &meta.name,
@@ -440,16 +442,16 @@ pub(crate) async fn run_tui(
                         });
                     }
                 }
-                crate::curator::CuratorOutcome::BelowThreshold { count } => {
+                purrcode_service::curator::CuratorOutcome::BelowThreshold { count } => {
                     tracing::debug!("curator: below threshold ({count} tool calls)");
                 }
-                crate::curator::CuratorOutcome::DecideFailed { reason } => {
+                purrcode_service::curator::CuratorOutcome::DecideFailed { reason } => {
                     tracing::debug!("curator: decide failed: {reason}");
                 }
-                crate::curator::CuratorOutcome::NoDraft => {
+                purrcode_service::curator::CuratorOutcome::NoDraft => {
                     tracing::debug!("curator: model answered NO_SKILL");
                 }
-                crate::curator::CuratorOutcome::DraftRejected { reason } => {
+                purrcode_service::curator::CuratorOutcome::DraftRejected { reason } => {
                     tracing::debug!("curator: draft rejected: {reason}");
                 }
             }
@@ -488,16 +490,16 @@ pub(crate) async fn run_tui(
 /// shared with the Telegram drain — whoever reaches the user first
 /// consumes it.
 fn seed_pending_deliveries(app: &mut purrcode_channel::TuiApp, purrcode_dir: &std::path::Path) {
-    let queue = crate::cron::DeliveryQueue::new(purrcode_dir);
+    let queue = purrcode_service::cron::DeliveryQueue::new(purrcode_dir);
     let pending = match queue.pending() {
         Ok(p) => p,
         Err(_) => return, // a broken queue file must not block the TUI
     };
     for delivery in &pending {
         let kind = match delivery.kind {
-            crate::cron::queue::DeliveryKind::Result => "📬 Cron",
-            crate::cron::queue::DeliveryKind::Failure => "⚠️ Cron (failed)",
-            crate::cron::queue::DeliveryKind::Heartbeat => "💓 Heartbeat",
+            purrcode_service::cron::queue::DeliveryKind::Result => "📬 Cron",
+            purrcode_service::cron::queue::DeliveryKind::Failure => "⚠️ Cron (failed)",
+            purrcode_service::cron::queue::DeliveryKind::Heartbeat => "💓 Heartbeat",
         };
         let detail: String = delivery.detail.chars().take(400).collect();
         let text = if detail.is_empty() {

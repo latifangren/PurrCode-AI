@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 mod cli;
-mod cron;
-mod curator;
+mod cron_cli;
 mod gateway;
-mod heartbeat;
+mod heartbeat_cli;
 mod onboard;
 mod one_shot;
 mod tui_mode;
@@ -12,7 +11,6 @@ mod tui_mode;
 use clap::Parser;
 use cli::{Cli, Commands};
 use purrcode_api::error::{PurrError, Result};
-use purrcode_approval::{AuditEntry, AuditLogger};
 use purrcode_config::{
     Config, ConfigLoader, ModePresetLoader, ModelPresetLoader, MIN_CONTEXT_WINDOW,
 };
@@ -33,32 +31,6 @@ fn init_windows_console() {
     unsafe {
         let _ = SetConsoleOutputCP(65001);
         let _ = SetConsoleCP(65001);
-    }
-}
-
-/// Log one audit entry per loaded plugin that declares network/filesystem
-/// capabilities. Those are NOT enforced in v0.1 (see
-/// `PluginManager::unenforced_capabilities`); the audit entry is the
-/// observable record that the plugin runs with full user rights.
-fn log_unenforced_plugin_capabilities(
-    logger: &AuditLogger,
-    session_id: &str,
-    agent: &str,
-    unenforced: &[(String, Vec<&'static str>)],
-) {
-    for (name, kinds) in unenforced {
-        let _ = logger.log_entry(AuditEntry {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            session_id: session_id.to_string(),
-            agent: agent.to_string(),
-            event: "plugin_capability_unenforced".to_string(),
-            tool: None,
-            decision: "warn".to_string(),
-            detail: format!(
-                "plugin '{name}' declares {} capabilities, which are NOT enforced in v0.1: process plugins run with full user rights; enforcement comes with the v0.3 OS sandbox",
-                kinds.join(" + ")
-            ),
-        });
     }
 }
 
@@ -280,7 +252,7 @@ async fn main() -> Result<()> {
                 preset,
                 yes,
             } => {
-                cron::cli::run_cron_command(cron::cli::CronArgs {
+                cron_cli::run_cron_command(cron_cli::CronArgs {
                     action: &action,
                     name,
                     schedule,
@@ -296,9 +268,9 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Commands::Heartbeat { action } => {
-                heartbeat::cli::run_heartbeat_command(
+                heartbeat_cli::run_heartbeat_command(
                     &config,
-                    heartbeat::cli::HeartbeatArgs { action },
+                    heartbeat_cli::HeartbeatArgs { action },
                 )
                 .await?;
                 return Ok(());

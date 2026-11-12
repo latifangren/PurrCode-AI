@@ -16,6 +16,10 @@
 //! fails: every error is logged and the tick continues, so a broken job
 //! or a dead Telegram can never kill the gateway's poll loop.
 
+mod model;
+
+pub use model::resolve_target_model;
+
 use crate::cron::queue::{new_delivery_id, Delivery, DeliveryKind, DeliveryQueue};
 use crate::cron::schedule::CronExpr;
 use crate::cron::store::{validate_job, CronJob, CronStore, DeliveryTarget, PresetSnapshot};
@@ -713,9 +717,8 @@ pub async fn build_runner_deps(
     workspace_root: &Path,
     model_override: Option<String>,
 ) -> Result<CronRunnerDeps> {
-    let purrcode_dir =
-        crate::onboard::get_purrcode_dir().unwrap_or_else(|_| PathBuf::from(".purrcode"));
-    let target_model = crate::one_shot::resolve_target_model_or_exit(model_override, config);
+    let purrcode_dir = crate::purrcode_dir();
+    let target_model = resolve_target_model(config, model_override)?;
     let registry = ProviderRegistry::from_config(config)?;
     let (provider_name, wire_model, _, _) =
         config.resolve_model(&target_model).ok_or_else(|| {

@@ -16,46 +16,24 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Resolve the session target model, exiting with usage guidance when
+/// no model is configured. Thin wrapper over
+/// `purrcode_service::cron::resolve_target_model` (the picking logic
+/// moved to the service crate in the R2 extraction); the exit behavior
+/// is kept here because this is the CLI path — background runners use
+/// the fallible service function directly.
 pub(crate) fn resolve_target_model_or_exit(
     model_override: Option<String>,
     config: &Config,
 ) -> String {
-    match model_override.or_else(|| config.model.clone()) {
-        Some(m) => m,
-        None => {
-            // Collect all candidates deterministically
-            let mut candidates: Vec<String> = Vec::new();
-            let mut sorted_providers: Vec<_> = config.providers.iter().collect();
-            sorted_providers.sort_by_key(|(name, _)| (*name).clone());
-
-            for (p_name, p_cfg) in sorted_providers {
-                let mut sorted_models: Vec<_> = p_cfg.models.keys().collect();
-                sorted_models.sort();
-                for m_key in sorted_models {
-                    candidates.push(format!("{}:{}", p_name, m_key));
-                }
-            }
-
-            // Prefer candidates marked primary, default, or main
-            let chosen = candidates
-                .iter()
-                .find(|c| {
-                    let lower = c.to_lowercase();
-                    lower.contains("primary") || lower.contains("default") || lower.contains("main")
-                })
-                .or_else(|| candidates.first())
-                .cloned();
-
-            match chosen {
-                Some(m) => m,
-                None => {
-                    eprintln!("Error: No model configured.");
-                    eprintln!("PurrCode AI has no hardcoded default models.");
-                    eprintln!();
-                    eprintln!("Please configure your provider in '~/.purrcode/purrcode.jsonc' or run 'purrcode-ai onboard'.");
-                    std::process::exit(1);
-                }
-            }
+    match purrcode_service::cron::resolve_target_model(config, model_override) {
+        Ok(m) => m,
+        Err(_) => {
+            eprintln!("Error: No model configured.");
+            eprintln!("PurrCode AI has no hardcoded default models.");
+            eprintln!();
+            eprintln!("Please configure your provider in '~/.purrcode/purrcode.jsonc' or run 'purrcode-ai onboard'.");
+            std::process::exit(1);
         }
     }
 }
@@ -188,7 +166,7 @@ pub(crate) async fn run_one_shot(
     // agent is not Meowstro.
     let agent_role = crate::cli::agent_role_for(use_orchestrator);
 
-    crate::log_unenforced_plugin_capabilities(
+    purrcode_service::log_unenforced_plugin_capabilities(
         &audit_logger,
         &session_id,
         agent_role,

@@ -3,9 +3,24 @@ name = "purrcode-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PurrCode AI systemd and OpenRC service installer"
+description = "PurrCode AI background services (cron, heartbeat, skill curator) and systemd/OpenRC service installer"
 
 [dependencies]
 purrcode-api.workspace = true
+purrcode-config.workspace = true
+purrcode-core.workspace = true
+purrcode-provider.workspace = true
+purrcode-approval.workspace = true
+purrcode-tools.workspace = true
+purrcode-memory.workspace = true
+purrcode-orchestrator.workspace = true
+purrcode-plugin.workspace = true
+purrcode-channel.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

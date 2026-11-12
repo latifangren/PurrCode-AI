@@ -329,23 +329,12 @@ pub fn read_line_trimmed() -> String {
     buf.trim().to_string()
 }
 
+/// The user's PurrCode home directory. Thin wrapper over
+/// `purrcode_service::purrcode_dir` (the home resolution moved to the
+/// service crate in the R2 extraction); kept so the CLI call sites
+/// stay untouched.
 pub fn get_purrcode_dir() -> Result<PathBuf> {
-    if let Some(home) = dirs_home() {
-        Ok(home.join(".purrcode"))
-    } else {
-        Ok(PathBuf::from(".purrcode"))
-    }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    Ok(purrcode_service::purrcode_dir())
 }
 
 #[cfg(test)]

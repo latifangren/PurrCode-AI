@@ -15,9 +15,11 @@ use purrcode_config::{Config, ModePresetLoader};
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cron::parse_natural;
-use crate::cron::store::{new_job_id, validate_tools, PresetSnapshot, DEFAULT_ALLOWLIST};
-use crate::cron::{CronJob, CronStore, DeliveryQueue, DeliveryTarget, JobSchedule};
+use purrcode_service::cron::parse_natural;
+use purrcode_service::cron::store::{
+    new_job_id, validate_tools, PresetSnapshot, DEFAULT_ALLOWLIST,
+};
+use purrcode_service::cron::{CronJob, CronStore, DeliveryQueue, DeliveryTarget, JobSchedule};
 
 /// Arguments for the `purrcode cron` subcommand (bundled so the handler
 /// stays under clippy's argument-count lint).
@@ -158,8 +160,9 @@ async fn cmd_run(args: &CronArgs<'_>) -> Result<()> {
     if store.find(&name).is_none() {
         return Err(PurrError::Session(format!("No cron job matching '{name}'")));
     }
-    let deps = crate::cron::build_runner_deps(args.config, args.workspace_root, None).await?;
-    let runner = crate::cron::CronRunner::new(deps);
+    let deps =
+        purrcode_service::cron::build_runner_deps(args.config, args.workspace_root, None).await?;
+    let runner = purrcode_service::cron::CronRunner::new(deps);
     let outcome = runner.run_job(&mut store, &name).await?;
     println!(
         "🐾 Cron job '{}' ({}) fired (session {}):",
