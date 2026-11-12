@@ -85,7 +85,7 @@ pub async fn run_gateway(
         );
     }
 
-    let target_model = super::resolve_target_model_or_exit(model_override, config);
+    let target_model = crate::one_shot::resolve_target_model_or_exit(model_override, config);
     let registry = ProviderRegistry::from_config(config)?;
     let (provider_name, wire_model, _provider_cfg, _model_cfg) = match config
         .resolve_model(&target_model)
