@@ -16,7 +16,8 @@
 //! the poll loop resolves.
 
 use crate::telegram::approval::{
-    AlwaysSet, ApprovalDecision, Pending, TelegramApprovalRequester, TelegramAskRequester,
+    AlwaysSet, ApprovalDecision, Pending, SkillDraftRequester, TelegramApprovalRequester,
+    TelegramAskRequester,
 };
 use crate::telegram::chunk::split_message;
 use crate::telegram::client::{TelegramApiClient, TelegramError};
@@ -130,6 +131,27 @@ impl TelegramChannel {
         audit_sink: Option<Arc<dyn AuditSink>>,
     ) -> Arc<TelegramApprovalRequester> {
         Arc::new(TelegramApprovalRequester::new(
+            self.api.clone(),
+            self.pending_approvals.clone(),
+            self.always.clone(),
+            chat_id,
+            session_id,
+            self.approval_timeout,
+            audit_sink,
+        ))
+    }
+
+    /// A skill-draft approval requester bound to one chat + session
+    /// (v0.3 F20). Shares the channel's pending machinery but uses
+    /// the `sk:` callback prefix and the `skill_draft` always-key, so
+    /// it never shares state with a tool approval.
+    pub fn skill_draft_requester(
+        &self,
+        chat_id: i64,
+        session_id: impl Into<String>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+    ) -> Arc<SkillDraftRequester> {
+        Arc::new(SkillDraftRequester::new(
             self.api.clone(),
             self.pending_approvals.clone(),
             self.always.clone(),
@@ -384,6 +406,24 @@ impl TelegramChannel {
             return;
         };
         let resolved = if let Some(rest) = data.strip_prefix("ap:") {
+            let Some((token, choice)) = rest.split_once(':') else {
+                let _ = self.api.answer_callback_query(&cb.id, None).await;
+                return;
+            };
+            let decision = match choice {
+                "y" => ApprovalDecision::Approve,
+                "n" => ApprovalDecision::Deny,
+                "a" => ApprovalDecision::Always,
+                _ => {
+                    let _ = self.api.answer_callback_query(&cb.id, None).await;
+                    return;
+                }
+            };
+            self.pending_approvals.resolve(token, decision).await
+        } else if let Some(rest) = data.strip_prefix("sk:") {
+            // Skill-draft approval (v0.3 F20): same three-way decision
+            // as a tool approval, resolved through the same pending
+            // machinery — the `sk:` prefix is what keeps the two apart.
             let Some((token, choice)) = rest.split_once(':') else {
                 let _ = self.api.answer_callback_query(&cb.id, None).await;
                 return;

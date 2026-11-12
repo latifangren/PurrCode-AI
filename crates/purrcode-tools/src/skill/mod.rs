@@ -530,7 +530,7 @@ pub fn validate_skill_description(desc: &str) -> std::result::Result<String, Str
     Ok(trimmed.to_string())
 }
 
-fn parse_skill_frontmatter(content: &str, default_name: &str) -> (String, String) {
+pub fn parse_skill_frontmatter(content: &str, default_name: &str) -> (String, String) {
     let mut name = default_name.to_string();
     let mut description = format!("Skill {}", name);
 

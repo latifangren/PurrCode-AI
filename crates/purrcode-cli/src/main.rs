@@ -2,6 +2,7 @@
 
 mod cli;
 mod cron;
+mod curator;
 mod gateway;
 mod heartbeat;
 mod onboard;
@@ -16,7 +17,7 @@ use purrcode_channel::tui::AskOptionItem;
 use purrcode_config::{
     Config, ConfigLoader, ModePresetLoader, ModelPresetLoader, MIN_CONTEXT_WINDOW,
 };
-use purrcode_core::{AgentLoop, SessionStore, SteeringQueue};
+use purrcode_core::{AgentLoop, ApprovalRequester, SessionStore, SteeringQueue};
 use purrcode_memory::MarkdownMemory;
 use purrcode_orchestrator::MeowstroOrchestrator;
 use purrcode_plugin::PluginManager;
@@ -620,6 +621,14 @@ async fn main() -> Result<()> {
     let store_worker = session_store.clone();
     let sid_worker = session_id.clone();
 
+    // F20 curator deps, captured for the turn worker below (ADR-014
+    // item 7). `wire_model` is a borrowed &str (Copy), so it is still
+    // usable here even though the orchestrator/direct loop took it.
+    let curator_provider = provider.clone();
+    let curator_model = wire_model.to_string();
+    let curator_purrcode_dir = purrcode_dir.clone();
+    let curator_audit = audit_logger.clone();
+
     tokio::spawn(async move {
         while let Some(user_prompt) = prompt_rx.recv().await {
             if user_prompt == "/__internal_reset" {
@@ -643,6 +652,91 @@ async fn main() -> Result<()> {
                 .await;
             for msg in session_messages.iter().skip(prev_len) {
                 let _ = store_worker.append_message(&sid_worker, msg);
+            }
+            // F20 curator (post-turn, ADR-014 item 7): only when the
+            // turn made enough tool calls. The approval card is a
+            // second TuiApprovalRequester with its own session_allow,
+            // so pressing `A` ("always") here auto-approves future
+            // skill drafts only — never tool calls.
+            let curator_outcome = {
+                let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+                skill_mgr.discover_all(&tool_context.workspace_root);
+                let deps = crate::curator::CuratorDeps {
+                    provider: curator_provider.clone(),
+                    model: curator_model.clone(),
+                    purrcode_dir: curator_purrcode_dir.clone(),
+                    audit_logger: curator_audit.clone(),
+                };
+                crate::curator::CuratorRunner::new(deps)
+                    .run_after_turn(&sid_worker, &session_messages, prev_len, &skill_mgr)
+                    .await
+            };
+            // Every outcome is matched explicitly (the audit already
+            // carries the detail; the debug lines make the curator's
+            // decision observable while debugging, and reading the
+            // fields keeps the enum honest).
+            match curator_outcome {
+                crate::curator::CuratorOutcome::DraftStaged { meta, path } => {
+                    let skill_approver = TuiApprovalRequester {
+                        event_tx: event_tx_worker.clone(),
+                        session_allow: Arc::new(AtomicBool::new(false)),
+                    };
+                    let preview: String = meta.content.chars().take(2000).collect();
+                    let approved = skill_approver
+                    .request_approval(
+                        "manage_skill",
+                        &format!(
+                            "Save the drafted skill '{}'?\n{}\n\nDraft staged at {} — it becomes a live skill only if you approve.",
+                            meta.name,
+                            meta.description,
+                            path.display()
+                        ),
+                        Some(&preview),
+                    )
+                    .await;
+                    if approved {
+                        // Save turn: a normal turn (Meowstro delegates to
+                        // Tinker, who runs manage_skill action=create).
+                        let save_prompt = crate::curator::save_prompt_for(&meta);
+                        let prev_save = session_messages.len();
+                        let _ = runner
+                            .run_turn_with_history(
+                                &mut session_messages,
+                                &save_prompt,
+                                Some(&system_prompt),
+                                &tool_context,
+                                Some(listener.as_ref()),
+                            )
+                            .await;
+                        for msg in session_messages.iter().skip(prev_save) {
+                            let _ = store_worker.append_message(&sid_worker, msg);
+                        }
+                        let _ = crate::curator::discard_draft(&curator_purrcode_dir, &meta.name);
+                    } else {
+                        let _ = crate::curator::discard_draft(&curator_purrcode_dir, &meta.name);
+                        let _ = curator_audit.log_entry(AuditEntry {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            session_id: sid_worker.clone(),
+                            agent: "curator".to_string(),
+                            event: "skill_draft_discarded".to_string(),
+                            tool: None,
+                            decision: "ok".to_string(),
+                            detail: format!("draft '{}' discarded by the user", meta.name),
+                        });
+                    }
+                }
+                crate::curator::CuratorOutcome::BelowThreshold { count } => {
+                    tracing::debug!("curator: below threshold ({count} tool calls)");
+                }
+                crate::curator::CuratorOutcome::DecideFailed { reason } => {
+                    tracing::debug!("curator: decide failed: {reason}");
+                }
+                crate::curator::CuratorOutcome::NoDraft => {
+                    tracing::debug!("curator: model answered NO_SKILL");
+                }
+                crate::curator::CuratorOutcome::DraftRejected { reason } => {
+                    tracing::debug!("curator: draft rejected: {reason}");
+                }
             }
             let _ = event_tx_worker
                 .send(purrcode_channel::TuiEvent::TurnFinished)

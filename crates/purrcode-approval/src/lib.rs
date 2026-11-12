@@ -45,6 +45,35 @@ impl AuditLogger {
         &self.audit_file
     }
 
+    /// Count `tool_call` events for one session since the last curator
+    /// marker (`skill_curator_checked`) for that session (v0.3 F20,
+    /// ADR-014 item 7). The audit log is append-only, so "since the
+    /// last marker" is a stable per-turn boundary that survives
+    /// restarts; a rotated-away marker just restarts the count from
+    /// the current file. A missing or unreadable file counts as zero
+    /// (never an error — the curator is a best-effort hook, and a
+    /// broken audit file must not break the turn it follows).
+    pub fn count_tool_calls_since_curator_check(&self, session_id: &str) -> usize {
+        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+            return 0;
+        };
+        let mut count = 0usize;
+        for line in raw.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+                continue;
+            }
+            match v.get("event").and_then(|e| e.as_str()) {
+                Some("skill_curator_checked") => count = 0,
+                Some("tool_call") => count += 1,
+                _ => {}
+            }
+        }
+        count
+    }
+
     pub fn log_entry(&self, mut entry: AuditEntry) -> Result<()> {
         entry.detail = scrub_secrets(&entry.detail);
         if let Some(parent) = self.audit_file.parent() {
@@ -415,5 +444,72 @@ mod tests {
             child.evaluate_tool("read", ApprovalTier::Read, false),
             ApprovalDecision::Allow
         );
+    }
+
+    #[test]
+    fn test_count_tool_calls_since_curator_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr_audit_curator_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let logger = AuditLogger::new(&dir);
+        let sid = "purr_count";
+        let other = "purr_other";
+        // 3 calls for this session, 2 for another session (ignored).
+        for i in 0..3 {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: sid.to_string(),
+                    agent: "meowstro".to_string(),
+                    event: "tool_call".to_string(),
+                    tool: Some(format!("tool_{i}")),
+                    decision: "allow".to_string(),
+                    detail: "mock".to_string(),
+                })
+                .unwrap();
+        }
+        for _ in 0..2 {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: other.to_string(),
+                    agent: "meowstro".to_string(),
+                    event: "tool_call".to_string(),
+                    tool: Some("read".to_string()),
+                    decision: "allow".to_string(),
+                    detail: "mock".to_string(),
+                })
+                .unwrap();
+        }
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 3);
+        assert_eq!(logger.count_tool_calls_since_curator_check(other), 2);
+        // The marker resets the count; later calls accumulate again,
+        // and other sessions' markers do not touch this session.
+        logger
+            .log_entry(AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: sid.to_string(),
+                agent: "curator".to_string(),
+                event: "skill_curator_checked".to_string(),
+                tool: None,
+                decision: "ok".to_string(),
+                detail: "tool_calls=3 (threshold 5)".to_string(),
+            })
+            .unwrap();
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 0);
+        logger
+            .log_entry(AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: sid.to_string(),
+                agent: "meowstro".to_string(),
+                event: "tool_call".to_string(),
+                tool: Some("read".to_string()),
+                decision: "allow".to_string(),
+                detail: "mock".to_string(),
+            })
+            .unwrap();
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

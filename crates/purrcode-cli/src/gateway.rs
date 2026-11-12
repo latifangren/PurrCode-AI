@@ -428,6 +428,9 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
             return;
         }
     };
+    // F20 curator provider (cloned before the orchestrator takes the
+    // Arc below).
+    let curator_provider = provider.clone();
 
     let meowstro = MeowstroOrchestrator::with_complete_options(
         provider,
@@ -499,6 +502,99 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
     for msg in messages.iter().skip(loaded_len) {
         if let Err(e) = session_store.append_message(&session_id, msg) {
             tracing::warn!("telegram: failed to persist message for {session_id}: {e}");
+        }
+    }
+
+    // F20 curator (post-turn, ADR-014 item 7): only when the turn made
+    // enough tool calls. The approval is the skill-draft card (Ya /
+    // Tidak / Selalu, 120s → deny); on approve a second, normal turn
+    // saves the draft (Meowstro delegates to Tinker). The hook holds
+    // the chat lock while it waits — same as a tool approval inside a
+    // turn — so two turns in one chat never interleave.
+    let curator_outcome = {
+        let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+        skill_mgr.discover_all(&state.workspace_root);
+        let deps = crate::curator::CuratorDeps {
+            provider: curator_provider,
+            model: state.wire_model.clone(),
+            purrcode_dir: state.purrcode_dir.clone(),
+            audit_logger: state.audit_logger.clone(),
+        };
+        crate::curator::CuratorRunner::new(deps)
+            .run_after_turn(&session_id, &messages, loaded_len, &skill_mgr)
+            .await
+    };
+    // Every outcome is matched explicitly (the audit already carries
+    // the detail; the debug lines make the curator's decision
+    // observable while debugging, and reading the fields keeps the
+    // enum honest).
+    match curator_outcome {
+        crate::curator::CuratorOutcome::DraftStaged { meta, path: _ } => {
+            let draft_approver = state.channel.skill_draft_requester(
+                inbound.chat_id,
+                session_id.clone(),
+                Some(state.audit_sink.clone()),
+            );
+            let preview: String = meta.content.chars().take(2000).collect();
+            let approved = draft_approver
+                .request_approval(&meta.name, &meta.description, Some(&preview))
+                .await;
+            if approved {
+                let save_prompt = crate::curator::save_prompt_for(&meta);
+                let prev_save = messages.len();
+                let save_result = meowstro
+                    .agent_loop()
+                    .run_turn_with_history(
+                        &mut messages,
+                        &save_prompt,
+                        Some(&state.system_prompt),
+                        &ctx,
+                        Some(&listener),
+                    )
+                    .await;
+                renderer.flush().await;
+                if let Err(e) = save_result {
+                    tracing::warn!(
+                        "telegram: skill save turn failed for chat {}: {e}",
+                        inbound.chat_id
+                    );
+                    renderer
+                    .send_standalone(
+                        "Gagal menyimpan skill draft. Draft masih tersimpan dan bisa dicoba lagi.",
+                    )
+                    .await;
+                } else {
+                    let _ = crate::curator::discard_draft(&state.purrcode_dir, &meta.name);
+                }
+                for msg in messages.iter().skip(prev_save) {
+                    if let Err(e) = session_store.append_message(&session_id, msg) {
+                        tracing::warn!("telegram: failed to persist message for {session_id}: {e}");
+                    }
+                }
+            } else {
+                let _ = crate::curator::discard_draft(&state.purrcode_dir, &meta.name);
+                let _ = state.audit_logger.log_entry(purrcode_approval::AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: session_id.clone(),
+                    agent: "curator".to_string(),
+                    event: "skill_draft_discarded".to_string(),
+                    tool: None,
+                    decision: "ok".to_string(),
+                    detail: format!("draft '{}' discarded by the user", meta.name),
+                });
+            }
+        }
+        crate::curator::CuratorOutcome::BelowThreshold { count } => {
+            tracing::debug!("curator: below threshold ({count} tool calls)");
+        }
+        crate::curator::CuratorOutcome::DecideFailed { reason } => {
+            tracing::debug!("curator: decide failed: {reason}");
+        }
+        crate::curator::CuratorOutcome::NoDraft => {
+            tracing::debug!("curator: model answered NO_SKILL");
+        }
+        crate::curator::CuratorOutcome::DraftRejected { reason } => {
+            tracing::debug!("curator: draft rejected: {reason}");
         }
     }
 }

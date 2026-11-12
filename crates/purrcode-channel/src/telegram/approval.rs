@@ -298,6 +298,186 @@ impl ApprovalRequester for TelegramApprovalRequester {
     }
 }
 
+/// The always-set key for skill drafts. A dedicated key (not
+/// `manage_skill`) so that "Selalu" on a skill-draft card
+/// auto-approves future drafts only — never ordinary `manage_skill`
+/// tool calls in the same session (v0.3 F20, ADR-014 item 7).
+pub const SKILL_DRAFT_TOOL: &str = "skill_draft";
+
+/// Asks one Telegram chat to approve saving a staged skill draft
+/// (v0.3 F20). Mirrors [`TelegramApprovalRequester`] exactly —
+/// same pending machinery, same 120s timeout → deny, same
+/// single-claim resolution, same card-update best effort — but with
+/// the `sk:` callback prefix and the `skill_draft` always-key, so a
+/// draft approval never shares state with a tool approval. The audit
+/// event is `telegram_skill_approval` (same decision vocabulary as
+/// `telegram_approval`).
+pub struct SkillDraftRequester {
+    api: Arc<TelegramApiClient>,
+    pending: Arc<Pending<ApprovalDecision>>,
+    always: Arc<AlwaysSet>,
+    chat_id: i64,
+    session_id: String,
+    timeout: Duration,
+    audit_sink: Option<Arc<dyn AuditSink>>,
+}
+
+impl SkillDraftRequester {
+    pub fn new(
+        api: Arc<TelegramApiClient>,
+        pending: Arc<Pending<ApprovalDecision>>,
+        always: Arc<AlwaysSet>,
+        chat_id: i64,
+        session_id: impl Into<String>,
+        timeout: Duration,
+        audit_sink: Option<Arc<dyn AuditSink>>,
+    ) -> Self {
+        Self {
+            api,
+            pending,
+            always,
+            chat_id,
+            session_id: session_id.into(),
+            timeout,
+            audit_sink,
+        }
+    }
+
+    fn audit(&self, decision: &str, detail: &str) {
+        if let Some(sink) = &self.audit_sink {
+            sink.record_event(
+                &self.session_id,
+                "telegram",
+                "telegram_skill_approval",
+                Some(SKILL_DRAFT_TOOL),
+                decision,
+                detail,
+            );
+        }
+    }
+
+    /// Ask the user to approve saving the staged draft `name`
+    /// (`description` is the draft's one-line description, `preview`
+    /// the SKILL.md body). Returns true on Ya or Selalu, false on
+    /// Tidak, timeout, or an undeliverable card (fail-closed).
+    pub async fn request_approval(
+        &self,
+        name: &str,
+        description: &str,
+        preview: Option<&str>,
+    ) -> bool {
+        if self
+            .always
+            .is_allowed(self.chat_id, &self.session_id, SKILL_DRAFT_TOOL)
+            .await
+        {
+            self.audit(
+                "approved_always",
+                "skill drafts allowed for this chat session",
+            );
+            return true;
+        }
+
+        let (token, rx) = self.pending.register().await;
+        let mut card = format!("💡 Skill draft\nName: {name}\n{description}");
+        if let Some(diff) = preview {
+            let shown: String = diff.chars().take(400).collect();
+            card.push_str(&format!("\n\nPreview:\n{shown}"));
+        }
+        card.push_str(&format!(
+            "\n\nTap below to save it as a live skill. Expires in {}s — no tap denies automatically.",
+            self.timeout.as_secs()
+        ));
+        let keyboard = InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![
+                    InlineKeyboardButton {
+                        text: "✅ Ya".to_string(),
+                        callback_data: format!("sk:{token}:y"),
+                    },
+                    InlineKeyboardButton {
+                        text: "❌ Tidak".to_string(),
+                        callback_data: format!("sk:{token}:n"),
+                    },
+                ],
+                vec![InlineKeyboardButton {
+                    text: "✦ Selalu (sesi ini)".to_string(),
+                    callback_data: format!("sk:{token}:a"),
+                }],
+            ],
+        };
+        let card_msg = match self
+            .api
+            .send_message(self.chat_id, &card, Some(keyboard))
+            .await
+        {
+            Ok(msg) => Some(msg.message_id),
+            Err(e) => {
+                tracing::warn!("telegram: failed to send skill draft card for '{name}': {e}");
+                self.pending.claim(&token).await;
+                self.audit(
+                    "denied_unreachable",
+                    "skill draft card could not be delivered",
+                );
+                return false;
+            }
+        };
+
+        let decision = match tokio::time::timeout(self.timeout, rx).await {
+            Ok(Ok(d)) => d,
+            Ok(Err(_)) => {
+                self.audit("denied_unreachable", "approval channel closed");
+                return false;
+            }
+            Err(_) => {
+                self.pending.claim(&token).await;
+                if let Some(mid) = card_msg {
+                    let _ = self
+                        .api
+                        .edit_message_text(
+                            self.chat_id,
+                            mid,
+                            "⏱ Skill draft expired — denied automatically (timeout).",
+                            None,
+                        )
+                        .await;
+                }
+                self.audit("denied_timeout", "no tap within the timeout");
+                return false;
+            }
+        };
+
+        if let Some(mid) = card_msg {
+            let resolved = match decision {
+                ApprovalDecision::Approve => "✅ Skill draft approved — saving…",
+                ApprovalDecision::Deny => "❌ Skill draft discarded.",
+                ApprovalDecision::Always => "✦ Skill drafts auto-saved for this session.",
+            };
+            let _ = self
+                .api
+                .edit_message_text(self.chat_id, mid, resolved, None)
+                .await;
+        }
+        match decision {
+            ApprovalDecision::Approve => {
+                self.audit("approved_by_user", "tapped Ya");
+                true
+            }
+            ApprovalDecision::Deny => {
+                self.audit("denied_by_user", "tapped Tidak");
+                false
+            }
+            ApprovalDecision::Always => {
+                self.always
+                    .allow(self.chat_id, &self.session_id, SKILL_DRAFT_TOOL)
+                    .await;
+                self.audit("approved_always", "tapped Selalu (sesi ini)");
+                true
+            }
+        }
+    }
+}
+
 /// Sends an `ask` picker to one Telegram chat and waits for the tap.
 /// Implements the tools crate's [`AskRequester`]; a timeout (or a
 /// dropped channel) answers `None`, which the `ask` tool surfaces as
