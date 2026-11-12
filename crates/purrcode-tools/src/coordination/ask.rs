@@ -114,6 +114,16 @@ impl Tool for AskTool {
                     })),
                 });
             }
+            // A wired requester is authoritative: its "no decision"
+            // (timeout, cancel, unattended run) is final. Falling through
+            // to a stdin prompt would ask a user who already declined
+            // (Telegram ask timeout) or does not exist (cron/daemon run),
+            // and in TUI raw mode the prompt could not be read anyway.
+            // A fabricated answer (e.g. options[0]) is never returned.
+            return Err(PurrError::Tool {
+                tool: "ask".to_string(),
+                message: "No answer available: the question was not answered (timeout, cancelled, or unattended run)".to_string(),
+            });
         }
 
         // 2. Check if stdin is an interactive terminal
@@ -206,6 +216,7 @@ mod tests {
             agent_role: "meowstro".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
         };
 
         let res = tool
@@ -237,6 +248,7 @@ mod tests {
             agent_role: "meowstro".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
         };
 
         let res = tool
@@ -250,5 +262,53 @@ mod tests {
             .await;
 
         assert!(res.is_err());
+    }
+
+    /// A requester that declines (timeout / cancel / unattended run) is
+    /// final: the tool errors instead of falling through to a stdin
+    /// prompt or fabricating an answer from options[0].
+    struct DecliningRequester;
+
+    #[async_trait]
+    impl AskRequester for DecliningRequester {
+        async fn request_decision(
+            &self,
+            _question: &str,
+            _options: &[AskOption],
+        ) -> Option<String> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ask_requester_none_is_final() {
+        let tool = AskTool::with_requester(Arc::new(DecliningRequester));
+        let ctx = ToolContext {
+            session_id: "test".to_string(),
+            agent_role: "meowstro".to_string(),
+            workspace_root: std::path::PathBuf::from("."),
+            is_dry_run: false,
+            is_cron: true,
+        };
+        let res = tool
+            .execute(
+                serde_json::json!({
+                    "question": "Deploy now?",
+                    "options": [
+                        { "id": "yes", "label": "Yes" },
+                        { "id": "no", "label": "No" }
+                    ]
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(res.is_err());
+        let err = format!("{}", res.unwrap_err());
+        assert!(
+            err.contains("No answer available"),
+            "unexpected error: {err}"
+        );
+        // And it must not contain a fabricated selection.
+        assert!(!err.contains("Selected decision"));
     }
 }

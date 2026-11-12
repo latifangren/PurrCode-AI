@@ -770,6 +770,7 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
         };
 
         let out = engine
@@ -807,6 +808,7 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
         };
 
         let mut history = Vec::new();
@@ -844,6 +846,7 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
         };
 
         let mut history = Vec::new();

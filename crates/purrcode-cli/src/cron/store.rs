@@ -34,6 +34,14 @@ pub const AGENT_TOOL_NAMES: &[&str] = &[
     "manage_skill",
 ];
 
+/// Tools a cron job may NEVER declare in its allowlist (ADR-014 item 4,
+/// extended): `manage_skill` is a real tool, but it writes persistent
+/// skills — an unattended job creating skills would bypass the F20
+/// approval-before-save principle through the F19 surface. (The
+/// cron-management tools need no entry here: they are not agent tools
+/// at all, so `validate_tools` already rejects them as unknown.)
+pub const CRON_FORBIDDEN_TOOLS: &[&str] = &["manage_skill"];
+
 /// Meowstro's read-only tool set + delegation (the default allowlist when
 /// the user declares nothing at creation: no writes unless declared).
 pub const DEFAULT_ALLOWLIST: &[&str] = &[
@@ -107,6 +115,11 @@ pub struct CronJob {
     pub run_count: u32,
     #[serde(default)]
     pub failure_count: u32,
+    /// Outcome of the most recent run: "ok", "failed: <short>",
+    /// "missed: <reason>", or "running" (set at run start; a stale
+    /// "running" older than an hour means the daemon died mid-run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +296,11 @@ pub fn validate_job(job: &CronJob) -> Result<()> {
 
 pub fn validate_tools(tools: &[String]) -> Result<()> {
     for tool in tools {
+        if CRON_FORBIDDEN_TOOLS.contains(&tool.as_str()) {
+            return Err(PurrError::Session(format!(
+                "Tool '{tool}' may not be declared in a cron allowlist: cron jobs never create skills (skills are curated with user approval, F20)"
+            )));
+        }
         if !AGENT_TOOL_NAMES.contains(&tool.as_str()) {
             return Err(PurrError::Session(format!(
                 "Unknown tool '{tool}' in cron allowlist (known tools: {})",
@@ -330,6 +348,7 @@ mod tests {
             next_run: Some(parsed.next_run),
             run_count: 0,
             failure_count: 0,
+            last_status: None,
         }
     }
 
@@ -391,6 +410,20 @@ mod tests {
         let mut job = sample_job();
         job.prompt = "   ".to_string();
         assert!(validate_job(&job).is_err());
+    }
+
+    #[test]
+    fn test_validate_job_rejects_manage_skill_in_allowlist() {
+        // Creation-time and run-time share validate_tools: a job that
+        // declares manage_skill is rejected both when added and when a
+        // hand-edited store is loaded for a run (re-check F2).
+        assert!(validate_tools(&["read".to_string(), "manage_skill".to_string()]).is_err());
+        let mut job = sample_job();
+        job.tools = vec!["read".to_string(), "manage_skill".to_string()];
+        assert!(validate_job(&job).is_err());
+        let mut job = sample_job();
+        job.tools = vec!["read".to_string(), "bash".to_string()];
+        assert!(validate_job(&job).is_ok());
     }
 
     #[test]

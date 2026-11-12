@@ -299,7 +299,8 @@ async fn main() -> Result<()> {
                     config: &config,
                     workspace_root: &workspace_root,
                     purrcode_dir: &purrcode_dir,
-                })?;
+                })
+                .await?;
                 return Ok(());
             }
         }
@@ -537,6 +538,7 @@ async fn main() -> Result<()> {
         agent_role: agent_role.to_string(),
         workspace_root: workspace_root.clone(),
         is_dry_run: false,
+        is_cron: false,
     };
 
     let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
@@ -857,6 +859,7 @@ async fn run_one_shot(
         agent_role: agent_role.to_string(),
         workspace_root: workspace_root.to_path_buf(),
         is_dry_run: false,
+        is_cron: false,
     };
 
     let cli_approver: Arc<dyn purrcode_core::ApprovalRequester> =

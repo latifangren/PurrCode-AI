@@ -264,6 +264,7 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
         };
 
         // 1. Mismatched hash must fail
@@ -320,6 +321,7 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
         };
 
         // LLM provides 2 spaces indentation and LF endings

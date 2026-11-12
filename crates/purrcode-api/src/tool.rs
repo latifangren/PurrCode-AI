@@ -57,6 +57,11 @@ pub struct ToolContext {
     pub agent_role: String,
     pub workspace_root: std::path::PathBuf,
     pub is_dry_run: bool,
+    /// True when this turn runs inside an unattended cron job (v0.3 F19).
+    /// The `task` tool forces `is_cron` on every delegation and ignores
+    /// any model-supplied `shadow_override_reason` while this is set, so
+    /// a cron run can never talk its way past a Tuxeshadow objection.
+    pub is_cron: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

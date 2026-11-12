@@ -127,6 +127,13 @@ pub struct ApprovalGate {
     deny_rules: HashSet<String>,
     ask_rules: HashSet<String>,
     allow_rules: HashSet<String>,
+    /// Optional hard tool allowlist (v0.3 F19 cron). When set, any tool
+    /// NOT in the set is denied outright, before every other rule. The
+    /// cron runner sets it from the job's declared allowlist; it
+    /// propagates to child gates via `narrowed_child_gate` (clone), so a
+    /// delegated child can never run a tool the job did not declare.
+    /// `None` (the default everywhere else) means "no restriction".
+    tool_allowlist: Option<HashSet<String>>,
 }
 
 impl ApprovalGate {
@@ -147,6 +154,7 @@ impl ApprovalGate {
             deny_rules: HashSet::new(),
             ask_rules: HashSet::new(),
             allow_rules: HashSet::new(),
+            tool_allowlist: None,
         }
     }
 
@@ -162,7 +170,21 @@ impl ApprovalGate {
             deny_rules: HashSet::new(),
             ask_rules: HashSet::new(),
             allow_rules: preset.tools.iter().cloned().collect(),
+            tool_allowlist: None,
         }
+    }
+
+    /// Sets the hard tool allowlist (v0.3 F19 cron): only the named tools
+    /// may run at all. An empty set denies everything. Returns `self`
+    /// for builder-style use.
+    pub fn with_tool_allowlist(mut self, tools: HashSet<String>) -> Self {
+        self.tool_allowlist = Some(tools);
+        self
+    }
+
+    /// The hard tool allowlist, if one was set (`None` = no restriction).
+    pub fn tool_allowlist(&self) -> Option<&HashSet<String>> {
+        self.tool_allowlist.as_ref()
     }
 
     pub fn add_deny_rule(&mut self, rule: impl Into<String>) {
@@ -184,6 +206,15 @@ impl ApprovalGate {
         tier: ApprovalTier,
         is_outside_workspace: bool,
     ) -> ApprovalDecision {
+        // 0. Hard tool allowlist (v0.3 F19 cron): a tool the job did not
+        // declare is denied outright, whatever the mode says. This runs
+        // before every other rule so no mode/tier can widen it.
+        if let Some(allow) = &self.tool_allowlist {
+            if !allow.contains(tool_name) {
+                return ApprovalDecision::Deny;
+            }
+        }
+
         // 1. Explicit deny rules always win (deny > ask > allow)
         if self.deny_rules.contains(tool_name) || self.deny_rules.contains("*") {
             return ApprovalDecision::Deny;
@@ -332,5 +363,57 @@ mod tests {
         let files: Vec<_> = std::fs::read_dir(&temp_dir).unwrap().flatten().collect();
         assert!(files.len() >= 2);
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_tool_allowlist_denies_undeclared_tools() {
+        // A cron job's declared set is the whole law: undeclared tools
+        // are denied even in Yolo mode and even for Read tier.
+        let allow: HashSet<String> = ["read".to_string()].into_iter().collect();
+        let gate = ApprovalGate::new("yolo").with_tool_allowlist(allow);
+        assert_eq!(
+            gate.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Allow
+        );
+        assert_eq!(
+            gate.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            gate.evaluate_tool("write", ApprovalTier::Write, false),
+            ApprovalDecision::Deny
+        );
+        // An empty allowlist denies everything (explicit `--allow ""`).
+        let gate = ApprovalGate::new("yolo").with_tool_allowlist(HashSet::new());
+        assert_eq!(
+            gate.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Deny
+        );
+        // No allowlist (None) keeps the old behavior: mode decides.
+        let gate = ApprovalGate::new("yolo");
+        assert_eq!(
+            gate.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_tool_allowlist_propagates_to_child_gate() {
+        let allow: HashSet<String> = ["read".to_string(), "task".to_string()]
+            .into_iter()
+            .collect();
+        let parent = ApprovalGate::new("tabby").with_tool_allowlist(allow);
+        let child = parent.narrowed_child_gate(ApprovalMode::Yolo);
+        // The child gate is a clone: the allowlist survives narrowing,
+        // and the mode is still capped at the parent's Supervised.
+        assert_eq!(child.mode, ApprovalMode::Supervised);
+        assert_eq!(
+            child.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            child.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Allow
+        );
     }
 }

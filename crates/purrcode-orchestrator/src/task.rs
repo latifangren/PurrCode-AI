@@ -370,6 +370,18 @@ impl TaskTool {
                 );
             }
         }
+        // In a cron run the job allowlist (enforced by the gate) also
+        // narrows the toolset the model sees, so it does not waste steps
+        // attempting tools that will be denied. `read_skill` is always
+        // kept (it loads skill bodies on demand), mirroring the direct
+        // path's retain in main.rs. The shadow auditor does NOT go
+        // through here — its fixed read-only registry is intentional:
+        // an audit must be able to read the plan/diff it judges.
+        if let Some(gate) = &self.approval_gate {
+            if let Some(allow) = gate.tool_allowlist() {
+                reg.retain(|name| name == "read_skill" || allow.contains(name));
+            }
+        }
         reg.freeze();
         reg
     }
@@ -548,12 +560,24 @@ impl Tool for TaskTool {
                 message: format!("Failed to write brief.md: {e}"),
             })?;
 
-        // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan/plan_json delegations (ADR-012)
+        // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan/plan_json delegations (ADR-012).
+        // `is_cron` is forced from the run context, not trusted from the
+        // model's own `task()` arguments: a cron run is a cron run even
+        // if Meowstro forgets (or refuses) to set the flag. Likewise a
+        // model-supplied `shadow_override_reason` is ignored in a cron
+        // run — without it, a Tabby objection fails the job closed
+        // (shadow.rs: Tabby + object + no reason => Err).
+        let is_cron = args.is_cron.unwrap_or(false) || ctx.is_cron;
+        let override_reason = if ctx.is_cron {
+            None
+        } else {
+            args.shadow_override_reason.as_deref()
+        };
         let mut effective_brief = args.brief.clone();
         if should_trigger_shadow(
             &args.role,
             &existing_brief,
-            args.is_cron.unwrap_or(false),
+            is_cron,
             args.is_replan.unwrap_or(false),
         ) {
             let guardrail = self
@@ -589,7 +613,7 @@ impl Tool for TaskTool {
                 .enforce_verdict_with_preview(
                     &verdict,
                     &ctx.session_id,
-                    args.shadow_override_reason.as_deref(),
+                    override_reason,
                     args.diff_preview
                         .as_deref()
                         .or(args.plan_json.as_deref())
@@ -627,6 +651,7 @@ impl Tool for TaskTool {
             agent_role: args.role.clone(),
             workspace_root: ctx.workspace_root.clone(),
             is_dry_run: ctx.is_dry_run,
+            is_cron: ctx.is_cron,
         };
 
         let mut child_loop = AgentLoop::new(child_provider, &child_model, child_tools)
@@ -959,6 +984,7 @@ mod tests {
             agent_role: "meowstro".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
         };
 
         // Step 1: Delegate to Whisker
@@ -1106,6 +1132,7 @@ mod tests {
             agent_role: "meowstro".to_string(),
             workspace_root: PathBuf::from("."),
             is_dry_run: true,
+            is_cron: false,
         };
 
         let result = task_tool

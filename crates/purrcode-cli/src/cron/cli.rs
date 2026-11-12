@@ -2,13 +2,12 @@
 
 //! The `purrcode cron` management CLI (v0.3 F19, ADR-014).
 //!
-//! Actions: `add`, `list`, `remove`, `enable`, `disable`, `deliveries`.
-//! The `run` action (fire a job now) and the gateway tick land with the
-//! job runner in the follow-up batch. Adding a job parses the schedule
-//! (deterministic NL parser), snapshots the preset rails, validates the
-//! tool allowlist, and asks for an interactive confirmation unless `--yes`
-//! is passed — the user sees exactly what was understood before the job
-//! is saved.
+//! Actions: `add`, `list`, `remove`, `enable`, `disable`, `deliveries`,
+//! `run` (fire a job now, in the foreground, under the same rails as
+//! the gateway tick). Adding a job parses the schedule (deterministic
+//! NL parser), snapshots the preset rails, validates the tool allowlist,
+//! and asks for an interactive confirmation unless `--yes` is passed —
+//! the user sees exactly what was understood before the job is saved.
 
 use chrono::Local;
 use purrcode_api::error::{PurrError, Result};
@@ -36,7 +35,7 @@ pub struct CronArgs<'a> {
 }
 
 /// Run the `purrcode cron` subcommand. `purrcode_dir` is `~/.purrcode`.
-pub fn run_cron_command(args: CronArgs<'_>) -> Result<()> {
+pub async fn run_cron_command(args: CronArgs<'_>) -> Result<()> {
     match args.action {
         "add" => cmd_add(&args),
         "list" | "" => cmd_list(args.purrcode_dir),
@@ -44,8 +43,9 @@ pub fn run_cron_command(args: CronArgs<'_>) -> Result<()> {
         "enable" => cmd_enable(args.name, true, args.purrcode_dir),
         "disable" => cmd_enable(args.name, false, args.purrcode_dir),
         "deliveries" => cmd_deliveries(args.purrcode_dir),
+        "run" => cmd_run(&args).await,
         other => Err(PurrError::Config(format!(
-            "Unknown 'cron' action '{other}'. Available: add, list, remove, enable, disable, deliveries"
+            "Unknown 'cron' action '{other}'. Available: add, list, remove, enable, disable, deliveries, run"
         ))),
     }
 }
@@ -141,6 +141,41 @@ fn cmd_deliveries(purrcode_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fire a job now, in the foreground, under the same rails the gateway
+/// tick uses (pinned preset, job allowlist, no prompting) — except
+/// due-ness: a manual fire is allowed before the scheduled time, as
+/// long as the job is enabled and no run of it is already in flight.
+/// The result prints here; the delivery is still enqueued for the
+/// normal drain, so the job's Telegram chat gets it too.
+async fn cmd_run(args: &CronArgs<'_>) -> Result<()> {
+    let name = args
+        .name
+        .clone()
+        .ok_or_else(|| PurrError::Config("Usage: purrcode-ai cron run <name-or-id>".to_string()))?;
+    // Look the job up BEFORE resolving the model: a mistyped name must
+    // report "no such job", not "no model configured" (build F1).
+    let mut store = load_store(args.purrcode_dir)?;
+    if store.find(&name).is_none() {
+        return Err(PurrError::Session(format!("No cron job matching '{name}'")));
+    }
+    let deps = crate::cron::build_runner_deps(args.config, args.workspace_root, None).await?;
+    let runner = crate::cron::CronRunner::new(deps);
+    let outcome = runner.run_job(&mut store, &name).await?;
+    println!(
+        "🐾 Cron job '{}' ({}) fired (session {}):",
+        outcome.job_name, outcome.job_id, outcome.session_id
+    );
+    if outcome.ok {
+        println!("{}", outcome.detail);
+        Ok(())
+    } else {
+        Err(PurrError::Tool {
+            tool: "cron".to_string(),
+            message: outcome.summary,
+        })
+    }
+}
+
 fn cmd_add(args: &CronArgs<'_>) -> Result<()> {
     let schedule_text = args.schedule.clone().ok_or_else(|| {
         PurrError::Config(
@@ -229,6 +264,7 @@ fn cmd_add(args: &CronArgs<'_>) -> Result<()> {
         next_run: Some(parsed.next_run),
         run_count: 0,
         failure_count: 0,
+        last_status: None,
     };
 
     // Confirm step: the user sees exactly what was understood before the

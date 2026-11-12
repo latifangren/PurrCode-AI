@@ -103,6 +103,14 @@ impl TelegramRenderer {
     /// Send one standalone message in this chat (plain text, chunked).
     /// Used for command replies and status lines outside a turn.
     pub async fn send_standalone(&self, text: &str) {
+        let _ = self.send_standalone_reported(text).await;
+    }
+
+    /// Like `send_standalone`, but reports whether every chunk reached
+    /// the Bot API (false = at least one chunk failed; the partial send
+    /// is already logged). The cron drain uses this so a lost delivery
+    /// is visible in the audit log instead of vanishing silently.
+    pub async fn send_standalone_reported(&self, text: &str) -> bool {
         for chunk in split_message(text) {
             if self
                 .api
@@ -111,9 +119,10 @@ impl TelegramRenderer {
                 .is_err()
             {
                 tracing::warn!("telegram: failed to send message to chat {}", self.chat_id);
-                return;
+                return false;
             }
         }
+        true
     }
 }
 

@@ -153,6 +153,7 @@ impl ShadowAuditor {
             agent_role: "tuxeshadow".to_string(),
             workspace_root: ctx.workspace_root.clone(),
             is_dry_run: true,
+            is_cron: ctx.is_cron,
         };
 
         let prompt = format!(

@@ -200,6 +200,21 @@ pub async fn run_gateway(
         let _ = shutdown_tx_ctrlc.send(true);
     });
 
+    // Cron tick task (v0.3 F19, ADR-014 item 5): fires due jobs and drains
+    // pending Telegram deliveries on its own interval, inside its own
+    // error boundary (`tick_once` never fails) — a broken job or a dead
+    // Telegram can never kill the poll loop, and vice versa. Not waited
+    // for on shutdown: like the poll task, it is aborted with the daemon.
+    if config.cron.as_ref().map(|c| c.enabled).unwrap_or(true) {
+        let tick_state = state.clone();
+        let tick_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            cron_tick_loop(tick_state, tick_shutdown).await;
+        });
+    } else {
+        println!("   Cron scheduler disabled in config ([cron] enabled = false).");
+    }
+
     // Poll task: on a fatal Telegram error (bad token mid-run), log it
     // and shut the daemon down instead of retrying forever.
     let channel_poll = channel.clone();
@@ -246,6 +261,46 @@ pub async fn run_gateway(
     poll_handle.abort();
     let _ = poll_handle.await;
     Ok(())
+}
+
+/// Cron scheduler tick loop (v0.3 F19, ADR-014 item 5). The first tick
+/// runs immediately (to catch jobs that came due while the daemon was
+/// down), then every `tick_secs` on a steady cadence — missed ticks are
+/// skipped, never burst-fired, matching the jobs' own skip semantics.
+/// `tick_once` never fails (its errors are logged inside), so this task
+/// only ends on shutdown.
+async fn cron_tick_loop(state: Arc<GatewayState>, mut shutdown_rx: watch::Receiver<bool>) {
+    let tick_secs = state
+        .config
+        .cron
+        .as_ref()
+        .map(|c| c.tick_secs())
+        .unwrap_or(60);
+    let deps = crate::cron::CronRunnerDeps {
+        config: state.config.clone(),
+        workspace_root: state.workspace_root.clone(),
+        purrcode_dir: state.purrcode_dir.clone(),
+        registry: state.registry.clone(),
+        provider_name: state.provider_name.clone(),
+        wire_model: state.wire_model.clone(),
+        audit_logger: state.audit_logger.clone(),
+        plugin_dispatcher: state.plugin_dispatcher.clone(),
+        unenforced_caps: state.unenforced_caps.clone(),
+        model_preset: state.model_preset.clone(),
+        system_prompt: state.system_prompt.clone(),
+    };
+    let runner = crate::cron::CronRunner::new(deps);
+    let channel = state.channel.clone();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => break,
+            _ = interval.tick() => {
+                runner.tick_once(&channel, tick_secs).await;
+            }
+        }
+    }
 }
 
 /// Run one agent turn for one accepted Telegram message.
@@ -340,6 +395,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         agent_role: "meowstro".to_string(),
         workspace_root: state.workspace_root.clone(),
         is_dry_run: false,
+        is_cron: false,
     };
 
     // Typing indicator while the turn runs.

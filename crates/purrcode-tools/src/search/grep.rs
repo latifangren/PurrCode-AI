@@ -212,6 +212,7 @@ mod tests {
             agent_role: "whisker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
         };
 
         // 1. Basic search without context
