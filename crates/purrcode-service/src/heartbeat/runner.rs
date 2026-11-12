@@ -336,15 +336,28 @@ impl HeartbeatRunner {
                 Ok(Some(line)) => lines.push(line),
                 Ok(None) => {}
                 Err(e) => {
-                    let _ = self.deps.audit_logger.log_entry(AuditEntry {
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        session_id: "heartbeat".to_string(),
-                        agent: "meowstro".to_string(),
-                        event: "heartbeat_run_failed".to_string(),
-                        tool: None,
-                        decision: "deny".to_string(),
-                        detail: format!("item {} ({}): {e}", task.index, task.text),
-                    });
+                    // A blocked item is already recorded per-session
+                    // as `heartbeat_run_blocked` (F-1 parity, run_item
+                    // above); a tick-level `heartbeat_run_failed`
+                    // on top of it would make audit queries count
+                    // blocked items as failures — the cron F-1
+                    // equivalent emits no second event. Skip the
+                    // tick-level audit for blocks only (the warning
+                    // line below still tells the user).
+                    // The marker is the same phrase run_item puts in
+                    // the blocked error in this file.
+                    let is_block = e.to_string().contains("blocked by Tuxeshadow");
+                    if !is_block {
+                        let _ = self.deps.audit_logger.log_entry(AuditEntry {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            session_id: "heartbeat".to_string(),
+                            agent: "meowstro".to_string(),
+                            event: "heartbeat_run_failed".to_string(),
+                            tool: None,
+                            decision: "deny".to_string(),
+                            detail: format!("item {} ({}): {e}", task.index, task.text),
+                        });
+                    }
                     lines.push(format!(
                         "⚠️ {} — failed: {}",
                         task.text,
@@ -493,7 +506,10 @@ impl HeartbeatRunner {
     /// under the cron-run rails (see the module docs). Returns the
     /// item's one line, or `None` when the turn was silent (empty or
     /// a silence sentinel). A turn that errors returns `Err` (the
-    /// caller records it as a failed line, not a tick failure).
+    /// caller records it as a failed line, not a tick failure). A
+    /// turn whose delegation Tuxeshadow blocked also returns `Err`,
+    /// naming the block — it is delivered as a warning line, never
+    /// recorded as ok or silent (F-1 parity, v0.3 polish).
     async fn run_item(
         &self,
         task: &HeartbeatTask,
@@ -622,25 +638,59 @@ impl HeartbeatRunner {
             }
             Err(e) => (false, format!("{e}")),
         };
+        // F-1 parity for heartbeat (v0.3 polish): a Phase-2 turn whose
+        // delegation Tuxeshadow blocked is recorded blocked, not ok —
+        // the audit trail (shadow_audit OBJECT for this session) is the
+        // ground truth, not the model's final text, which may summarise
+        // a blocked turn without ever mentioning the block. Blocked
+        // only counts when the turn itself succeeded: a turn that
+        // errored is a failure, recorded as one (the error already
+        // carries the cause).
+        let objections = self.deps.audit_logger.shadow_objections(&session_id);
+        let blocked = ok && !objections.is_empty();
         let _ = self.deps.audit_logger.log_entry(AuditEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.clone(),
             agent: "meowstro".to_string(),
-            event: if ok {
+            event: if blocked {
+                "heartbeat_run_blocked"
+            } else if ok {
                 "heartbeat_run_ok"
             } else {
                 "heartbeat_run_failed"
             }
             .to_string(),
             tool: None,
-            decision: if ok { "allow" } else { "deny" }.to_string(),
-            detail: format!(
-                "item {} ({}): {}",
-                task.index,
-                task.text,
-                summarize(&raw_text)
-            ),
+            decision: if blocked || !ok { "deny" } else { "allow" }.to_string(),
+            detail: if blocked {
+                format!(
+                    "item {} ({}): blocked by Tuxeshadow: {}",
+                    task.index,
+                    task.text,
+                    summarize(&objections.join("; "))
+                )
+            } else {
+                format!(
+                    "item {} ({}): {}",
+                    task.index,
+                    task.text,
+                    summarize(&raw_text)
+                )
+            },
         });
+        if blocked {
+            // The caller records the item as a warning line in the
+            // combined delivery (never as a silent skip or a result),
+            // with the block named in the message.
+            return Err(PurrError::Tool {
+                tool: "heartbeat".to_string(),
+                message: format!(
+                    "heartbeat item {} blocked by Tuxeshadow: {}",
+                    task.index,
+                    summarize(&objections.join("; "))
+                ),
+            });
+        }
         if !ok {
             return Err(PurrError::Tool {
                 tool: "heartbeat".to_string(),

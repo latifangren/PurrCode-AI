@@ -314,21 +314,37 @@ impl ModelProvider for OpenAiCompatibleProvider {
         tokio::spawn(async move {
             let mut byte_stream = response.bytes_stream();
             let mut buffer = String::new();
+            // Did this attempt end with a real finish signal
+            // (`finish_reason` or `data: [DONE]`)? A close-delimited
+            // SSE body can end cleanly mid-response when the transport
+            // drops (flaky proxy/upstream): reqwest then sees a clean
+            // EOF, not an error — and the partial text so far would
+            // otherwise pass as a complete answer. `saw_finish` is what
+            // distinguishes "the model said nothing" from "the stream
+            // was cut short".
+            let mut saw_finish = false;
 
             while let Some(chunk_res) = byte_stream.next().await {
                 let chunk = match chunk_res {
                     Ok(b) => b,
                     Err(e) => {
+                        // The body itself failed mid-stream: report it
+                        // as a stream error, NOT as model text. (The
+                        // old code injected a literal "[Stream read
+                        // error: ...]" delta into the answer — fake
+                        // model output that the auditor then parsed as
+                        // a verdict.)
                         let _ = tx
                             .send(StreamChunk {
-                                delta: format!("\n[Stream read error: {}]", e),
+                                delta: String::new(),
                                 reasoning_delta: None,
                                 tool_call_delta: None,
                                 is_finished: true,
                                 usage: None,
+                                stream_error: Some(format!("stream read error: {e}")),
                             })
                             .await;
-                        break;
+                        return;
                     }
                 };
 
@@ -354,6 +370,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                     tool_call_delta: None,
                                     is_finished: true,
                                     usage: None,
+                                    stream_error: None,
                                 })
                                 .await;
                             return;
@@ -398,6 +415,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                                     tool_call_delta: Some(tool_call_delta),
                                                     is_finished: false,
                                                     usage: None,
+                                                    stream_error: None,
                                                 })
                                                 .await;
                                         }
@@ -405,6 +423,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 }
                                 if choice.finish_reason.is_some() {
                                     is_finished = true;
+                                    saw_finish = true;
                                 }
                             }
 
@@ -426,6 +445,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                         tool_call_delta: None,
                                         is_finished,
                                         usage,
+                                        stream_error: None,
                                     })
                                     .await
                                     .is_err()
@@ -450,7 +470,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
                 }
             }
 
-            // Ensure terminal chunk sent if not already finished
+            // Ensure terminal chunk sent if not already finished.
+            // When the stream ended without any finish signal, the
+            // response was cut short — say so explicitly instead of
+            // letting the partial output pass as a complete answer.
             let _ = tx
                 .send(StreamChunk {
                     delta: String::new(),
@@ -458,6 +481,14 @@ impl ModelProvider for OpenAiCompatibleProvider {
                     tool_call_delta: None,
                     is_finished: true,
                     usage: None,
+                    stream_error: if saw_finish {
+                        None
+                    } else {
+                        Some(
+                            "stream ended without finish_reason or [DONE] (truncated response)"
+                                .to_string(),
+                        )
+                    },
                 })
                 .await;
         });
@@ -465,6 +496,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
         Ok(rx)
     }
 }
+
+#[cfg(test)]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {

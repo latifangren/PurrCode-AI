@@ -156,7 +156,8 @@ pub(crate) async fn run_tui(
         .model_preset
         .clone()
         .unwrap_or_else(|| "free".to_string());
-    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, &workspace_root).ok();
+    let model_preset =
+        ModelPresetLoader::load_by_name_or_none(&model_preset_name, &workspace_root)?;
 
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
     let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();

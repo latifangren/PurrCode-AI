@@ -16,14 +16,17 @@
 //! fails: every error is logged and the tick continues, so a broken job
 //! or a dead Telegram can never kill the gateway's poll loop.
 
+mod due;
 mod model;
+mod requesters;
 
+pub use due::{classify_due, is_lease_fresh, DueDecision};
 pub use model::resolve_target_model;
+pub use requesters::{CronApprovalRequester, CronAskRequester};
 
 use crate::cron::queue::{new_delivery_id, Delivery, DeliveryKind, DeliveryQueue};
 use crate::cron::schedule::CronExpr;
-use crate::cron::store::{validate_job, CronJob, CronStore, DeliveryTarget, PresetSnapshot};
-use async_trait::async_trait;
+use crate::cron::store::{validate_job, CronStore, DeliveryTarget, PresetSnapshot};
 use chrono::{DateTime, Local};
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::PluginHookDispatcher;
@@ -39,161 +42,15 @@ use purrcode_memory::MarkdownMemory;
 use purrcode_orchestrator::MeowstroOrchestrator;
 use purrcode_plugin::PluginManager;
 use purrcode_provider::ProviderRegistry;
-use purrcode_tools::{AskOption, AskRequester};
+use purrcode_tools::AskRequester;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// How late a recurring firing may be and still run: twice the tick
-/// interval, at least two minutes. A daemon ticking normally fires
-/// within one interval of the schedule; anything older missed its tick
-/// (the daemon was down) and is skipped, never fired late
-/// (ZeroClaw `MissedTickBehavior::Skip`).
-fn recurring_grace(tick_secs: u64) -> chrono::Duration {
-    chrono::Duration::seconds((2 * tick_secs).max(120) as i64)
-}
-
-/// One-shot jobs get a fixed five-minute grace: the daemon may have
-/// been starting up when the target time passed.
-const ONE_SHOT_GRACE_SECS: i64 = 300;
-
-/// A firing that started but whose daemon died leaves last_status =
-/// "running". Older than this, the run is dead and the job may be
-/// classified normally again.
-const STALE_RUNNING_SECS: i64 = 3600;
-
 /// Cap on the stored delivery detail: the full text lives in the session
 /// transcript; the queue only needs enough to notify.
 const MAX_DETAIL_CHARS: usize = 32_768;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DueDecision {
-    Due,
-    NotDue,
-    Missed(String),
-}
-
-/// Whether a job's "running" marker is fresh enough to block a new run.
-/// A marker with no timestamp is malformed (only reachable by
-/// hand-editing the store) and counts as stale: the next run overwrites
-/// both fields, so this self-heals instead of deadlocking the job.
-fn is_lease_fresh(job: &CronJob, now: DateTime<Local>) -> bool {
-    job.last_status.as_deref() == Some("running")
-        && job
-            .last_run
-            .is_some_and(|last| now.signed_duration_since(last).num_seconds() < STALE_RUNNING_SECS)
-}
-
-/// Pure due/missed classification for one job at one moment (unit-tested;
-/// the tick only acts on the outcome).
-pub fn classify_due(job: &CronJob, now: DateTime<Local>, tick_secs: u64) -> DueDecision {
-    if !job.enabled {
-        return DueDecision::NotDue;
-    }
-    let Some(target) = job.next_run else {
-        return DueDecision::NotDue;
-    };
-    // A "running" marker from a run that started recently means the
-    // daemon (or a restart of it) may still be working this job: do not
-    // fire it twice. After an hour the run is dead and the job is
-    // classified normally again.
-    if is_lease_fresh(job, now) {
-        return DueDecision::NotDue;
-    }
-    if target > now {
-        return DueDecision::NotDue;
-    }
-    let late = now.signed_duration_since(target).num_seconds();
-    let grace = if job.schedule.once {
-        ONE_SHOT_GRACE_SECS
-    } else {
-        recurring_grace(tick_secs).num_seconds()
-    };
-    if late <= grace {
-        DueDecision::Due
-    } else {
-        DueDecision::Missed(format!(
-            "target {} was {late}s ago, past the {grace}s grace",
-            target.format("%Y-%m-%d %H:%M")
-        ))
-    }
-}
-
-/// Approval requester for cron runs (ADR-014 item 4): a gate `Ask` for a
-/// tool the job declared is treated as approved — the user pre-approved
-/// exactly that tool at creation. Anything else is denied. (The gate's
-/// hard allowlist denies undeclared tools before this is even consulted;
-/// this is defense in depth — and it is also what the Strict-mode shadow
-/// path consults for "tuxeshadow", which is never in the allowlist, so a
-/// Carrier shadow objection stays blocked.)
-pub struct CronApprovalRequester {
-    tools: HashSet<String>,
-    audit_sink: Option<Arc<dyn AuditSink>>,
-    session_id: String,
-}
-
-impl CronApprovalRequester {
-    /// Build the deny-always requester for an unattended daemon run
-    /// (cron job or heartbeat item): a tool in `tools` is approved,
-    /// anything else is denied. Shared by the cron runner and the
-    /// heartbeat runner (v0.3 F22) — the rails are identical.
-    pub fn new(
-        tools: HashSet<String>,
-        audit_sink: Option<Arc<dyn AuditSink>>,
-        session_id: String,
-    ) -> Self {
-        Self {
-            tools,
-            audit_sink,
-            session_id,
-        }
-    }
-}
-
-#[async_trait]
-impl ApprovalRequester for CronApprovalRequester {
-    async fn request_approval(
-        &self,
-        _call_id: &str,
-        tool: &str,
-        _description: &str,
-        _preview: Option<&str>,
-    ) -> bool {
-        let ok = self.tools.contains(tool);
-        if let Some(sink) = &self.audit_sink {
-            sink.record_event(
-                &self.session_id,
-                "meowstro",
-                "cron_approval",
-                Some(tool),
-                if ok {
-                    "approved_in_allowlist"
-                } else {
-                    "denied_outside_allowlist"
-                },
-                if ok {
-                    "tool is in the job allowlist declared at creation"
-                } else {
-                    "tool is NOT in the job allowlist declared at creation"
-                },
-            );
-        }
-        ok
-    }
-}
-
-/// Ask requester for cron runs: there is no user to ask. Always declines
-/// (returns `None`), and `AskTool` turns that into a tool error — never
-/// a stdin prompt, never a fabricated answer.
-pub struct CronAskRequester;
-
-#[async_trait]
-impl AskRequester for CronAskRequester {
-    async fn request_decision(&self, _question: &str, _options: &[AskOption]) -> Option<String> {
-        None
-    }
-}
 
 fn parse_preset_enums(
     snapshot: &PresetSnapshot,
@@ -396,11 +253,11 @@ impl CronRunner {
                     self.deps.provider_name
                 ))
             })?;
-        let approval_req: Arc<dyn ApprovalRequester> = Arc::new(CronApprovalRequester {
-            tools: allow_set,
-            audit_sink: Some(audit_sink.clone()),
-            session_id: session_id.clone(),
-        });
+        let approval_req: Arc<dyn ApprovalRequester> = Arc::new(CronApprovalRequester::new(
+            allow_set,
+            Some(audit_sink.clone()),
+            session_id.clone(),
+        ));
         let ask_req: Arc<dyn AskRequester> = Arc::new(CronAskRequester);
         let session_dir = SessionStore::new(&self.deps.purrcode_dir).session_dir(&session_id);
 
@@ -805,7 +662,7 @@ pub async fn build_runner_deps(
         .model_preset
         .clone()
         .unwrap_or_else(|| "free".to_string());
-    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, workspace_root).ok();
+    let model_preset = ModelPresetLoader::load_by_name_or_none(&model_preset_name, workspace_root)?;
 
     let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
     skill_mgr.discover_all(workspace_root);

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use purrcode_api::provider::StreamChunk;
+use purrcode_api::provider::{StreamChunk, ToolCallDelta};
 use purrcode_api::tool::{Tool, ToolDefinition, ToolResult};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 struct DryRunMockTool;
@@ -134,6 +135,7 @@ impl ModelProvider for SingleToolTurnProvider {
                 }),
                 is_finished: true,
                 usage: None,
+                stream_error: None,
             });
         } else {
             let _ = tx.try_send(StreamChunk {
@@ -142,6 +144,7 @@ impl ModelProvider for SingleToolTurnProvider {
                 tool_call_delta: None,
                 is_finished: true,
                 usage: None,
+                stream_error: None,
             });
         }
         Ok(rx)
@@ -416,4 +419,244 @@ async fn test_event_bus_approval_carries_loop_call_id() {
         _ => None,
     });
     assert_eq!(approval_id.as_deref(), Some("call_1"));
+}
+
+/// A provider stream that ends mid-response (no finish_reason / [DONE])
+/// must be retried once, with the partial output of the truncated
+/// attempt discarded — never returned as if it were the answer.
+struct TruncatingProvider {
+    calls: Arc<AtomicUsize>,
+    always_truncate: bool,
+}
+
+#[async_trait]
+impl ModelProvider for TruncatingProvider {
+    fn provider_name(&self) -> &str {
+        "mock-truncating"
+    }
+    fn is_healthy(&self) -> bool {
+        true
+    }
+    async fn stream_completion(
+        &self,
+        _req: CompletionRequest,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        if self.always_truncate || call == 0 {
+            // First attempt: a partial text delta, then the stream dies.
+            let _ = tx.try_send(StreamChunk {
+                delta: "Partial...".to_string(),
+                reasoning_delta: None,
+                tool_call_delta: None,
+                is_finished: false,
+                usage: None,
+                stream_error: None,
+            });
+            let _ = tx.try_send(StreamChunk {
+                delta: String::new(),
+                reasoning_delta: None,
+                tool_call_delta: None,
+                is_finished: true,
+                usage: None,
+                stream_error: Some(
+                    "stream ended without finish_reason or [DONE] (truncated response)".to_string(),
+                ),
+            });
+        } else {
+            let _ = tx.try_send(StreamChunk {
+                delta: "Recovered!".to_string(),
+                reasoning_delta: None,
+                tool_call_delta: None,
+                is_finished: true,
+                usage: None,
+                stream_error: None,
+            });
+        }
+        Ok(rx)
+    }
+}
+
+fn truncating_ctx() -> ToolContext {
+    ToolContext {
+        session_id: "s_trunc".to_string(),
+        agent_role: "tinker".to_string(),
+        workspace_root: std::path::PathBuf::from("."),
+        is_dry_run: false,
+        is_cron: false,
+        sandbox: None,
+    }
+}
+
+#[tokio::test]
+async fn test_truncated_stream_retries_step_once_and_discards_partial() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(TruncatingProvider {
+        calls: calls.clone(),
+        always_truncate: false,
+    });
+    let engine = AgentLoop::new(provider, "m", Arc::new(ToolRegistry::new()));
+
+    let out = engine
+        .run_turn("hello", None, &truncating_ctx(), |_, _| {})
+        .await
+        .unwrap();
+    assert_eq!(out, "Recovered!");
+    // No trace of the truncated attempt's partial text.
+    assert!(!out.contains("Partial"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_truncated_stream_twice_fails_turn_honestly() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(TruncatingProvider {
+        calls: calls.clone(),
+        always_truncate: true,
+    });
+    let engine = AgentLoop::new(provider, "m", Arc::new(ToolRegistry::new()));
+
+    let result = engine
+        .run_turn("hello", None, &truncating_ctx(), |_, _| {})
+        .await;
+    assert!(result.is_err());
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("ended incomplete twice"), "{message}");
+    // Exactly one retry, then an honest error — no endless loop.
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+/// A truncated attempt must never reach the live stream: the listener
+/// sees only the retried step's text, never the discarded fragment
+/// (re-checker P2-1, v0.3 polish fix pass — the held-publication rule).
+#[tokio::test]
+async fn test_truncated_attempt_publishes_nothing_to_listener() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(TruncatingProvider {
+        calls: calls.clone(),
+        always_truncate: false,
+    });
+    let engine = AgentLoop::new(provider, "m", Arc::new(ToolRegistry::new()));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen_clone = seen.clone();
+
+    let out = engine
+        .run_turn(
+            "hello",
+            None,
+            &truncating_ctx(),
+            move |chunk, _is_reasoning| {
+                seen_clone.lock().unwrap().push(chunk.to_string());
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, "Recovered!");
+    // The listener got exactly the retried step's text — one batch —
+    // and no trace of the truncated attempt's fragment.
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.as_slice(), ["Recovered!"]);
+    assert!(!seen.iter().any(|c| c.contains("Partial")));
+}
+
+/// A provider that always answers with a tool call (never with final
+/// text), and whose forced final-text follow-up (tools disabled) is
+/// truncated — used to prove the max-steps fallback reaches the live
+/// stream, not just the turn result.
+struct AlwaysToolProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ModelProvider for AlwaysToolProvider {
+    fn provider_name(&self) -> &str {
+        "mock-always-tool"
+    }
+    fn is_healthy(&self) -> bool {
+        true
+    }
+    async fn stream_completion(
+        &self,
+        req: CompletionRequest,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        if req.tools.is_none() {
+            // The forced final-text follow-up: truncated mid-text.
+            let _ = tx.try_send(StreamChunk {
+                delta: "Partial...".to_string(),
+                reasoning_delta: None,
+                tool_call_delta: None,
+                is_finished: false,
+                usage: None,
+                stream_error: None,
+            });
+            let _ = tx.try_send(StreamChunk {
+                delta: String::new(),
+                reasoning_delta: None,
+                tool_call_delta: None,
+                is_finished: true,
+                usage: None,
+                stream_error: Some(
+                    "stream ended without finish_reason or [DONE] (truncated response)".to_string(),
+                ),
+            });
+        } else {
+            // A step: one tool call, finished. The registry is empty,
+            // so the loop records tool_not_in_preset and continues.
+            let _ = tx.try_send(StreamChunk {
+                delta: String::new(),
+                reasoning_delta: None,
+                tool_call_delta: Some(ToolCallDelta {
+                    index: 0,
+                    id: Some("call_1".to_string()),
+                    name: Some("bash".to_string()),
+                    arguments_delta: Some("{}".to_string()),
+                }),
+                is_finished: true,
+                usage: None,
+                stream_error: None,
+            });
+        }
+        Ok(rx)
+    }
+}
+
+/// The max-steps fallback is the turn's honest answer: it must be
+/// published to the listener like any other final text, not only
+/// returned (re-checker P2-1e, round 2 — a truncated follow-up used
+/// to leave every live surface silent).
+#[tokio::test]
+async fn test_max_steps_fallback_is_published_to_listener() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(AlwaysToolProvider {
+        calls: calls.clone(),
+    });
+    let engine = AgentLoop::new(provider, "m", Arc::new(ToolRegistry::new())).with_max_steps(2);
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_clone = seen.clone();
+
+    let out = engine
+        .run_turn(
+            "hello",
+            None,
+            &truncating_ctx(),
+            move |chunk, _is_reasoning| {
+                seen_clone.lock().unwrap().push(chunk.to_string());
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        "[Max steps (2) reached; summarizing completed tool steps.]"
+    );
+    // Two tool steps + one truncated follow-up.
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    // The listener got exactly the fallback — no partial leak, no silence.
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.as_slice(),
+        ["[Max steps (2) reached; summarizing completed tool steps.]"]
+    );
 }

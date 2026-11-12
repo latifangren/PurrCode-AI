@@ -146,7 +146,7 @@ pub(crate) async fn run_one_shot(
         .model_preset
         .clone()
         .unwrap_or_else(|| "free".to_string());
-    let model_preset = ModelPresetLoader::load_by_name(&model_preset_name, workspace_root).ok();
+    let model_preset = ModelPresetLoader::load_by_name_or_none(&model_preset_name, workspace_root)?;
 
     let mut tool_registry = ToolRegistry::with_defaults_and_options(None, Some(workspace_root));
     if !mode_preset.tools.is_empty() {

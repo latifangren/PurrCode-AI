@@ -235,76 +235,144 @@ impl AgentLoop {
 
             step += 1;
 
-            let request = CompletionRequest {
-                model: self.model.clone(),
-                messages: messages.clone(),
-                tools: Some(self.tool_registry.list()),
-                temperature: self.temperature,
-                max_tokens: None,
-                reasoning_effort: self.reasoning_effort.clone(),
-                stop: None,
-            };
-
-            let mut stream = self.provider.stream_completion(request).await?;
-
+            // One transparent retry per step when the provider stream
+            // ends incomplete (truncated SSE: no finish_reason /
+            // [DONE] — a flaky transport delivers a clean EOF, which
+            // looks exactly like a model that "says nothing"). The
+            // partial text/tool calls of a truncated attempt are
+            // discarded: nothing was executed yet (tool calls run only
+            // after the stream completes), and the conversation
+            // history is untouched until the step succeeds. The
+            // attempt's text is also HELD from the live stream until
+            // the step completes cleanly (see the flush below): a
+            // truncated attempt must never reach the one-shot output,
+            // the TUI, or the WebUI SSE as a stale fragment that the
+            // retry then duplicates. If the retry also truncates, the
+            // turn fails honestly instead of returning partial output
+            // as if it were complete.
             let mut step_text = String::new();
+            let mut step_reasoning = String::new();
             let mut tool_calls_in_flight: HashMap<usize, (Option<String>, String, String)> =
                 HashMap::new();
 
-            while let Some(chunk) = stream.recv().await {
-                if self.is_cancelled() {
-                    return Err(PurrError::Internal(
-                        "Turn cancelled by user interrupt".to_string(),
-                    ));
+            for attempt in 0..=1u8 {
+                step_text.clear();
+                step_reasoning.clear();
+                tool_calls_in_flight.clear();
+
+                let request = CompletionRequest {
+                    model: self.model.clone(),
+                    messages: messages.clone(),
+                    tools: Some(self.tool_registry.list()),
+                    temperature: self.temperature,
+                    max_tokens: None,
+                    reasoning_effort: self.reasoning_effort.clone(),
+                    stop: None,
+                };
+
+                let mut stream = self.provider.stream_completion(request).await?;
+
+                let mut truncated = false;
+                let mut truncation_detail = String::new();
+                while let Some(chunk) = stream.recv().await {
+                    if self.is_cancelled() {
+                        return Err(PurrError::Internal(
+                            "Turn cancelled by user interrupt".to_string(),
+                        ));
+                    }
+
+                    if let Some(err) = chunk.stream_error {
+                        // The provider stream died mid-response; the
+                        // partial output of this attempt is
+                        // untrustworthy — discard it and retry once.
+                        truncated = true;
+                        truncation_detail = err;
+                        break;
+                    }
+
+                    if let Some(reasoning) = chunk.reasoning_delta {
+                        // Held, not published: a truncated attempt is
+                        // discarded whole, so its deltas must never
+                        // reach the live stream (flushed below, on a
+                        // clean step completion).
+                        step_reasoning.push_str(&reasoning);
+                    }
+
+                    if !chunk.delta.is_empty() {
+                        // Held, not published: see the reasoning
+                        // buffer above.
+                        step_text.push_str(&chunk.delta);
+                    }
+
+                    if let Some(ToolCallDelta {
+                        index,
+                        id,
+                        name,
+                        arguments_delta,
+                    }) = chunk.tool_call_delta
+                    {
+                        let entry = tool_calls_in_flight
+                            .entry(index)
+                            .or_insert_with(|| (None, String::new(), String::new()));
+                        if let Some(new_id) = id {
+                            entry.0 = Some(new_id);
+                        }
+                        if let Some(new_name) = name {
+                            entry.1.push_str(&new_name);
+                        }
+                        if let Some(args_delta) = arguments_delta {
+                            entry.2.push_str(&args_delta);
+                        }
+                    }
+
+                    if chunk.is_finished {
+                        break;
+                    }
                 }
 
-                if let Some(reasoning) = chunk.reasoning_delta {
-                    if let Some(ref bus) = self.event_bus {
-                        let _ = bus.publish(AgentEvent::ReasoningChunk {
-                            thinking: reasoning.clone(),
-                        });
+                if !truncated {
+                    // The step completed cleanly: only now may its
+                    // text reach the live stream. A truncated attempt
+                    // never published anything, so a retry's text does
+                    // not duplicate a stale fragment in the one-shot
+                    // output, the TUI, or the WebUI SSE stream
+                    // (re-checker P2-1, v0.3 polish fix pass). The
+                    // trade-off is deliberate: the live stream now
+                    // shows each step's text in one batch instead of
+                    // word-by-word — the turn result, history, and
+                    // audit are unchanged, and reasoning/text stay on
+                    // their separate channels.
+                    if !step_reasoning.is_empty() {
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::ReasoningChunk {
+                                thinking: step_reasoning.clone(),
+                            });
+                        }
+                        if let Some(l) = listener {
+                            l.on_text_chunk(&step_reasoning, true);
+                        }
                     }
-                    if let Some(l) = listener {
-                        l.on_text_chunk(&reasoning, true);
+                    if !step_text.is_empty() {
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::TextChunk {
+                                text: step_text.clone(),
+                            });
+                        }
+                        if let Some(l) = listener {
+                            l.on_text_chunk(&step_text, false);
+                        }
                     }
-                }
-
-                if !chunk.delta.is_empty() {
-                    step_text.push_str(&chunk.delta);
-                    if let Some(ref bus) = self.event_bus {
-                        let _ = bus.publish(AgentEvent::TextChunk {
-                            text: chunk.delta.clone(),
-                        });
-                    }
-                    if let Some(l) = listener {
-                        l.on_text_chunk(&chunk.delta, false);
-                    }
-                }
-
-                if let Some(ToolCallDelta {
-                    index,
-                    id,
-                    name,
-                    arguments_delta,
-                }) = chunk.tool_call_delta
-                {
-                    let entry = tool_calls_in_flight
-                        .entry(index)
-                        .or_insert_with(|| (None, String::new(), String::new()));
-                    if let Some(new_id) = id {
-                        entry.0 = Some(new_id);
-                    }
-                    if let Some(new_name) = name {
-                        entry.1.push_str(&new_name);
-                    }
-                    if let Some(args_delta) = arguments_delta {
-                        entry.2.push_str(&args_delta);
-                    }
-                }
-
-                if chunk.is_finished {
                     break;
                 }
+                if attempt == 1 {
+                    return Err(PurrError::Provider {
+                        provider: self.provider.provider_name().to_string(),
+                        message: format!(
+                            "provider stream ended incomplete twice in one step: {truncation_detail}"
+                        ),
+                    });
+                }
+                // Otherwise: retry the step with a fresh completion.
             }
 
             // Convert tool_calls map to sorted Vec
@@ -561,21 +629,35 @@ impl AgentLoop {
                 stop: None,
             };
             if let Ok(mut stream) = self.provider.stream_completion(final_req).await {
+                // Same hold-until-clean rule as the retry loop above:
+                // a truncated follow-up must not leak its partial
+                // text into the live stream, nor stand as the final
+                // answer — the fallback message below is the honest
+                // outcome instead.
+                let mut followup_text = String::new();
+                let mut followup_truncated = false;
                 while let Some(chunk) = stream.recv().await {
+                    if chunk.stream_error.is_some() {
+                        followup_truncated = true;
+                        break;
+                    }
                     if !chunk.delta.is_empty() {
-                        final_answer.push_str(&chunk.delta);
-                        if let Some(ref bus) = self.event_bus {
-                            let _ = bus.publish(AgentEvent::TextChunk {
-                                text: chunk.delta.clone(),
-                            });
-                        }
-                        if let Some(l) = listener {
-                            l.on_text_chunk(&chunk.delta, false);
-                        }
+                        followup_text.push_str(&chunk.delta);
                     }
                     if chunk.is_finished {
                         break;
                     }
+                }
+                if !followup_truncated && !followup_text.is_empty() {
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::TextChunk {
+                            text: followup_text.clone(),
+                        });
+                    }
+                    if let Some(l) = listener {
+                        l.on_text_chunk(&followup_text, false);
+                    }
+                    final_answer.push_str(&followup_text);
                 }
             }
             if final_answer.is_empty() {
@@ -583,6 +665,21 @@ impl AgentLoop {
                     "[Max steps ({}) reached; summarizing completed tool steps.]",
                     self.max_steps
                 );
+                // The fallback IS the turn's answer, so it must reach
+                // the live stream like any other final text — the
+                // one-shot output, the TUI, and the WebUI SSE render
+                // only bus/listener events. Without this, a turn whose
+                // follow-up stream truncated (or was empty) returned
+                // the honest fallback while every live surface stayed
+                // silent (re-checker P2-1e, round 2).
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::TextChunk {
+                        text: final_answer.clone(),
+                    });
+                }
+                if let Some(l) = listener {
+                    l.on_text_chunk(&final_answer, false);
+                }
             }
         }
 

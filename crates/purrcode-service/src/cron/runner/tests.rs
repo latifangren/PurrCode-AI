@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cron::schedule::parse_natural;
-use crate::cron::store::{JobSchedule, PresetSnapshot, DEFAULT_ALLOWLIST};
+use crate::cron::store::{CronJob, JobSchedule, PresetSnapshot, DEFAULT_ALLOWLIST};
 use chrono::TimeZone;
 
 fn test_job(at: DateTime<Local>, once: bool, expr: Option<&str>) -> CronJob {

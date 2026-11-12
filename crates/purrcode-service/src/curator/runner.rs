@@ -287,6 +287,7 @@ mod tests {
                 tool_call_delta: None,
                 is_finished: true,
                 usage: None,
+                stream_error: None,
             });
             Ok(rx)
         }
