@@ -7,7 +7,11 @@ pub mod web;
 pub use tui::{
     ApprovalRequest, AskPromptRequest, MessageItem, ToolStatus, TuiApp, TuiEvent, TuiRunner,
 };
-pub use web::{PromptDispatcher, WebChannel, WebServer, WebSkillDraftRequester, WEB_INDEX_HTML};
+pub use web::{
+    is_valid_web_session_id, new_web_session_id, web_index_html, PromptDispatcher, WebChannel,
+    WebServer, WebSession, WebSessionInfo, WebSessionRegistry, WebSkillDraftRequester,
+    DEFAULT_WEB_SESSION_ID,
+};
 
 use purrcode_api::channel::Channel;
 use std::sync::Arc;

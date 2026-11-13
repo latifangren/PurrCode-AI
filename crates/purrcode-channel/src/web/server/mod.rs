@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use crate::web::channel::WebChannel;
 use crate::web::channel::SKILL_DRAFT_KEY_PREFIX;
-use crate::web::html::WEB_INDEX_HTML;
+use crate::web::html::web_index_html;
+use crate::web::server::sessions::{
+    handle_create_session, handle_list_sessions, handle_transcript, query_param,
+};
+use crate::web::sessions::{WebSession, WebSessionRegistry, DEFAULT_WEB_SESSION_ID};
 use purrcode_api::error::{PurrError, Result};
 use purrcode_config::jsonc::clean_jsonc;
 use std::path::PathBuf;
@@ -11,16 +14,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+mod sessions;
+
 #[async_trait::async_trait]
 pub trait PromptDispatcher: Send + Sync {
-    async fn dispatch(&self, prompt: String, channel: Arc<WebChannel>) -> Result<()>;
+    /// Run one turn of `session` for `prompt`. The session carries
+    /// its own bus, channel, and turn lock, so the dispatcher never
+    /// needs a separate channel argument.
+    async fn dispatch(&self, session: Arc<WebSession>, prompt: String) -> Result<()>;
 }
 
 pub struct WebServer {
     host: String,
     port: u16,
     token: Option<String>,
-    channel: Arc<WebChannel>,
+    registry: Arc<WebSessionRegistry>,
     purrcode_dir: PathBuf,
     workspace_root: PathBuf,
     dispatcher: Option<Arc<dyn PromptDispatcher>>,
@@ -31,7 +39,7 @@ impl WebServer {
         host: impl Into<String>,
         port: u16,
         token: Option<String>,
-        channel: Arc<WebChannel>,
+        registry: Arc<WebSessionRegistry>,
         purrcode_dir: impl Into<PathBuf>,
         workspace_root: impl Into<PathBuf>,
     ) -> Self {
@@ -39,7 +47,7 @@ impl WebServer {
             host: host.into(),
             port,
             token,
-            channel,
+            registry,
             purrcode_dir: purrcode_dir.into(),
             workspace_root: workspace_root.into(),
             dispatcher: None,
@@ -74,7 +82,7 @@ impl WebServer {
                 }
                 accept_res = listener.accept() => {
                     if let Ok((stream, _)) = accept_res {
-                        let channel = self.channel.clone();
+                        let registry = self.registry.clone();
                         let token = self.token.clone();
                         let purrcode_dir = self.purrcode_dir.clone();
                         let workspace_root = self.workspace_root.clone();
@@ -83,7 +91,7 @@ impl WebServer {
                         tokio::spawn(async move {
                             let _ = handle_http_connection(
                                 stream,
-                                channel,
+                                registry,
                                 token,
                                 purrcode_dir,
                                 workspace_root,
@@ -158,7 +166,7 @@ fn headers_content_length(headers: &[u8]) -> usize {
 
 async fn handle_http_connection(
     mut stream: tokio::net::TcpStream,
-    channel: Arc<WebChannel>,
+    registry: Arc<WebSessionRegistry>,
     token: Option<String>,
     purrcode_dir: PathBuf,
     workspace_root: PathBuf,
@@ -210,7 +218,7 @@ async fn handle_http_connection(
 
     match (method, uri) {
         ("GET", "/") | ("GET", "/index.html") => {
-            let body = WEB_INDEX_HTML;
+            let body = web_index_html();
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -234,11 +242,40 @@ async fn handle_http_connection(
             stream.write_all(resp.as_bytes()).await?;
         }
         ("GET", "/api/events") => {
-            // Server-Sent Events (SSE) streaming
+            // Server-Sent Events (SSE) streaming, scoped to one
+            // session (v0.4 B1): `?session=<id>` picks the chat; no
+            // parameter means the legacy default `purr_web` (R3
+            // clients subscribe without one). An explicit id is
+            // materialized on demand when the session exists on
+            // disk — after a restart a resumed chat has a file but
+            // no live entry yet (re-checker P2-1). A valid id with
+            // no file is a 404 instead of an empty stream, so a
+            // typo or a stale tab is visible instead of silently
+            // subscribing to nothing.
+            let session = match query_param(raw_uri, "session") {
+                Some(id) => match registry.ensure_session_if_exists(&id) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let body = serde_json::json!({ "error": "session not found" }).to_string();
+                        let resp = json_response(404, "Not Found", &body);
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
+                    }
+                },
+                None => match registry.default_session() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let body = serde_json::json!({ "error": e.to_string() }).to_string();
+                        let resp = json_response(500, "Internal Server Error", &body);
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
+                    }
+                },
+            };
             let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
             stream.write_all(header.as_bytes()).await?;
 
-            let mut rx = channel.subscribe();
+            let mut rx = session.channel.subscribe();
             loop {
                 match rx.recv().await {
                     Ok(event) => {
@@ -253,6 +290,21 @@ async fn handle_http_connection(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+        }
+        ("GET", "/api/sessions") => {
+            let (status, body) = handle_list_sessions(&registry);
+            let resp = json_response(status, reason_phrase(status), &body);
+            stream.write_all(resp.as_bytes()).await?;
+        }
+        ("POST", "/api/sessions") => {
+            let (status, body) = handle_create_session(&registry);
+            let resp = json_response(status, reason_phrase(status), &body);
+            stream.write_all(resp.as_bytes()).await?;
+        }
+        ("GET", _) if uri.starts_with("/api/sessions/") && uri.ends_with("/transcript") => {
+            let (status, body) = handle_transcript(&registry, uri);
+            let resp = json_response(status, reason_phrase(status), &body);
+            stream.write_all(resp.as_bytes()).await?;
         }
         ("GET", "/api/cron") => {
             // dev-muse stores jobs in `cron/jobs.jsonc` as
@@ -398,12 +450,16 @@ async fn handle_http_connection(
             // the dispatcher performs the real save/discard after.
             // `resolved: false` means no draft approval was waiting
             // (stale tab, or the 120s card already expired).
+            // v0.4 B1: the approval lives on one session's channel
+            // (the body's optional `session_id`, default `purr_web`).
             let body_str = extract_body(&request);
             let mut resolved = false;
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
                 if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
                     let key = format!("{}{}", SKILL_DRAFT_KEY_PREFIX, name);
-                    resolved = channel.resolve_approval(&key, true).await;
+                    if let Some(session) = approval_session(&registry, &val) {
+                        resolved = session.channel.resolve_approval(&key, true).await;
+                    }
                 }
             }
             let body = format!("{{\"resolved\":{}}}", resolved);
@@ -421,7 +477,9 @@ async fn handle_http_connection(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
                 if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
                     let key = format!("{}{}", SKILL_DRAFT_KEY_PREFIX, name);
-                    resolved = channel.resolve_approval(&key, false).await;
+                    if let Some(session) = approval_session(&registry, &val) {
+                        resolved = session.channel.resolve_approval(&key, false).await;
+                    }
                 }
             }
             let body = format!("{{\"resolved\":{}}}", resolved);
@@ -466,21 +524,45 @@ async fn handle_http_connection(
             let body_str = extract_body(&request);
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_str) {
                 if let Some(prompt) = val.get("prompt").and_then(|p| p.as_str()) {
+                    // v0.4 B1: the prompt goes to one session. No
+                    // `session_id` means the legacy default
+                    // `purr_web` (R3 clients send none). An explicit
+                    // id is materialized on demand when the session
+                    // exists on disk — a resumed chat after restart
+                    // has a file but no live entry yet (re-checker
+                    // P2-1); a valid id with no file is a 404, and
+                    // a present-but-non-string id is a 400 (P3-3) —
+                    // neither silently falls back to the default.
+                    let session = match val.get("session_id") {
+                        Some(v) => {
+                            let Some(id) = v.as_str() else {
+                                let body =
+                                    serde_json::json!({ "error": "session_id must be a string" })
+                                        .to_string();
+                                let resp = json_response(400, "Bad Request", &body);
+                                stream.write_all(resp.as_bytes()).await?;
+                                return Ok(());
+                            };
+                            registry.ensure_session_if_exists(id).ok()
+                        }
+                        None => registry.default_session().ok(),
+                    };
+                    let Some(session) = session else {
+                        let body = serde_json::json!({ "error": "session not found" }).to_string();
+                        let resp = json_response(404, "Not Found", &body);
+                        stream.write_all(resp.as_bytes()).await?;
+                        return Ok(());
+                    };
                     if let Some(ref disp) = dispatcher {
                         let disp = disp.clone();
                         let p = prompt.to_string();
-                        let chan = channel.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = disp.dispatch(p, chan).await {
+                            if let Err(e) = disp.dispatch(session, p).await {
                                 tracing::error!("Web prompt execution error: {}", e);
                             }
                         });
                         let body = serde_json::json!({ "status": "dispatched" }).to_string();
-                        let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
+                        let resp = json_response(200, "OK", &body);
                         stream.write_all(resp.as_bytes()).await?;
                         return Ok(());
                     } else {
@@ -488,11 +570,7 @@ async fn handle_http_connection(
                             "error": "No prompt dispatcher registered on web server"
                         })
                         .to_string();
-                        let resp = format!(
-                            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
+                        let resp = json_response(503, "Service Unavailable", &body);
                         stream.write_all(resp.as_bytes()).await?;
                         return Ok(());
                     }
@@ -535,7 +613,15 @@ async fn handle_http_connection(
                     .get("approved")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let resolved = channel.resolve_approval(call_id, approved).await;
+                // v0.4 B1: resolve on the session's channel (the
+                // body's optional `session_id`, default `purr_web`).
+                // A session with no live entry has nothing pending,
+                // so it resolves false instead of touching another
+                // session's approvals.
+                let resolved = match approval_session(&registry, &val) {
+                    Some(session) => session.channel.resolve_approval(call_id, approved).await,
+                    None => false,
+                };
                 let body = format!("{{\"resolved\":{}}}", resolved);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -556,6 +642,48 @@ async fn handle_http_connection(
     }
 
     Ok(())
+}
+
+/// One-line JSON response (`Connection: close`); the new session
+/// endpoints answer through this instead of repeating the format.
+fn json_response(status: u16, reason: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body.len(),
+        body
+    )
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        400 => "Bad Request",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "OK",
+    }
+}
+
+/// The live session an approval body belongs to (v0.4 B1): the
+/// body's optional `session_id`, defaulting to the legacy `purr_web`.
+/// An explicit id is materialized on demand when the session exists
+/// on disk (a resumed chat after restart — re-checker P2-1); a
+/// present-but-non-string id resolves nothing (P3-3), and a session
+/// with no live entry has nothing pending, so the caller answers
+/// `resolved: false` instead of resolving against another session's
+/// approvals.
+fn approval_session(
+    registry: &Arc<WebSessionRegistry>,
+    val: &serde_json::Value,
+) -> Option<Arc<WebSession>> {
+    let Some(v) = val.get("session_id") else {
+        return registry.get_session(DEFAULT_WEB_SESSION_ID);
+    };
+    let id = v.as_str()?;
+    registry.ensure_session_if_exists(id).ok()
 }
 
 fn extract_body(request: &str) -> String {

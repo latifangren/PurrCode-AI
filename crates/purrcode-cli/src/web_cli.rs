@@ -1,29 +1,32 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `purrcode web` command (v0.3 R3).
+//! The `purrcode web` command (v0.3 R3, multi-session in v0.4 B1).
 //!
 //! Owns the long-lived wiring the gateway owns, but for the browser
 //! instead of Telegram: provider registry, approval gate, audit log,
-//! plugins, model preset, skills, memory — plus one shared [`EventBus`]
-//! (R3) and the [`WebChannel`] the server streams from.
+//! plugins, model preset, skills, memory — plus one
+//! [`WebSessionRegistry`] (v0.4 B1) whose entries each carry their
+//! own [`EventBus`] and [`WebChannel`].
 //!
 //! Event flow (exactly once per event, by construction):
 //!
 //! * The loop publishes every chunk, tool call, approval request and
-//!   turn boundary to the bus (see `AgentLoop::with_event_bus`).
-//! * One forwarder task pumps the bus into the `WebChannel` broadcast,
-//!   which the server's `/api/events` SSE endpoint streams to the
-//!   browser. `WebChannel::request_approval` deliberately does NOT
-//!   broadcast — the loop's bus event is the card — so the UI renders
-//!   each approval exactly once.
+//!   turn boundary to its session's bus (see
+//!   `AgentLoop::with_event_bus`).
+//! * One forwarder task per session pumps that session's bus into
+//!   its channel, which the server's `/api/events` SSE endpoint
+//!   streams to the browser. `WebChannel::request_approval`
+//!   deliberately does NOT broadcast — the loop's bus event is the
+//!   card — so the UI renders each approval exactly once.
 //! * Tool approvals resolve through `/api/approval` (keyed by the
 //!   loop's call id, which the bus event carries); skill-draft
 //!   approvals resolve through `/api/skills/approve` (keyed
 //!   `skill-draft:<name>`, announced by `WebSkillDraftRequester`).
 //!
-//! Turns serialize on one lock (the browser page is a single chat, like
-//! one Telegram chat in the gateway). Session `purr_web` persists in
-//! the session store, so the WebUI chat survives a restart.
+//! Turns serialize on one lock per session (a browser page is a
+//! single chat, like one Telegram chat in the gateway; two chats run
+//! concurrently). Sessions persist in the session store, so a WebUI
+//! chat survives a restart and is resumed from the sidebar.
 
 use crate::onboard;
 use purrcode_api::channel::Channel;
@@ -32,9 +35,9 @@ use purrcode_api::event::AgentEvent;
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::tool::{AuditSink, PolicyGate, ToolContext};
 use purrcode_approval::{ApprovalGate, AuditEntry, AuditLogger};
-use purrcode_channel::{PromptDispatcher, WebChannel, WebServer};
+use purrcode_channel::{PromptDispatcher, WebChannel, WebServer, WebSession, WebSessionRegistry};
 use purrcode_config::{Config, ModePresetLoader, ModelPresetLoader};
-use purrcode_core::{AgentLoop, ApprovalRequester, EventBus, SessionStore};
+use purrcode_core::{AgentLoop, ApprovalRequester, SessionStore};
 use purrcode_memory::MarkdownMemory;
 use purrcode_orchestrator::MeowstroOrchestrator;
 use purrcode_plugin::PluginManager;
@@ -42,11 +45,7 @@ use purrcode_provider::ProviderRegistry;
 use purrcode_tools::{ToolRegistry, ToolRegistryExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{watch, Mutex};
-
-/// Fixed session id for the WebUI chat (one shared chat, like one
-/// Telegram chat in the gateway).
-const WEB_SESSION_ID: &str = "purr_web";
+use tokio::sync::watch;
 
 /// [`ApprovalRequester`] that waits on the WebUI card. The card itself
 /// comes from the loop's bus event (published just before the loop
@@ -93,11 +92,6 @@ struct WebState {
     system_prompt: String,
     use_orchestrator: bool,
     yolo: bool,
-    bus: Arc<EventBus>,
-    /// One lock for the whole page: turns never interleave.
-    turn_lock: Mutex<()>,
-    /// Whether the `session_start` plugin hook already fired.
-    started: Mutex<bool>,
 }
 
 /// Run the WebUI server until Ctrl-C.
@@ -175,27 +169,9 @@ pub async fn run_web_command(
         system_prompt.push_str(&mem_context);
     }
 
-    let bus = Arc::new(EventBus::new(256));
-    let channel = Arc::new(WebChannel::new());
-
-    // Forwarder: the bus is the single event source; every event the
-    // loop publishes is sent to the channel exactly once. The task
-    // ends when the bus is dropped at shutdown.
-    {
-        let mut bus_rx = bus.subscribe();
-        let ch = channel.clone();
-        tokio::spawn(async move {
-            loop {
-                match bus_rx.recv().await {
-                    Ok(ev) => {
-                        let _ = ch.send_event(&ev).await;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
+    // v0.4 B1: one registry for all web chats; each session's bus,
+    // channel, and forwarder are created lazily inside it.
+    let session_registry = Arc::new(WebSessionRegistry::new(&purrcode_dir));
 
     println!(
         "🐾 PurrCode AI WebUI — http://{}:{} (preset: {}, model: {}:{})",
@@ -232,9 +208,6 @@ pub async fn run_web_command(
         system_prompt,
         use_orchestrator,
         yolo,
-        bus,
-        turn_lock: Mutex::new(()),
-        started: Mutex::new(false),
     });
 
     let dispatcher = Arc::new(CliWebPromptDispatcher {
@@ -244,7 +217,7 @@ pub async fn run_web_command(
         host,
         port,
         token,
-        channel,
+        session_registry,
         purrcode_dir,
         workspace_root.to_path_buf(),
     )
@@ -267,25 +240,29 @@ pub struct CliWebPromptDispatcher {
 
 #[async_trait::async_trait]
 impl PromptDispatcher for CliWebPromptDispatcher {
-    async fn dispatch(&self, prompt: String, channel: Arc<WebChannel>) -> Result<()> {
-        self.state.run_web_turn(prompt, channel).await
+    async fn dispatch(&self, session: Arc<WebSession>, prompt: String) -> Result<()> {
+        self.state.run_web_turn(session, prompt).await
     }
 }
 
 impl WebState {
     /// Run one agent turn for one browser prompt, then the F20 curator
     /// hook (mirrors `gateway::run_turn`, minus the Telegram renderer:
-    /// events flow through the bus, errors surface as `AgentEvent::Error`).
-    async fn run_web_turn(&self, prompt: String, channel: Arc<WebChannel>) -> Result<()> {
-        let _guard = self.turn_lock.lock().await;
+    /// events flow through the session's bus, errors surface as
+    /// `AgentEvent::Error`). The turn runs on the session's own bus,
+    /// channel, and lock, so two chats never see each other's events
+    /// or approvals.
+    async fn run_web_turn(&self, session: Arc<WebSession>, prompt: String) -> Result<()> {
+        let _guard = session.turn_lock.lock().await;
 
-        let session_id = WEB_SESSION_ID.to_string();
+        let session_id = session.id.clone();
+        let channel = session.channel.clone();
         let session_store = SessionStore::new(&self.purrcode_dir);
         let session_dir = session_store.session_dir(&session_id);
 
-        // Plugin session_start fires once per daemon lifetime.
+        // Plugin session_start fires once per session lifetime.
         {
-            let mut started = self.started.lock().await;
+            let mut started = session.started.lock().await;
             if !*started {
                 *started = true;
                 self.plugin_dispatcher
@@ -307,7 +284,7 @@ impl WebState {
             event: "web_turn_start".to_string(),
             tool: None,
             decision: "allow".to_string(),
-            detail: "session=purr_web".to_string(),
+            detail: format!("session={session_id}"),
         });
 
         let provider = match self.registry.get(self.provider_name.as_str()) {
@@ -345,7 +322,7 @@ impl WebState {
                 None,
                 self.yolo,
                 Some(self.workspace_root.clone()),
-                Some(self.bus.clone()),
+                Some(session.bus.clone()),
             ))
         } else {
             None
@@ -369,7 +346,7 @@ impl WebState {
                     .with_policy_gate(policy_gate)
                     .with_audit_sink(self.audit_sink.clone())
                     .with_plugin_dispatcher(self.plugin_dispatcher.clone())
-                    .with_event_bus(self.bus.clone())
+                    .with_event_bus(session.bus.clone())
                     .with_yolo(self.yolo),
             )
         };

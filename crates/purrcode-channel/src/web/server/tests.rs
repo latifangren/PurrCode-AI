@@ -1,6 +1,8 @@
 use super::*;
 use purrcode_api::channel::Channel;
 use purrcode_api::event::AgentEvent;
+use purrcode_api::provider::{ChatMessage, MessageRole};
+use purrcode_core::SessionStore;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -23,29 +25,51 @@ fn test_dir(name: &str) -> PathBuf {
 async fn start_server(
     token: Option<String>,
     purrcode_dir: PathBuf,
+    dispatcher: Option<Arc<dyn PromptDispatcher>>,
 ) -> (
     u16,
-    Arc<WebChannel>,
+    Arc<WebSessionRegistry>,
     tokio::sync::watch::Sender<bool>,
     tokio::task::JoinHandle<()>,
 ) {
     let port = free_port();
-    let channel = Arc::new(WebChannel::new());
-    let server = WebServer::new(
+    let registry = Arc::new(WebSessionRegistry::new(purrcode_dir.clone()));
+    let mut server = WebServer::new(
         "127.0.0.1",
         port,
         token,
-        channel.clone(),
+        registry.clone(),
         purrcode_dir,
         PathBuf::from("/tmp/ws"),
     );
+    if let Some(disp) = dispatcher {
+        server = server.with_dispatcher(disp);
+    }
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(async move {
         let _ = server.run(cancel_rx).await;
     });
     // Give the listener a moment to bind.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    (port, channel, cancel_tx, handle)
+    (port, registry, cancel_tx, handle)
+}
+
+/// A dispatcher that records (session_id, prompt) instead of
+/// running a turn — the B1 prompt-routing tests assert the server
+/// picked the right session.
+struct RecordingDispatcher {
+    calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait::async_trait]
+impl PromptDispatcher for RecordingDispatcher {
+    async fn dispatch(&self, session: Arc<WebSession>, prompt: String) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((session.id.clone(), prompt));
+        Ok(())
+    }
 }
 
 /// One-shot raw HTTP request (Connection: close responses).
@@ -63,12 +87,17 @@ fn http_raw(port: u16, request: &str) -> String {
 /// Read from an SSE stream until a `data:` line arrives (or the
 /// read times out). Returns everything read so far.
 fn http_sse_until_data(port: u16) -> String {
+    http_sse_read(port, "/api/events", Duration::from_secs(5))
+}
+
+/// Same, for an arbitrary SSE path and timeout (the B1 isolation
+/// tests subscribe per session and assert the *other* session gets
+/// nothing within a short window).
+fn http_sse_read(port: u16, path: &str, timeout: Duration) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    stream
-        .write_all(b"GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n")
+        .write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
         .unwrap();
     let mut out = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -150,20 +179,20 @@ fn test_webui_template_has_no_inline_model_data_handlers() {
     // addEventListener + dataset, and every interpolated field goes
     // through escapeHtml (which escapes ' as well).
     assert!(
-        !WEB_INDEX_HTML.contains("onclick=\"resolveApproval("),
+        !web_index_html().contains("onclick=\"resolveApproval("),
         "approval banner must not use an inline onclick with the call_id"
     );
     assert!(
-        !WEB_INDEX_HTML.contains("onclick=\"approveSkill("),
+        !web_index_html().contains("onclick=\"approveSkill("),
         "skills tab must not use an inline onclick with the skill name"
     );
     assert!(
-        WEB_INDEX_HTML.contains(".replace(/'/g, '&#39;')"),
+        web_index_html().contains(".replace(/'/g, '&#39;')"),
         "escapeHtml must escape single quotes"
     );
-    assert!(WEB_INDEX_HTML.contains("escapeHtml(c.description"));
-    assert!(WEB_INDEX_HTML.contains("escapeHtml(j.prompt"));
-    assert!(WEB_INDEX_HTML.contains("addEventListener('click'"));
+    assert!(web_index_html().contains("escapeHtml(c.description"));
+    assert!(web_index_html().contains("escapeHtml(j.prompt"));
+    assert!(web_index_html().contains("addEventListener('click'"));
 }
 
 #[test]
@@ -186,7 +215,7 @@ fn test_draft_frontmatter_parsing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_serves_index_and_status() {
     let dir = test_dir("index");
-    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
     let index = get(port, "/");
     assert!(index.starts_with("HTTP/1.1 200 OK"));
     assert!(index.contains("PurrCode AI"));
@@ -204,7 +233,9 @@ async fn test_server_serves_index_and_status() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_sse_streams_bus_events_in_purrcode_shape() {
     let dir = test_dir("sse");
-    let (port, channel, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    // No `?session=` subscribes to the legacy default session.
+    let channel = registry.default_session().unwrap().channel.clone();
     let channel_clone = channel.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -229,7 +260,8 @@ async fn test_server_sse_streams_bus_events_in_purrcode_shape() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_approval_post_resolves_pending() {
     let dir = test_dir("approval");
-    let (port, channel, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let channel = registry.default_session().unwrap().channel.clone();
     let waiter = tokio::spawn({
         let ch = channel.clone();
         async move {
@@ -262,7 +294,7 @@ async fn test_server_approval_post_resolves_pending() {
 async fn test_server_token_auth() {
     let dir = test_dir("token");
     let (port, _ch, cancel_tx, handle) =
-        start_server(Some("SECRET".to_string()), dir.clone()).await;
+        start_server(Some("SECRET".to_string()), dir.clone(), None).await;
     assert!(get(port, "/").starts_with("HTTP/1.1 401"));
     assert!(get(port, "/?token=SECRET").starts_with("HTTP/1.1 200 OK"));
     let with_header = http_raw(
@@ -287,7 +319,7 @@ async fn test_server_cron_lists_jobs_jsonc() {
             "// a comment line\n{\"jobs\": [{\"id\": \"cron_abc\", \"name\": \"t\", \"enabled\": true, \"schedule\": {\"expr\": \"0 * * * *\", \"display\": \"hourly\", \"once\": false}, \"prompt\": \"hi\", \"tools\": [\"read\"], \"preset\": {\"name\": \"tabby\", \"approval\": \"default\", \"guardrail\": \"default\", \"sandbox\": \"workspace-write\"}, \"delivery\": {\"kind\": \"queue_only\"}, \"created_at\": \"2026-11-12T00:00:00+07:00\"}]}\n",
         )
         .unwrap();
-    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
     let resp = get(port, "/api/cron");
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
     let jobs: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -316,7 +348,7 @@ async fn test_server_skills_lists_drafts_and_live() {
         "---\nname: git\ndescription: Git workflows\n---\n\n# git\n",
     )
     .unwrap();
-    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
     let resp = get(port, "/api/skills");
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
     let val: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -337,7 +369,8 @@ async fn test_server_skills_lists_drafts_and_live() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_skills_approve_resolves_pending_draft() {
     let dir = test_dir("skills-approve");
-    let (port, channel, cancel_tx, handle) = start_server(None, dir.clone()).await;
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let channel = registry.default_session().unwrap().channel.clone();
     // A curator hook waiting on this draft (mirrors the gateway's
     // post-turn hook path through the web channel).
     let waiter = tokio::spawn({
@@ -357,6 +390,338 @@ async fn test_server_skills_approve_resolves_pending_draft() {
     assert!(resp.contains("\"resolved\":false"), "resp: {resp}");
     let resp = post(port, "/api/skills/reject", r#"{"name": "draft-none"}"#);
     assert!(resp.contains("\"resolved\":false"), "resp: {resp}");
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn body_of(resp: &str) -> &str {
+    resp.split("\r\n\r\n").nth(1).unwrap_or("")
+}
+
+fn user_msg(content: &str) -> ChatMessage {
+    ChatMessage {
+        role: MessageRole::User,
+        content: content.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    }
+}
+
+fn assistant_msg(content: &str) -> ChatMessage {
+    ChatMessage {
+        role: MessageRole::Assistant,
+        content: content.to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    }
+}
+
+/// v0.4 B1: create → list → transcript round-trip. A foreign
+/// (cron) session on disk never appears in the web list, and the
+/// legacy `purr_web` session does.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_sessions_create_list_transcript() {
+    let dir = test_dir("sessions-crud");
+    let store = SessionStore::new(&dir);
+    store
+        .append_message("purr_web", &user_msg("hello from legacy"))
+        .unwrap();
+    store
+        .append_message("purr_web", &assistant_msg("hi"))
+        .unwrap();
+    store
+        .append_message("purr_cron_0123456789ab", &user_msg("cron"))
+        .unwrap();
+
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+
+    let resp = get(port, "/api/sessions");
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+    let list: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "list: {list}");
+    assert_eq!(list[0]["id"], "purr_web");
+    assert_eq!(list[0]["message_count"], 2);
+    assert_eq!(list[0]["title"], "hello from legacy");
+
+    let resp = post(port, "/api/sessions", "{}");
+    assert!(resp.starts_with("HTTP/1.1 201"), "resp: {resp}");
+    let created: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    let new_id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        crate::web::sessions::is_valid_web_session_id(&new_id) && new_id != "purr_web",
+        "id: {new_id}"
+    );
+
+    // The new (empty) session lists at once, before its first message.
+    let resp = get(port, "/api/sessions");
+    let list: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 2, "list: {list}");
+    let fresh = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == new_id)
+        .unwrap();
+    assert_eq!(fresh["message_count"], 0);
+    assert_eq!(fresh["title"], "");
+
+    // Transcript replays the legacy chat's history in order.
+    let resp = get(port, "/api/sessions/purr_web/transcript");
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+    let val: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    assert_eq!(val["id"], "purr_web");
+    assert_eq!(val["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(val["messages"][0]["role"], "user");
+    assert_eq!(val["messages"][0]["content"], "hello from legacy");
+    assert_eq!(val["messages"][1]["role"], "assistant");
+
+    // The fresh session's transcript is empty, not a 404.
+    let resp = get(port, &format!("/api/sessions/{new_id}/transcript"));
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+    let val: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    assert_eq!(val["messages"].as_array().unwrap().len(), 0);
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B1: transcript errors — invalid shape is a 400 (including
+/// traversal and foreign session ids), a valid-but-unknown id is a 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_sessions_transcript_errors() {
+    let dir = test_dir("sessions-err");
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+
+    let resp = get(port, "/api/sessions/purr_web_0123456789ab/transcript");
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    let resp = get(port, "/api/sessions/purr_web/transcript");
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    for bad in [
+        "purr_web_..%2F..%2Fetc",
+        "purr_web_0123456789AB",
+        "purr_cron_0123456789ab",
+        "purr_hb_0123456789ab",
+        "..%2F..%2Fetc",
+    ] {
+        let resp = get(port, &format!("/api/sessions/{bad}/transcript"));
+        assert!(resp.starts_with("HTTP/1.1 400"), "id {bad}: resp: {resp}");
+    }
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B1: prompts route to the session in the body; no session
+/// means the legacy default; an unknown explicit id is a 404 and
+/// dispatches nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_prompt_routes_to_session() {
+    let dir = test_dir("sessions-prompt");
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let disp = Arc::new(RecordingDispatcher {
+        calls: calls.clone(),
+    });
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), Some(disp)).await;
+    let session_a = registry.create_session().unwrap();
+
+    let resp = post(port, "/api/prompt", r#"{"prompt": "hi default"}"#);
+    assert!(resp.contains("\"status\":\"dispatched\""), "resp: {resp}");
+    let resp = post(
+        port,
+        "/api/prompt",
+        &format!(r#"{{"prompt": "hi a", "session_id": "{}"}}"#, session_a.id),
+    );
+    assert!(resp.contains("\"status\":\"dispatched\""), "resp: {resp}");
+    let resp = post(
+        port,
+        "/api/prompt",
+        r#"{"prompt": "hi x", "session_id": "purr_web_0123456789ab"}"#,
+    );
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    // The dispatcher runs in a spawned task; give it a moment.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2, "calls: {calls:?}");
+    assert_eq!(calls[0], ("purr_web".to_string(), "hi default".to_string()));
+    assert_eq!(calls[1], (session_a.id.clone(), "hi a".to_string()));
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B1: SSE is scoped per session — an event sent to session A
+/// reaches A's subscribers only, and an unknown session id is a 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_sse_isolated_per_session() {
+    let dir = test_dir("sessions-sse");
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let a = registry.create_session().unwrap();
+    let b = registry.create_session().unwrap();
+
+    let a_ch = a.channel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = a_ch
+            .send_event(&AgentEvent::TextChunk {
+                text: "for-a-only".to_string(),
+            })
+            .await;
+    });
+
+    let out_a = http_sse_read(
+        port,
+        &format!("/api/events?session={}", a.id),
+        Duration::from_secs(5),
+    );
+    assert!(out_a.contains("for-a-only"), "out_a: {out_a}");
+
+    // B's stream stays silent within a full second.
+    let out_b = http_sse_read(
+        port,
+        &format!("/api/events?session={}", b.id),
+        Duration::from_secs(1),
+    );
+    assert!(out_b.contains("text/event-stream"), "out_b: {out_b}");
+    assert!(!out_b.contains("data:"), "out_b: {out_b}");
+
+    let resp = get(port, "/api/events?session=purr_web_0123456789ab");
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B1: an approval pending on session A cannot be resolved
+/// through session B's id — it stays pending until resolved with
+/// the right session (or the default when the body carries none).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_approval_isolated_per_session() {
+    let dir = test_dir("sessions-approval");
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let a = registry.create_session().unwrap();
+    let b = registry.create_session().unwrap();
+
+    let waiter = tokio::spawn({
+        let ch = a.channel.clone();
+        async move {
+            ch.request_approval("call-1", "bash", "run", None)
+                .await
+                .unwrap()
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let resp = post(
+        port,
+        "/api/approval",
+        &format!(
+            r#"{{"call_id": "call-1", "approved": true, "session_id": "{}"}}"#,
+            b.id
+        ),
+    );
+    assert!(resp.contains("\"resolved\":false"), "resp: {resp}");
+
+    let resp = post(
+        port,
+        "/api/approval",
+        &format!(
+            r#"{{"call_id": "call-1", "approved": true, "session_id": "{}"}}"#,
+            a.id
+        ),
+    );
+    assert!(resp.contains("\"resolved\":true"), "resp: {resp}");
+    assert!(waiter.await.unwrap());
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Re-checker P2-1: a session that exists on disk but has no live
+/// entry yet (exactly the state after a daemon restart — the
+/// server's registry starts empty) must accept prompts and SSE.
+/// The file is seeded before the server starts, so the registry
+/// has never seen the id.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_resumed_session_accepts_prompt_and_sse() {
+    let dir = test_dir("sessions-resume");
+    let store = SessionStore::new(&dir);
+    store
+        .append_message("purr_web_0123456789ab", &user_msg("hello before restart"))
+        .unwrap();
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let disp = Arc::new(RecordingDispatcher {
+        calls: calls.clone(),
+    });
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), Some(disp)).await;
+
+    let resp = post(
+        port,
+        "/api/prompt",
+        r#"{"prompt": "jawab satu kata: apel", "session_id": "purr_web_0123456789ab"}"#,
+    );
+    assert!(resp.contains("\"status\":\"dispatched\""), "resp: {resp}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "calls: {calls:?}");
+    assert_eq!(
+        calls[0],
+        (
+            "purr_web_0123456789ab".to_string(),
+            "jawab satu kata: apel".to_string()
+        )
+    );
+    drop(calls);
+
+    // SSE to the resumed session streams (200), it is not a 404.
+    let out = http_sse_read(
+        port,
+        "/api/events?session=purr_web_0123456789ab",
+        Duration::from_secs(1),
+    );
+    assert!(out.starts_with("HTTP/1.1 200 OK"), "out: {out}");
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Re-checker P3-3: a present-but-non-string `session_id` is a
+/// 400 on prompt and resolves nothing on approval — it must not
+/// silently fall back to the default session.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_nonstring_session_id_is_not_default() {
+    let dir = test_dir("sessions-nonstr");
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let disp = Arc::new(RecordingDispatcher {
+        calls: calls.clone(),
+    });
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), Some(disp)).await;
+
+    let resp = post(
+        port,
+        "/api/prompt",
+        r#"{"prompt": "jawab satu kata: apel", "session_id": 123}"#,
+    );
+    assert!(resp.starts_with("HTTP/1.1 400"), "resp: {resp}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(calls.lock().unwrap().is_empty(), "nothing dispatched");
+
+    let resp = post(
+        port,
+        "/api/approval",
+        r#"{"call_id": "call-1", "approved": true, "session_id": 123}"#,
+    );
+    assert!(resp.contains("\"resolved\":false"), "resp: {resp}");
+
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
