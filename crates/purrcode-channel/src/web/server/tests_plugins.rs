@@ -200,11 +200,28 @@ async fn test_plugins_mount_unmount_roundtrip_and_audit() {
     assert!(resp.contains("409 Conflict"), "double unmount: {resp}");
 
     let logged = events.lock().unwrap();
-    assert_eq!(logged.len(), 2);
-    assert_eq!(logged[0].0, "plugin_mount");
-    assert_eq!(logged[0].1, "echo-hook");
-    assert_eq!(logged[1].0, "plugin_unmount");
+    // Successes audit `allow`, failed attempts audit `deny` (fix
+    // pass P3-2): the double mount (409) and double unmount (409)
+    // between the successes leave a trace too.
+    assert_eq!(logged.len(), 4);
+    assert_eq!(
+        logged[0],
+        (
+            "plugin_mount".to_string(),
+            "echo-hook".to_string(),
+            "allow".to_string(),
+            "path=/plugins/echo-hook transport=Process".to_string()
+        )
+    );
+    assert_eq!(logged[1].0, "plugin_mount");
     assert_eq!(logged[1].1, "echo-hook");
+    assert_eq!(logged[1].2, "deny");
+    assert_eq!(logged[2].0, "plugin_unmount");
+    assert_eq!(logged[2].1, "echo-hook");
+    assert_eq!(logged[2].2, "allow");
+    assert_eq!(logged[3].0, "plugin_unmount");
+    assert_eq!(logged[3].1, "echo-hook");
+    assert_eq!(logged[3].2, "deny");
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
@@ -250,8 +267,15 @@ async fn test_plugins_mount_errors() {
 async fn test_plugins_without_registry() {
     let dir = test_dir("plugins-none");
     let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
-    let val: serde_json::Value = serde_json::from_str(body_of(&get(port, "/api/plugins"))).unwrap();
-    assert_eq!(val["plugins"], serde_json::json!([]));
+    // Fix pass P3-3: without a registry the list answers 503 like
+    // mount/unmount do — a 200 with an empty list would hide a
+    // miswired server behind "no plugins installed".
+    let resp = get(port, "/api/plugins");
+    assert!(resp.contains("503 Service Unavailable"), "list: {resp}");
+    assert!(
+        body_of(&resp).contains("plugin registry not configured"),
+        "error message: {resp}"
+    );
     let resp = post(port, "/api/plugins/mount", r#"{"name":"x"}"#);
     assert!(resp.contains("503 Service Unavailable"), "mount: {resp}");
     let resp = post(port, "/api/plugins/unmount", r#"{"name":"x"}"#);

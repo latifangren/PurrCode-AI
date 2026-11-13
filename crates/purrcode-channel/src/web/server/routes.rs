@@ -212,14 +212,20 @@ pub async fn skills_reject(State(state): State<Arc<WebState>>, body: Bytes) -> J
 /// (one entry per directory, raw `manifest` YAML string, name =
 /// directory name) is replaced by structured `PluginInfo` entries
 /// (`name` is now the manifest name — the mount key). Without a
-/// wired registry the server has no live manager, so the list is
-/// empty.
-pub async fn plugins(State(state): State<Arc<WebState>>) -> Json<Value> {
-    let plugins = match &state.plugin_registry {
-        Some(reg) => reg.list_plugins().await,
-        None => Vec::new(),
+/// wired registry the server answers 503, like mount/unmount do:
+/// a 200 with an empty list would be indistinguishable from "no
+/// plugins installed" and would hide a miswired server.
+pub async fn plugins(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
+    let Some(reg) = &state.plugin_registry else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "plugin registry not configured" })),
+        );
     };
-    Json(json!({ "plugins": plugins }))
+    (
+        StatusCode::OK,
+        Json(json!({ "plugins": reg.list_plugins().await })),
+    )
 }
 
 fn plugin_mount_status(err: &PluginMountError) -> StatusCode {
@@ -252,9 +258,9 @@ fn plugin_name_from_body(body: &Bytes) -> std::result::Result<String, (StatusCod
     Ok(name.to_string())
 }
 
-fn record_plugin_admin(state: &WebState, event: &str, name: &str, detail: &str) {
+fn record_plugin_admin(state: &WebState, event: &str, name: &str, decision: &str, detail: &str) {
     if let Some(sink) = &state.audit_sink {
-        sink.record_event("web", "web", event, Some(name), "allow", detail);
+        sink.record_event("web", "web", event, Some(name), decision, detail);
     }
 }
 
@@ -282,6 +288,7 @@ pub async fn plugins_mount(
                 &state,
                 "plugin_mount",
                 &name,
+                "allow",
                 &format!("path={} transport={:?}", info.path, info.transport),
             );
             (
@@ -289,10 +296,16 @@ pub async fn plugins_mount(
                 Json(json!({ "mounted": true, "plugin": info })),
             )
         }
-        Err(e) => (
-            plugin_mount_status(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => {
+            // Failed attempts are audited too (decision `deny`):
+            // a 404/409/400 that leaves no trace is invisible in
+            // the log a user reads after a mount that "did nothing".
+            record_plugin_admin(&state, "plugin_mount", &name, "deny", &e.to_string());
+            (
+                plugin_mount_status(&e),
+                Json(json!({ "error": e.to_string() })),
+            )
+        }
     }
 }
 
@@ -319,6 +332,7 @@ pub async fn plugins_unmount(
                 &state,
                 "plugin_unmount",
                 &name,
+                "allow",
                 &format!("path={} transport={:?}", info.path, info.transport),
             );
             (
@@ -326,10 +340,13 @@ pub async fn plugins_unmount(
                 Json(json!({ "mounted": false, "plugin": info })),
             )
         }
-        Err(e) => (
-            plugin_mount_status(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => {
+            record_plugin_admin(&state, "plugin_unmount", &name, "deny", &e.to_string());
+            (
+                plugin_mount_status(&e),
+                Json(json!({ "error": e.to_string() })),
+            )
+        }
     }
 }
 

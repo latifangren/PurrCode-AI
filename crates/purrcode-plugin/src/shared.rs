@@ -74,7 +74,7 @@ impl SharedPluginManager {
     /// Dispatch runs against the snapshot, never under the lock, so
     /// a mount/unmount is never blocked by a slow hook RPC.
     async fn snapshot(&self) -> Vec<Arc<dyn Plugin>> {
-        self.inner.read().await.plugins().to_vec()
+        self.inner.read().await.plugins()
     }
 
     pub async fn is_mounted(&self, name: &str) -> bool {
@@ -132,14 +132,18 @@ impl SharedPluginManager {
 impl PluginRegistry for SharedPluginManager {
     async fn list_plugins(&self) -> Vec<PluginInfo> {
         let discovered = self.discover().await;
-        let mounted = self.inner.read().await.mounted_names();
+        // Match a discovered entry against (name, dir), not the
+        // name alone: a global and a project plugin can share a
+        // manifest name, and only the mounted copy's directory
+        // tells which row is actually live.
+        let mounted = self.inner.read().await.mounted_entries();
         discovered
             .iter()
             .map(|d| {
                 let is_mounted = d
                     .manifest
                     .as_ref()
-                    .map(|m| mounted.iter().any(|n| n == &m.name))
+                    .map(|m| mounted.iter().any(|(n, dir)| n == &m.name && dir == &d.dir))
                     .unwrap_or(false);
                 Self::info(d, is_mounted)
             })
@@ -152,8 +156,22 @@ impl PluginRegistry for SharedPluginManager {
             .iter()
             .find(|d| d.manifest.as_ref().map(|m| m.name.as_str()) == Some(name))
             .ok_or_else(|| PluginMountError::NotFound(name.to_string()))?;
+        // Advisory fast path: an already-mounted name is rejected
+        // before the ~50 ms spawn check runs.
+        if self.is_mounted(name).await {
+            return Err(PluginMountError::AlreadyMounted(name.to_string()));
+        }
+        // The spawn check runs with NO lock held (fix pass P3-4):
+        // holding the write lock across it stalled every dispatch
+        // snapshot and list call for its duration.
+        let manifest = PluginManager::verify_mount_candidate(found).await?;
         let mut mgr = self.inner.write().await;
-        mgr.mount(found).await?;
+        // Authoritative re-check: another mount may have won the
+        // race while the spawn check was running.
+        if mgr.is_mounted(&manifest.name) {
+            return Err(PluginMountError::AlreadyMounted(manifest.name));
+        }
+        mgr.register_discovered(found);
         Ok(Self::info(found, true))
     }
 
@@ -169,6 +187,15 @@ impl PluginRegistry for SharedPluginManager {
             .iter()
             .find(|d| d.manifest.as_ref().map(|m| m.name.as_str()) == Some(name));
         let mut mgr = self.inner.write().await;
+        // A name that exists nowhere is 404, not 409: only a
+        // discovered-but-not-mounted plugin is "not mounted".
+        if !mgr.is_mounted(name) {
+            return Err(if found.is_some() {
+                PluginMountError::NotMounted(name.to_string())
+            } else {
+                PluginMountError::NotFound(name.to_string())
+            });
+        }
         let manifest = mgr.unmount(name)?;
         Ok(match found {
             Some(d) => Self::info(d, false),
@@ -332,14 +359,18 @@ mod tests {
     async fn test_mount_resolves_relative_command_and_dispatches() {
         // The hook script speaks one line of JSON-RPC: it reads the
         // request line, answers `false` to pre_tool_use (veto), and
-        // appends a marker so we can count spawns. The marker path
-        // is absolute: a plugin child inherits the server's cwd,
-        // not the plugin directory (unchanged dispatch semantics).
+        // appends a marker so we can count spawns. The marker is
+        // written BEFORE the response on purpose: `call_rpc` kills
+        // the child as soon as the response line is read, so a
+        // post-response write races the kill and made this test
+        // flaky (~30% failures). The marker path is absolute: a
+        // plugin child inherits the server's cwd, not the plugin
+        // directory (unchanged dispatch semantics).
         let root = temp_root("relative");
         let dir = root.join("plugins").join("veto-hook");
         let marker = dir.join("marker.txt");
         let script = format!(
-            "#!/bin/sh\nread line\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":false}}'\necho x >> {}\n",
+            "#!/bin/sh\nread line\necho x >> {}\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":false}}'\n",
             marker.display()
         );
         write_plugin(
@@ -369,6 +400,130 @@ mod tests {
         assert!(
             mgr.dispatch_pre_tool_use("bash", &serde_json::json!({}))
                 .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unmount_unknown_is_not_found() {
+        // Fix pass P2-1: a name that exists nowhere is NotFound
+        // (HTTP 404), not NotMounted (409) — only a discovered
+        // but not mounted plugin is "not mounted".
+        let root = temp_root("unmount-unknown");
+        write_plugin(
+            &root.join("plugins").join("echo-hook"),
+            "name: echo-hook\nversion: 0.1.0\ntransport: process\ncommand: /bin/true\n",
+            None,
+        );
+        let mgr = manager_for(&root);
+        let err = mgr.unmount_plugin("ghost").await.unwrap_err();
+        assert_eq!(err, PluginMountError::NotFound("ghost".to_string()));
+        let err = mgr.unmount_plugin("echo-hook").await.unwrap_err();
+        assert_eq!(err, PluginMountError::NotMounted("echo-hook".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_duplicate_name_marks_only_mounted_copy() {
+        // Fix pass P2-2: a global and a project plugin sharing a
+        // manifest name must not both list as mounted — only the
+        // copy that is actually registered (global wins the mount)
+        // carries `mounted: true`.
+        let root = temp_root("dup");
+        write_plugin(
+            &root.join("plugins").join("dup"),
+            "name: dup\nversion: 9.9.9\ntransport: process\ncommand: /bin/true\n",
+            None,
+        );
+        write_plugin(
+            &root
+                .join("ws")
+                .join(".purrcode")
+                .join("plugins")
+                .join("dup"),
+            "name: dup\nversion: 1.0.0\ntransport: process\ncommand: /bin/true\n",
+            None,
+        );
+        let mgr = manager_for(&root);
+        let mounted = mgr.mount_plugin("dup").await.unwrap();
+        assert_eq!(mounted.version, "9.9.9");
+        let listed = mgr.list_plugins().await;
+        assert_eq!(listed.len(), 2);
+        let global = listed
+            .iter()
+            .find(|p| p.source == purrcode_api::plugin::PluginSource::Global)
+            .unwrap();
+        let project = listed
+            .iter()
+            .find(|p| p.source == purrcode_api::plugin::PluginSource::Project)
+            .unwrap();
+        assert!(global.mounted);
+        assert_eq!(global.version, "9.9.9");
+        assert!(!project.mounted);
+        assert_eq!(project.version, "1.0.0");
+        // Unmount removes the global copy; re-mount mounts it again
+        // (first name match wins).
+        mgr.unmount_plugin("dup").await.unwrap();
+        assert!(mgr.list_plugins().await.iter().all(|p| !p.mounted));
+        let mounted = mgr.mount_plugin("dup").await.unwrap();
+        assert_eq!(mounted.version, "9.9.9");
+    }
+
+    #[tokio::test]
+    async fn test_discover_all_resolves_relative_command() {
+        // Fix pass P1-1: the startup discovery path
+        // (`SharedPluginManager::discover_all`, same
+        // `register_discovered` as the CLI `discover_all`) must
+        // resolve `./hook.sh` against the plugin dir — the old
+        // CLI `scan_dir` registered the raw command, so the
+        // script only spawned when the process cwd happened to be
+        // the plugin dir and dispatch otherwise vetoed every tool
+        // call on the ENOENT error.
+        let root = temp_root("startup-relative");
+        let dir = root.join("plugins").join("allow-hook");
+        let marker = dir.join("marker.txt");
+        let script = format!(
+            "#!/bin/sh\nread line\necho x >> {}\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":true}}'\n",
+            marker.display()
+        );
+        write_plugin(
+            &dir,
+            "name: allow-hook\nversion: 0.1.0\ntransport: process\ncommand: ./hook.sh\n",
+            Some(("hook.sh", &script)),
+        );
+        let mgr = manager_for(&root);
+        mgr.discover_all().await;
+        assert!(mgr.is_mounted("allow-hook").await);
+        assert!(
+            mgr.dispatch_pre_tool_use("bash", &serde_json::json!({}))
+                .await,
+            "startup-discovered relative-command plugin must allow tool use"
+        );
+        assert!(marker.exists(), "hook script must have run (resolved path)");
+    }
+
+    #[tokio::test]
+    async fn test_spawn_check_kills_backgrounded_grandchildren() {
+        // Fix pass P3-1: the mount spawn check used to kill only
+        // the direct child — a script that backgrounds a writer
+        // leaked it, and the grandchild wrote its marker ~0.5 s
+        // after mount returned.
+        let root = temp_root("grandchild");
+        let dir = root.join("plugins").join("leaky-hook");
+        let marker = dir.join("grandchild.txt");
+        let script = format!(
+            "#!/bin/sh\n(sleep 0.5; echo x >> {}) &\nsleep 5\n",
+            marker.display()
+        );
+        write_plugin(
+            &dir,
+            "name: leaky-hook\nversion: 0.1.0\ntransport: process\ncommand: ./hook.sh\n",
+            Some(("hook.sh", &script)),
+        );
+        let mgr = manager_for(&root);
+        mgr.mount_plugin("leaky-hook").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(
+            !marker.exists(),
+            "backgrounded grandchild survived the mount spawn check"
         );
     }
 

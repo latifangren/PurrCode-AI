@@ -121,13 +121,38 @@ async fn spawn_with_txtbsy_retry(
     Err(last_err.expect("retry loop always leaves an error"))
 }
 
+/// Kill a plugin child and its whole process group, then reap
+/// it. A plugin that backgrounds grandchildren (e.g. `(sleep 30)
+/// &`) would otherwise leak them past the RPC or the mount check:
+/// killing only the direct child leaves the grandchild running
+/// with no parent tracking it. The child is its own group leader
+/// (`process_group(0)` at spawn), so the group id equals the pid.
+/// On non-Unix platforms there is no process group, so the direct
+/// kill is the only guard.
+async fn kill_child_group(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            // SAFETY: killpg targets only the child's own fresh
+            // group (group id == child pid); nothing else can be
+            // in it.
+            unsafe {
+                libc::killpg(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
 /// Smoke check for a mount: the command must spawn, and a child
 /// that dies immediately must have exited successfully. A bad
 /// shebang or missing interpreter makes the child exit non-zero
 /// (spawn itself succeeds — the exec failure happens inside the
 /// child), so the exit status is the only signal. A child still
-/// alive after the grace window is killed and reaped (no zombie,
-/// no leaked fds); a child that already exited 0 is a valid no-op
+/// alive after the grace window is killed (whole process group)
+/// and reaped (no zombie, no leaked fds, no leaked grandchildren);
+/// a child that already exited 0 is a valid no-op
 /// plugin — dispatch fails open for it, as today.
 async fn verify_command_spawns(
     command: &str,
@@ -138,6 +163,8 @@ async fn verify_command_spawns(
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     cmd.kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = spawn_with_txtbsy_retry(&mut cmd).await.map_err(|e| {
         PluginMountError::SpawnFailed(format!("'{command}' for plugin '{name}': {e}"))
     })?;
@@ -147,11 +174,11 @@ async fn verify_command_spawns(
             "'{command}' for plugin '{name}' exited immediately with status {status}"
         ))),
         Ok(Some(_)) => Ok(()),
-        // Still alive: kill explicitly and reap, instead of
-        // relying on `kill_on_drop` + the orphan queue.
+        // Still alive: kill the whole process group explicitly
+        // and reap, instead of relying on `kill_on_drop` + the
+        // orphan queue.
         Ok(None) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            kill_child_group(&mut child).await;
             Ok(())
         }
         Err(e) => Err(PluginMountError::SpawnFailed(format!(
@@ -160,8 +187,20 @@ async fn verify_command_spawns(
     }
 }
 
+/// One registered plugin plus the directory it was discovered
+/// in. The directory is the plugin's identity for the WebUI list:
+/// a global and a project plugin can share a manifest name, and
+/// only the directory tells which copy is actually mounted
+/// (v0.4 B4 fix pass — list by name alone marked both copies
+/// mounted). Empty when registered directly without a discovery
+/// context (ad-hoc `register` calls, tests).
+struct PluginEntry {
+    plugin: Arc<dyn Plugin>,
+    dir: PathBuf,
+}
+
 pub struct PluginManager {
-    plugins: Vec<Arc<dyn Plugin>>,
+    plugins: Vec<PluginEntry>,
 }
 
 impl PluginManager {
@@ -172,34 +211,49 @@ impl PluginManager {
     }
 
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
-        self.plugins.push(plugin);
+        self.plugins.push(PluginEntry {
+            plugin,
+            dir: PathBuf::new(),
+        });
     }
 
-    pub fn plugins(&self) -> &[Arc<dyn Plugin>] {
-        &self.plugins
+    pub fn plugins(&self) -> Vec<Arc<dyn Plugin>> {
+        self.plugins.iter().map(|e| e.plugin.clone()).collect()
     }
 
     /// Names of the currently registered (mounted) plugins.
     pub fn mounted_names(&self) -> Vec<String> {
         self.plugins
             .iter()
-            .map(|p| p.manifest().name.clone())
+            .map(|e| e.plugin.manifest().name.clone())
+            .collect()
+    }
+
+    /// (name, discovery dir) of every mounted plugin — the WebUI
+    /// matches a discovered entry against this pair, not the name
+    /// alone, so a same-name global + project pair lists correctly.
+    pub fn mounted_entries(&self) -> Vec<(String, PathBuf)> {
+        self.plugins
+            .iter()
+            .map(|e| (e.plugin.manifest().name.clone(), e.dir.clone()))
             .collect()
     }
 
     pub fn is_mounted(&self, name: &str) -> bool {
-        self.plugins.iter().any(|p| p.manifest().name == name)
+        self.plugins
+            .iter()
+            .any(|e| e.plugin.manifest().name == name)
     }
 
-    /// Mount one discovered plugin: validate the manifest, verify
-    /// its command actually spawns, then register it. A relative
-    /// command containing a path separator (`./runner`,
-    /// `bin/hook`) is resolved against the plugin directory — the
-    /// server's cwd is not the plugin's home, so a bare relative
-    /// path would only work by accident. Bare words (`my-plugin`)
-    /// are left alone for `PATH` lookup.
-    pub async fn mount(
-        &mut self,
+    /// Validate a discovered plugin for mounting WITHOUT mutating
+    /// anything: manifest must parse, a command must exist, the
+    /// resolved command must spawn and not die immediately. This
+    /// is the slow part of a mount (~50 ms spawn check), so the
+    /// web wrapper runs it with no lock held and only takes the
+    /// write lock to register afterwards (the `AlreadyMounted`
+    /// check is re-run there). `mount` below keeps the same
+    /// checks in the same order for direct callers.
+    pub async fn verify_mount_candidate(
         discovered: &DiscoveredPlugin,
     ) -> std::result::Result<PluginManifest, PluginMountError> {
         let manifest = match &discovered.manifest {
@@ -213,14 +267,34 @@ impl PluginManager {
                 ));
             }
         };
-        if self.is_mounted(&manifest.name) {
-            return Err(PluginMountError::AlreadyMounted(manifest.name));
-        }
         let command = match &discovered.command {
             Some(c) => resolve_plugin_command(c, &discovered.dir),
             None => return Err(PluginMountError::NoCommand(manifest.name)),
         };
         verify_command_spawns(&command, &manifest.name).await?;
+        Ok(manifest)
+    }
+
+    /// Mount one discovered plugin: validate the manifest, verify
+    /// its command actually spawns, then register it. A relative
+    /// command containing a path separator (`./runner`,
+    /// `bin/hook`) is resolved against the plugin directory — the
+    /// server's cwd is not the plugin's home, so a bare relative
+    /// path would only work by accident. Bare words (`my-plugin`)
+    /// are left alone for `PATH` lookup. An already-mounted name
+    /// is rejected BEFORE the spawn check (re-mount is not a way
+    /// to re-validate a plugin whose command broke on disk — it
+    /// must be unmounted first).
+    pub async fn mount(
+        &mut self,
+        discovered: &DiscoveredPlugin,
+    ) -> std::result::Result<PluginManifest, PluginMountError> {
+        if let Some(m) = &discovered.manifest {
+            if self.is_mounted(&m.name) {
+                return Err(PluginMountError::AlreadyMounted(m.name.clone()));
+            }
+        }
+        let manifest = Self::verify_mount_candidate(discovered).await?;
         self.register_discovered(discovered);
         Ok(manifest)
     }
@@ -241,7 +315,10 @@ impl PluginManager {
             return;
         }
         let command = resolve_plugin_command(command, &discovered.dir);
-        self.register(Arc::new(ProcessPlugin::new(manifest.clone(), command)));
+        self.plugins.push(PluginEntry {
+            plugin: Arc::new(ProcessPlugin::new(manifest.clone(), command)),
+            dir: discovered.dir.clone(),
+        });
     }
 
     /// Remove a plugin from the live manager. Hooks already in
@@ -252,9 +329,9 @@ impl PluginManager {
         let pos = self
             .plugins
             .iter()
-            .position(|p| p.manifest().name == name)
+            .position(|e| e.plugin.manifest().name == name)
             .ok_or_else(|| PluginMountError::NotMounted(name.to_string()))?;
-        let manifest = self.plugins.remove(pos).manifest().clone();
+        let manifest = self.plugins.remove(pos).plugin.manifest().clone();
         Ok(manifest)
     }
 
@@ -266,8 +343,8 @@ impl PluginManager {
     pub fn unenforced_capabilities(&self) -> Vec<(String, Vec<&'static str>)> {
         self.plugins
             .iter()
-            .filter_map(|p| {
-                let caps = &p.manifest().capabilities;
+            .filter_map(|e| {
+                let caps = &e.plugin.manifest().capabilities;
                 let mut kinds = Vec::new();
                 if !caps.network.is_empty() {
                     kinds.push("network");
@@ -278,7 +355,7 @@ impl PluginManager {
                 if kinds.is_empty() {
                     None
                 } else {
-                    Some((p.manifest().name.clone(), kinds))
+                    Some((e.plugin.manifest().name.clone(), kinds))
                 }
             })
             .collect()
@@ -288,32 +365,54 @@ impl PluginManager {
     /// Broken manifests are skipped with a warning rather than crashing startup.
     pub fn discover_all(&mut self, workspace_root: &Path) {
         if let Some(home) = dirs_home() {
-            self.scan_dir(&home.join(".purrcode").join("plugins"));
+            self.scan_dir(
+                &home.join(".purrcode").join("plugins"),
+                PluginSource::Global,
+            );
         }
-        self.scan_dir(&workspace_root.join(".purrcode").join("plugins"));
+        self.scan_dir(
+            &workspace_root.join(".purrcode").join("plugins"),
+            PluginSource::Project,
+        );
     }
 
-    fn scan_dir(&mut self, dir: &Path) {
+    fn scan_dir(&mut self, dir: &Path, source: PluginSource) {
         if !dir.is_dir() {
             return;
         }
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
-                let manifest_path = entry.path().join("plugin.yaml");
-                if manifest_path.exists() {
-                    match parse_plugin_yaml(&manifest_path) {
-                        Ok((manifest, command)) => {
-                            if let Some(cmd) = command {
-                                self.register(Arc::new(ProcessPlugin::new(manifest, cmd)));
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Skipping invalid plugin manifest '{}': {}",
-                                manifest_path.display(),
-                                e
-                            );
-                        }
+                let plugin_dir = entry.path();
+                let manifest_path = plugin_dir.join("plugin.yaml");
+                if !manifest_path.exists() {
+                    continue;
+                }
+                match parse_plugin_yaml(&manifest_path) {
+                    Ok((manifest, command)) => {
+                        // Same path as the web mount (`register_discovered`):
+                        // a relative command is resolved against the
+                        // plugin directory, and a name already
+                        // registered (global wins over project) is
+                        // skipped. Registering the raw command here
+                        // used to mean `./hook.sh` only spawned when
+                        // the process cwd happened to be the plugin
+                        // dir — dispatch then vetoed every tool call
+                        // on the ENOENT error, with no diagnosis.
+                        self.register_discovered(&DiscoveredPlugin {
+                            dir: plugin_dir,
+                            source,
+                            name: manifest.name.clone(),
+                            manifest: Some(manifest),
+                            command,
+                            manifest_error: None,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping invalid plugin manifest '{}': {}",
+                            manifest_path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -321,31 +420,44 @@ impl PluginManager {
     }
 
     pub async fn dispatch_session_start(&self, session_id: &str) {
-        for p in &self.plugins {
-            let _ = p.on_session_start(session_id).await;
+        for e in &self.plugins {
+            let _ = e.plugin.on_session_start(session_id).await;
         }
     }
 
     /// Dispatches `pre_tool_use` to all registered plugins. Any `Ok(false)` vetoes execution.
+    /// A plugin that ERRORS also vetoes (fail-closed) — but unlike
+    /// before, the failure is logged with the plugin name: a
+    /// silently vetoing broken plugin used to block every tool
+    /// call with no diagnosis anywhere.
     pub async fn dispatch_pre_tool_use(&self, tool: &str, args: &Value) -> bool {
-        for p in &self.plugins {
-            match p.pre_tool_use(tool, args).await {
+        for e in &self.plugins {
+            match e.plugin.pre_tool_use(tool, args).await {
                 Ok(true) => {}
-                Ok(false) | Err(_) => return false,
+                Ok(false) => return false,
+                Err(err) => {
+                    tracing::warn!(
+                        "Plugin '{}' pre_tool_use failed ({}); vetoing tool call '{}'",
+                        e.plugin.manifest().name,
+                        err,
+                        tool
+                    );
+                    return false;
+                }
             }
         }
         true
     }
 
     pub async fn dispatch_post_tool_use(&self, tool: &str, result: &Value) {
-        for p in &self.plugins {
-            let _ = p.post_tool_use(tool, result).await;
+        for e in &self.plugins {
+            let _ = e.plugin.post_tool_use(tool, result).await;
         }
     }
 
     pub async fn dispatch_session_stop(&self, session_id: &str) {
-        for p in &self.plugins {
-            let _ = p.on_session_stop(session_id).await;
+        for e in &self.plugins {
+            let _ = e.plugin.on_session_stop(session_id).await;
         }
     }
 }
@@ -418,6 +530,8 @@ impl ProcessPlugin {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::null());
         cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child = spawn_with_txtbsy_retry(&mut cmd)
             .await
@@ -438,17 +552,25 @@ impl ProcessPlugin {
             let _ = stdin.flush().await;
         }
 
-        if let Some(stdout) = child.stdout.take() {
+        let result = if let Some(stdout) = child.stdout.take() {
             let mut reader = BufReader::new(stdout);
             let mut resp_line = String::new();
             if reader.read_line(&mut resp_line).await.is_ok() {
-                if let Ok(val) = serde_json::from_str::<Value>(resp_line.trim()) {
-                    return Ok(val.get("result").cloned().unwrap_or(Value::Bool(true)));
-                }
+                serde_json::from_str::<Value>(resp_line.trim())
+                    .ok()
+                    .and_then(|val| val.get("result").cloned())
+            } else {
+                None
             }
-        }
-
-        Ok(Value::Bool(true))
+        } else {
+            None
+        };
+        // The RPC is one-shot: the child is killed (whole process
+        // group) as soon as its response is read, so a plugin must
+        // finish its side effects BEFORE responding — nothing after
+        // the response line is guaranteed to run.
+        kill_child_group(&mut child).await;
+        Ok(result.unwrap_or(Value::Bool(true)))
     }
 }
 
@@ -611,158 +733,4 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_plugin_yaml_and_default_deny_secrets() {
-        let yaml = r#"
-name: security-hook
-version: 0.1.0
-transport: process
-command: ./my-plugin
-"#;
-        let (manifest, cmd) = parse_plugin_yaml_str(yaml).unwrap();
-        assert_eq!(manifest.name, "security-hook");
-        assert_eq!(manifest.transport, PluginTransport::Process);
-        assert_eq!(cmd.as_deref(), Some("./my-plugin"));
-        let p = ProcessPlugin::new(manifest, "./my-plugin");
-        assert!(!p.is_secret_allowed("OPENAI_API_KEY"));
-    }
-
-    struct MockPlugin {
-        manifest: PluginManifest,
-        should_veto: bool,
-    }
-
-    #[async_trait]
-    impl Plugin for MockPlugin {
-        fn manifest(&self) -> &PluginManifest {
-            &self.manifest
-        }
-
-        async fn on_session_start(&self, _session_id: &str) -> Result<()> {
-            Ok(())
-        }
-
-        async fn pre_tool_use(&self, _tool: &str, _arguments: &Value) -> Result<bool> {
-            Ok(!self.should_veto)
-        }
-
-        async fn post_tool_use(&self, _tool: &str, _result: &Value) -> Result<()> {
-            Ok(())
-        }
-
-        async fn on_session_stop(&self, _session_id: &str) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn test_plugin_manager_dispatch_pre_tool_use_veto() {
-        let manifest = PluginManifest {
-            name: "veto-guard".to_string(),
-            version: "0.1.0".to_string(),
-            description: None,
-            transport: PluginTransport::Process,
-            capabilities: PluginCapabilities {
-                network: Vec::new(),
-                filesystem: Vec::new(),
-                secrets: Vec::new(),
-            },
-        };
-
-        let mut mgr = PluginManager::new();
-        mgr.register(Arc::new(MockPlugin {
-            manifest,
-            should_veto: true,
-        }));
-
-        let allowed = mgr
-            .dispatch_pre_tool_use("bash", &serde_json::json!({}))
-            .await;
-        assert!(
-            !allowed,
-            "Plugin must veto tool execution when returning false"
-        );
-    }
-
-    #[test]
-    fn test_parse_plugin_yaml_with_declared_secrets() {
-        let yaml = r#"
-name: secret-reader
-version: 1.0.0
-transport: process
-command: ./runner
-secrets: ["OPENAI_API_KEY", "DEEPSEEK_API_KEY"]
-"#;
-        let (manifest, cmd) = parse_plugin_yaml_str(yaml).unwrap();
-        assert_eq!(cmd.as_deref(), Some("./runner"));
-        let p = ProcessPlugin::new(manifest, "./runner");
-        assert!(p.is_secret_allowed("OPENAI_API_KEY"));
-        assert!(p.is_secret_allowed("DEEPSEEK_API_KEY"));
-        assert!(!p.is_secret_allowed("ANTHROPIC_API_KEY"));
-    }
-
-    #[test]
-    fn test_parse_plugin_yaml_missing_name_rejected() {
-        let yaml = r#"
-version: 1.0.0
-transport: process
-command: ./runner
-"#;
-        let res = parse_plugin_yaml_str(yaml);
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn test_parse_plugin_yaml_records_network_and_filesystem() {
-        // network/filesystem are declarations for the v0.3 OS sandbox:
-        // parsed and recorded, but NOT enforced in v0.1.
-        let yaml = r#"
-name: net-plugin
-version: 1.0.0
-transport: process
-command: ./runner
-network: ["api.example.com", "*.cdn.example"]
-filesystem: ["/tmp", "/home/user/data"]
-"#;
-        let (manifest, _) = parse_plugin_yaml_str(yaml).unwrap();
-        assert_eq!(manifest.capabilities.network.len(), 2);
-        assert_eq!(manifest.capabilities.filesystem.len(), 2);
-        assert!(manifest.capabilities.secrets.is_empty());
-    }
-
-    #[test]
-    fn test_unenforced_capabilities_reports_declared_only() {
-        let mut mgr = PluginManager::new();
-        let declared = PluginManifest {
-            name: "net-plugin".to_string(),
-            version: "0.1.0".to_string(),
-            description: None,
-            transport: PluginTransport::Process,
-            capabilities: PluginCapabilities {
-                network: vec!["api.example.com".to_string()],
-                filesystem: vec!["/tmp".to_string()],
-                secrets: Vec::new(),
-            },
-        };
-        mgr.register(Arc::new(ProcessPlugin::new(declared, "./runner")));
-        let secrets_only = PluginManifest {
-            name: "secret-reader".to_string(),
-            version: "0.1.0".to_string(),
-            description: None,
-            transport: PluginTransport::Process,
-            capabilities: PluginCapabilities {
-                network: Vec::new(),
-                filesystem: Vec::new(),
-                secrets: vec!["OPENAI_API_KEY".to_string()],
-            },
-        };
-        mgr.register(Arc::new(ProcessPlugin::new(secrets_only, "./runner")));
-        let reports = mgr.unenforced_capabilities();
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].0, "net-plugin");
-        assert_eq!(reports[0].1, vec!["network", "filesystem"]);
-    }
-}
+mod tests;
