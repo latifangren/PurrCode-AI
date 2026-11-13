@@ -40,7 +40,7 @@ use purrcode_config::{Config, ModePresetLoader, ModelPresetLoader};
 use purrcode_core::{AgentLoop, ApprovalRequester, SessionStore};
 use purrcode_memory::MarkdownMemory;
 use purrcode_orchestrator::MeowstroOrchestrator;
-use purrcode_plugin::PluginManager;
+use purrcode_plugin::SharedPluginManager;
 use purrcode_provider::ProviderRegistry;
 use purrcode_tools::{ToolRegistry, ToolRegistryExt};
 use std::path::{Path, PathBuf};
@@ -84,7 +84,13 @@ struct WebState {
     audit_logger: Arc<AuditLogger>,
     audit_sink: Arc<dyn AuditSink>,
     plugin_dispatcher: Arc<dyn PluginHookDispatcher>,
-    unenforced_caps: Vec<(String, Vec<&'static str>)>,
+    /// The shared plugin manager (v0.4 B4): the same instance the
+    /// loops dispatch against AND the mount/unmount endpoints
+    /// mutate, so a mount takes effect without restarting the
+    /// server. Kept alongside `plugin_dispatcher` (which is this
+    /// same manager as a trait object) so turns keep using the
+    /// dispatcher while session-start reads live capabilities.
+    plugin_manager: Arc<SharedPluginManager>,
     model_preset: Option<purrcode_config::ModelPreset>,
     /// v0.3 F21: the OS-sandbox strictness for this server's turns
     /// (`Some` when the active preset declares `sandbox: "os"`).
@@ -137,10 +143,17 @@ pub async fn run_web_command(
     let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
-    let mut plugin_mgr = PluginManager::new();
-    plugin_mgr.discover_all(workspace_root);
-    let unenforced_caps = plugin_mgr.unenforced_capabilities();
-    let plugin_dispatcher: Arc<dyn PluginHookDispatcher> = Arc::new(plugin_mgr);
+    // v0.4 B4: one shared manager for the loops' dispatcher and
+    // the WebUI's mount/unmount endpoints. Startup discovery
+    // registers what is on disk; later mounts mutate the same
+    // instance.
+    let plugin_manager = Arc::new(SharedPluginManager::new(
+        purrcode_dir.join("plugins"),
+        workspace_root,
+    ));
+    plugin_manager.discover_all().await;
+    let plugin_dispatcher: Arc<dyn PluginHookDispatcher> =
+        Arc::new(plugin_manager.as_ref().clone());
 
     let model_preset_name = config
         .model_preset
@@ -196,7 +209,7 @@ pub async fn run_web_command(
         audit_logger,
         audit_sink,
         plugin_dispatcher,
-        unenforced_caps,
+        plugin_manager: plugin_manager.clone(),
         model_preset,
         // v0.3 F21: pin the OS-sandbox strictness at startup so every
         // turn's `bash` children get the same ruleset.
@@ -221,7 +234,9 @@ pub async fn run_web_command(
         purrcode_dir,
         workspace_root.to_path_buf(),
     )
-    .with_dispatcher(dispatcher);
+    .with_dispatcher(dispatcher)
+    .with_plugin_registry(plugin_manager)
+    .with_audit_sink(state.audit_sink.clone());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx_ctrlc = shutdown_tx.clone();
@@ -268,11 +283,15 @@ impl WebState {
                 self.plugin_dispatcher
                     .dispatch_session_start(&session_id)
                     .await;
+                // Live capabilities (v0.4 B4): a plugin mounted
+                // after startup is reported too, not just the
+                // startup snapshot.
+                let unenforced_caps = self.plugin_manager.unenforced_capabilities().await;
                 purrcode_service::log_unenforced_plugin_capabilities(
                     &self.audit_logger,
                     &session_id,
                     "meowstro",
-                    &self.unenforced_caps,
+                    &unenforced_caps,
                 );
             }
         }

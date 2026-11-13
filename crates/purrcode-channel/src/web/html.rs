@@ -143,11 +143,14 @@ pub fn web_index_html() -> String {
     <!-- Plugins Tab -->
     <div class="content" id="tab-plugins" style="display: none;">
       <div class="view-card">
-        <h3>🔌 Plugin Manifests & Sandboxing</h3>
+        <h3>🔌 Plugins</h3>
         <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px;">
-          Dynamic plugins loaded with default-deny capability sandboxes.
+          Mount or unmount a plugin without restarting the server. A mounted plugin's hooks
+          run on every turn. Only secrets are default-deny: a process plugin runs with full
+          user rights, and network/filesystem capabilities are declarations, not enforcement.
         </p>
-        <pre id="plugins-content">Loading installed plugins and sandboxes...</pre>
+        <div id="plugins-container">Loading installed plugins...</div>
+        <div id="plugins-status" class="plugins-status"></div>
       </div>
     </div>
   </div>
@@ -203,6 +206,47 @@ mod tests {
         assert!(
             WEB_INDEX_JS.contains("SubagentStatusChanged"),
             "JS must handle the SubagentStatusChanged bus event"
+        );
+    }
+
+    /// v0.4 B4: the plugins tab renders cards (not a JSON dump) with
+    /// a Mount/Unmount button per plugin, wired via `dataset` +
+    /// `addEventListener` — plugin names come from manifest files
+    /// and must never be interpolated into an inline handler.
+    #[test]
+    fn test_webui_plugins_tab_has_mount_controls() {
+        let html = web_index_html();
+        assert!(
+            html.contains("id=\"plugins-container\""),
+            "plugins container missing"
+        );
+        assert!(
+            html.contains("id=\"plugins-status\""),
+            "plugins status line missing"
+        );
+        assert!(
+            !html.contains("id=\"plugins-content\""),
+            "old JSON-dump <pre> must be gone"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("/api/plugins/mount"),
+            "JS must call the mount endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("/api/plugins/unmount"),
+            "JS must call the unmount endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("dataset.pluginName"),
+            "plugin name must travel via dataset, not an inline handler"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("plugin-badge"),
+            "JS must render the mounted badge"
+        );
+        assert!(
+            !WEB_INDEX_JS.contains("plugins-content"),
+            "JS must not reference the removed <pre>"
         );
     }
 }

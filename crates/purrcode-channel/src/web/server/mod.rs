@@ -33,6 +33,8 @@ use axum::{
     Router,
 };
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::plugin::PluginRegistry;
+use purrcode_api::tool::AuditSink;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -43,6 +45,13 @@ mod auth;
 mod routes;
 mod sessions;
 mod sse;
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod tests_plugins;
 
 #[async_trait::async_trait]
 pub trait PromptDispatcher: Send + Sync {
@@ -58,11 +67,17 @@ pub trait PromptDispatcher: Send + Sync {
 /// carries the same cancel signal `run()` watches: the SSE handler
 /// ends its stream on it (re-checker P1 — without it, graceful
 /// shutdown waits on open browser tabs forever and Ctrl-C hangs).
+/// `plugin_registry` (v0.4 B4) is the live plugin manager the
+/// mount/unmount endpoints mutate; `audit_sink` records those
+/// admin actions. Both are absent in tests that do not wire them
+/// (GET /api/plugins then lists nothing; mount/unmount answer 503).
 pub struct WebState {
     pub registry: Arc<WebSessionRegistry>,
     pub purrcode_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub dispatcher: Option<Arc<dyn PromptDispatcher>>,
+    pub plugin_registry: Option<Arc<dyn PluginRegistry>>,
+    pub audit_sink: Option<Arc<dyn AuditSink>>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
 
@@ -74,6 +89,8 @@ pub struct WebServer {
     purrcode_dir: PathBuf,
     workspace_root: PathBuf,
     dispatcher: Option<Arc<dyn PromptDispatcher>>,
+    plugin_registry: Option<Arc<dyn PluginRegistry>>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
 /// Maximum bytes for one HTTP request body. The old hand-rolled
@@ -115,11 +132,29 @@ impl WebServer {
             purrcode_dir: purrcode_dir.into(),
             workspace_root: workspace_root.into(),
             dispatcher: None,
+            plugin_registry: None,
+            audit_sink: None,
         }
     }
 
     pub fn with_dispatcher(mut self, dispatcher: Arc<dyn PromptDispatcher>) -> Self {
         self.dispatcher = Some(dispatcher);
+        self
+    }
+
+    /// Wire the live plugin registry (v0.4 B4): the mount/unmount
+    /// endpoints mutate this same instance the loops dispatch
+    /// against, so a mount takes effect without restarting the
+    /// server.
+    pub fn with_plugin_registry(mut self, registry: Arc<dyn PluginRegistry>) -> Self {
+        self.plugin_registry = Some(registry);
+        self
+    }
+
+    /// Wire the audit sink (v0.4 B4): mount/unmount actions are
+    /// recorded as `plugin_mount` / `plugin_unmount` events.
+    pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit_sink = Some(sink);
         self
     }
 
@@ -142,6 +177,8 @@ impl WebServer {
             purrcode_dir: self.purrcode_dir.clone(),
             workspace_root: self.workspace_root.clone(),
             dispatcher: self.dispatcher.clone(),
+            plugin_registry: self.plugin_registry.clone(),
+            audit_sink: self.audit_sink.clone(),
             shutdown_rx: cancel_rx.clone(),
         });
         // Layers run outermost-first: the auth middleware (added
@@ -163,6 +200,8 @@ impl WebServer {
             .route("/api/skills/approve", post(routes::skills_approve))
             .route("/api/skills/reject", post(routes::skills_reject))
             .route("/api/plugins", get(routes::plugins))
+            .route("/api/plugins/mount", post(routes::plugins_mount))
+            .route("/api/plugins/unmount", post(routes::plugins_unmount))
             .route("/api/prompt", post(routes::prompt))
             .route("/api/memory", get(routes::memory))
             .route("/api/approval", post(routes::approval))
@@ -236,6 +275,3 @@ fn approval_session(
     let id = v.as_str()?;
     registry.ensure_session_if_exists(id).ok()
 }
-
-#[cfg(test)]
-mod tests;

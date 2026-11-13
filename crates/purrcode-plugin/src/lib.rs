@@ -3,13 +3,162 @@
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::{
-    Plugin, PluginCapabilities, PluginHookDispatcher, PluginManifest, PluginTransport,
+    Plugin, PluginCapabilities, PluginHookDispatcher, PluginManifest, PluginMountError,
+    PluginSource, PluginTransport,
 };
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+
+pub mod shared;
+pub use shared::SharedPluginManager;
+
+/// One plugin directory as discovered on disk (v0.4 B4). A
+/// directory with a `plugin.yaml` is listed even when the manifest
+/// does not parse, so the WebUI can show it as broken instead of
+/// pretending it does not exist.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPlugin {
+    pub dir: PathBuf,
+    pub source: PluginSource,
+    /// Manifest name, or the directory name when the manifest is broken.
+    pub name: String,
+    pub manifest: Option<PluginManifest>,
+    pub command: Option<String>,
+    pub manifest_error: Option<String>,
+}
+
+/// Discover every plugin directory under the global plugins dir
+/// and the workspace `.purrcode/plugins` dir, global first (the
+/// same order `discover_all` registers in, so the first match for
+/// a name is the one startup would have registered).
+pub fn discover_plugins(global_dir: &Path, workspace_root: &Path) -> Vec<DiscoveredPlugin> {
+    let mut out = Vec::new();
+    scan_plugin_dir(global_dir, PluginSource::Global, &mut out);
+    scan_plugin_dir(
+        &workspace_root.join(".purrcode").join("plugins"),
+        PluginSource::Project,
+        &mut out,
+    );
+    out
+}
+
+fn scan_plugin_dir(dir: &Path, source: PluginSource, out: &mut Vec<DiscoveredPlugin>) {
+    if !dir.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest_path = path.join("plugin.yaml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        match parse_plugin_yaml(&manifest_path) {
+            Ok((manifest, command)) => out.push(DiscoveredPlugin {
+                name: manifest.name.clone(),
+                dir: path,
+                source,
+                manifest: Some(manifest),
+                command,
+                manifest_error: None,
+            }),
+            Err(e) => out.push(DiscoveredPlugin {
+                name: dir_name,
+                dir: path,
+                source,
+                manifest: None,
+                command: None,
+                manifest_error: Some(e.to_string()),
+            }),
+        }
+    }
+}
+
+/// Resolve a manifest `command` against its plugin directory when
+/// it is relative and contains a path separator. Bare words go
+/// through `PATH` lookup at spawn time.
+fn resolve_plugin_command(command: &str, dir: &Path) -> String {
+    let p = Path::new(command);
+    if p.is_relative() && (command.contains('/') || command.contains('\\')) {
+        dir.join(p).display().to_string()
+    } else {
+        command.to_string()
+    }
+}
+
+/// Spawn a plugin child, retrying briefly on `ETXTBSY` ("Text
+/// file busy"). That error is transient: a file just written (an
+/// editor saving a plugin script, a test writing a fixture) can
+/// still look busy to `execve` for a few milliseconds — reproduced
+/// locally at ~10% under parallel load (400 write→spawn cycles,
+/// 43 ETXTBSY). Retrying a handful of times turns a spurious
+/// failure into a successful spawn; a genuinely un-executable
+/// command still fails after the retries.
+async fn spawn_with_txtbsy_retry(
+    cmd: &mut Command,
+) -> std::result::Result<tokio::process::Child, std::io::Error> {
+    const ETXTBSY: i32 = 26;
+    let mut last_err = None;
+    for attempt in 0..4u8 {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempt < 3 => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.expect("retry loop always leaves an error"))
+}
+
+/// Smoke check for a mount: the command must spawn, and a child
+/// that dies immediately must have exited successfully. A bad
+/// shebang or missing interpreter makes the child exit non-zero
+/// (spawn itself succeeds — the exec failure happens inside the
+/// child), so the exit status is the only signal. A child still
+/// alive after the grace window is killed and reaped (no zombie,
+/// no leaked fds); a child that already exited 0 is a valid no-op
+/// plugin — dispatch fails open for it, as today.
+async fn verify_command_spawns(
+    command: &str,
+    name: &str,
+) -> std::result::Result<(), PluginMountError> {
+    let mut cmd = Command::new(command);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
+    let mut child = spawn_with_txtbsy_retry(&mut cmd).await.map_err(|e| {
+        PluginMountError::SpawnFailed(format!("'{command}' for plugin '{name}': {e}"))
+    })?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => Err(PluginMountError::SpawnFailed(format!(
+            "'{command}' for plugin '{name}' exited immediately with status {status}"
+        ))),
+        Ok(Some(_)) => Ok(()),
+        // Still alive: kill explicitly and reap, instead of
+        // relying on `kill_on_drop` + the orphan queue.
+        Ok(None) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Ok(())
+        }
+        Err(e) => Err(PluginMountError::SpawnFailed(format!(
+            "could not check '{command}' for plugin '{name}': {e}"
+        ))),
+    }
+}
 
 pub struct PluginManager {
     plugins: Vec<Arc<dyn Plugin>>,
@@ -28,6 +177,85 @@ impl PluginManager {
 
     pub fn plugins(&self) -> &[Arc<dyn Plugin>] {
         &self.plugins
+    }
+
+    /// Names of the currently registered (mounted) plugins.
+    pub fn mounted_names(&self) -> Vec<String> {
+        self.plugins
+            .iter()
+            .map(|p| p.manifest().name.clone())
+            .collect()
+    }
+
+    pub fn is_mounted(&self, name: &str) -> bool {
+        self.plugins.iter().any(|p| p.manifest().name == name)
+    }
+
+    /// Mount one discovered plugin: validate the manifest, verify
+    /// its command actually spawns, then register it. A relative
+    /// command containing a path separator (`./runner`,
+    /// `bin/hook`) is resolved against the plugin directory — the
+    /// server's cwd is not the plugin's home, so a bare relative
+    /// path would only work by accident. Bare words (`my-plugin`)
+    /// are left alone for `PATH` lookup.
+    pub async fn mount(
+        &mut self,
+        discovered: &DiscoveredPlugin,
+    ) -> std::result::Result<PluginManifest, PluginMountError> {
+        let manifest = match &discovered.manifest {
+            Some(m) => m.clone(),
+            None => {
+                return Err(PluginMountError::InvalidManifest(
+                    discovered
+                        .manifest_error
+                        .clone()
+                        .unwrap_or_else(|| "unparseable manifest".to_string()),
+                ));
+            }
+        };
+        if self.is_mounted(&manifest.name) {
+            return Err(PluginMountError::AlreadyMounted(manifest.name));
+        }
+        let command = match &discovered.command {
+            Some(c) => resolve_plugin_command(c, &discovered.dir),
+            None => return Err(PluginMountError::NoCommand(manifest.name)),
+        };
+        verify_command_spawns(&command, &manifest.name).await?;
+        self.register_discovered(discovered);
+        Ok(manifest)
+    }
+
+    /// Register one discovered plugin without the mount smoke
+    /// checks (startup discovery path): skips broken manifests,
+    /// command-less manifests, and names that are already mounted.
+    /// The command is resolved against the plugin directory, like
+    /// `mount` does.
+    pub fn register_discovered(&mut self, discovered: &DiscoveredPlugin) {
+        let Some(manifest) = &discovered.manifest else {
+            return;
+        };
+        let Some(command) = &discovered.command else {
+            return;
+        };
+        if self.is_mounted(&manifest.name) {
+            return;
+        }
+        let command = resolve_plugin_command(command, &discovered.dir);
+        self.register(Arc::new(ProcessPlugin::new(manifest.clone(), command)));
+    }
+
+    /// Remove a plugin from the live manager. Hooks already in
+    /// flight hold their own `Arc` and finish; later dispatches
+    /// skip it. There is no long-lived process to kill: each RPC
+    /// spawns a fresh short-lived child (`kill_on_drop`).
+    pub fn unmount(&mut self, name: &str) -> std::result::Result<PluginManifest, PluginMountError> {
+        let pos = self
+            .plugins
+            .iter()
+            .position(|p| p.manifest().name == name)
+            .ok_or_else(|| PluginMountError::NotMounted(name.to_string()))?;
+        let manifest = self.plugins.remove(pos).manifest().clone();
+        Ok(manifest)
     }
 
     /// Loaded plugins whose manifest declares network/filesystem
@@ -191,10 +419,12 @@ impl ProcessPlugin {
         cmd.stderr(std::process::Stdio::null());
         cmd.kill_on_drop(true);
 
-        let mut child = cmd.spawn().map_err(|e| PurrError::Plugin {
-            plugin: self.manifest.name.clone(),
-            message: format!("Failed to spawn process plugin: {e}"),
-        })?;
+        let mut child = spawn_with_txtbsy_retry(&mut cmd)
+            .await
+            .map_err(|e| PurrError::Plugin {
+                plugin: self.manifest.name.clone(),
+                message: format!("Failed to spawn process plugin: {e}"),
+            })?;
 
         if let Some(mut stdin) = child.stdin.take() {
             let req = serde_json::json!({

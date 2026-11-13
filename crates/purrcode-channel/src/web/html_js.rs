@@ -271,12 +271,103 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
     }
 
     async function loadPlugins() {
+      const container = document.getElementById('plugins-container');
+      const status = document.getElementById('plugins-status');
       try {
         const res = await fetch(apiUrl('/api/plugins'));
-        if (!res.ok) return;
+        if (!res.ok) {
+          container.textContent = 'Failed to load plugins.';
+          return;
+        }
         const data = await res.json();
-        document.getElementById('plugins-content').textContent = JSON.stringify(data, null, 2);
+        const plugins = Array.isArray(data.plugins) ? data.plugins : [];
+        container.innerHTML = '';
+        if (plugins.length === 0) {
+          container.textContent = 'No plugins discovered. Add a plugin.yaml under plugins/ or .purrcode/plugins/.';
+          return;
+        }
+        for (const p of plugins) {
+          const card = document.createElement('div');
+          card.className = 'plugin-card';
+          const header = document.createElement('div');
+          header.className = 'plugin-header';
+          const name = document.createElement('span');
+          name.className = 'plugin-name';
+          name.textContent = p.name || '(unnamed)';
+          header.appendChild(name);
+          const ver = document.createElement('span');
+          ver.className = 'plugin-version';
+          ver.textContent = p.version ? 'v' + p.version : '';
+          header.appendChild(ver);
+          const badge = document.createElement('span');
+          badge.className = 'plugin-badge ' + (p.mounted ? 'mounted' : 'unmounted');
+          badge.textContent = p.mounted ? 'Mounted' : 'Not mounted';
+          header.appendChild(badge);
+          card.appendChild(header);
+          if (p.description) {
+            const desc = document.createElement('p');
+            desc.className = 'plugin-desc';
+            desc.textContent = p.description;
+            card.appendChild(desc);
+          }
+          const meta = document.createElement('div');
+          meta.className = 'plugin-meta';
+          meta.textContent = (p.transport || '') + ' · ' + (p.source || '') + ' · ' + (p.path || '');
+          card.appendChild(meta);
+          const caps = p.capabilities || {};
+          const capParts = [];
+          if (caps.network && caps.network.length) capParts.push('network: ' + caps.network.join(', '));
+          if (caps.filesystem && caps.filesystem.length) capParts.push('filesystem: ' + caps.filesystem.join(', '));
+          if (caps.secrets && caps.secrets.length) capParts.push('secrets: ' + caps.secrets.join(', '));
+          if (capParts.length) {
+            const capsEl = document.createElement('div');
+            capsEl.className = 'plugin-caps';
+            capsEl.textContent = capParts.join(' · ');
+            card.appendChild(capsEl);
+          }
+          if ((caps.network && caps.network.length) || (caps.filesystem && caps.filesystem.length)) {
+            const warn = document.createElement('p');
+            warn.className = 'plugin-warn';
+            warn.textContent = '⚠️ Declares network/filesystem capabilities — NOT enforced: process plugins run with full user rights.';
+            card.appendChild(warn);
+          }
+          if (!p.manifest_ok) {
+            const broken = document.createElement('p');
+            broken.className = 'plugin-warn';
+            broken.textContent = '⚠️ Broken manifest: ' + (p.manifest_error || 'unparseable');
+            card.appendChild(broken);
+          }
+          const btn = document.createElement('button');
+          btn.className = 'plugin-action';
+          btn.textContent = p.mounted ? 'Unmount' : 'Mount';
+          btn.disabled = !p.manifest_ok;
+          btn.dataset.pluginName = p.name;
+          btn.addEventListener('click', async () => {
+            const wasMounted = p.mounted;
+            btn.disabled = true;
+            status.textContent = (wasMounted ? 'Unmounting ' : 'Mounting ') + p.name + '…';
+            try {
+              const r = await fetch(apiUrl(wasMounted ? '/api/plugins/unmount' : '/api/plugins/mount'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: p.name }),
+              });
+              if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                status.textContent = 'Failed: ' + (err.error || r.status);
+              } else {
+                status.textContent = (wasMounted ? 'Unmounted ' : 'Mounted ') + p.name + '.';
+              }
+            } catch (e) {
+              status.textContent = 'Failed: ' + e.message;
+            }
+            loadPlugins();
+          });
+          card.appendChild(btn);
+          container.appendChild(card);
+        }
       } catch (e) {
+        container.textContent = 'Failed to load plugins.';
         console.error('Failed to load plugins:', e);
       }
     }

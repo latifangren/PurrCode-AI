@@ -30,6 +30,7 @@ use axum::{
     http::{StatusCode, Uri},
     response::{Html, IntoResponse, Json},
 };
+use purrcode_api::plugin::PluginMountError;
 use purrcode_config::jsonc::clean_jsonc;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -206,31 +207,130 @@ pub async fn skills_reject(State(state): State<Arc<WebState>>, body: Bytes) -> J
     resolve_skill_draft(&state.registry, body, false).await
 }
 
-/// `GET /api/plugins` — one entry per directory under `plugins/`
-/// that has a `plugin.yaml` manifest.
+/// `GET /api/plugins` (v0.4 B4) — every discovered plugin with
+/// its live mounted state, from the shared registry. The R3 shape
+/// (one entry per directory, raw `manifest` YAML string, name =
+/// directory name) is replaced by structured `PluginInfo` entries
+/// (`name` is now the manifest name — the mount key). Without a
+/// wired registry the server has no live manager, so the list is
+/// empty.
 pub async fn plugins(State(state): State<Arc<WebState>>) -> Json<Value> {
-    let mut plugins = Vec::new();
-    let p_dir = state.purrcode_dir.join("plugins");
-    if p_dir.exists() {
-        if let Ok(mut rd) = tokio::fs::read_dir(&p_dir).await {
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                if path.is_dir() {
-                    let manifest = path.join("plugin.yaml");
-                    if manifest.exists() {
-                        if let Ok(yaml) = tokio::fs::read_to_string(&manifest).await {
-                            plugins.push(json!({
-                                "name": entry.file_name().to_string_lossy().to_string(),
-                                "path": path.display().to_string(),
-                                "manifest": yaml
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let plugins = match &state.plugin_registry {
+        Some(reg) => reg.list_plugins().await,
+        None => Vec::new(),
+    };
     Json(json!({ "plugins": plugins }))
+}
+
+fn plugin_mount_status(err: &PluginMountError) -> StatusCode {
+    match err {
+        PluginMountError::NotFound(_) => StatusCode::NOT_FOUND,
+        PluginMountError::AlreadyMounted(_) | PluginMountError::NotMounted(_) => {
+            StatusCode::CONFLICT
+        }
+        PluginMountError::InvalidManifest(_)
+        | PluginMountError::NoCommand(_)
+        | PluginMountError::SpawnFailed(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// Read the `{"name": ...}` body of a mount/unmount request, in
+/// the same hand-rolled style as `/api/prompt`.
+fn plugin_name_from_body(body: &Bytes) -> std::result::Result<String, (StatusCode, Json<Value>)> {
+    let Ok(val) = serde_json::from_slice::<Value>(body) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "malformed JSON body" })),
+        ));
+    };
+    let Some(name) = val.get("name").and_then(|v| v.as_str()) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "name must be a string" })),
+        ));
+    };
+    Ok(name.to_string())
+}
+
+fn record_plugin_admin(state: &WebState, event: &str, name: &str, detail: &str) {
+    if let Some(sink) = &state.audit_sink {
+        sink.record_event("web", "web", event, Some(name), "allow", detail);
+    }
+}
+
+/// `POST /api/plugins/mount {"name": "..."}` (v0.4 B4) — verify
+/// the command spawns and register the plugin in the live manager.
+/// 404 unknown name, 409 already mounted, 400 manifest / command
+/// / spawn failure (message in `error`).
+pub async fn plugins_mount(
+    State(state): State<Arc<WebState>>,
+    body: Bytes,
+) -> (StatusCode, Json<Value>) {
+    let Some(reg) = &state.plugin_registry else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "plugin registry not configured" })),
+        );
+    };
+    let name = match plugin_name_from_body(&body) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match reg.mount_plugin(&name).await {
+        Ok(info) => {
+            record_plugin_admin(
+                &state,
+                "plugin_mount",
+                &name,
+                &format!("path={} transport={:?}", info.path, info.transport),
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "mounted": true, "plugin": info })),
+            )
+        }
+        Err(e) => (
+            plugin_mount_status(&e),
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// `POST /api/plugins/unmount {"name": "..."}` (v0.4 B4) — remove
+/// the plugin from the live manager. 404 unknown name, 409 not
+/// mounted. The plugin stays listed (it is still on disk).
+pub async fn plugins_unmount(
+    State(state): State<Arc<WebState>>,
+    body: Bytes,
+) -> (StatusCode, Json<Value>) {
+    let Some(reg) = &state.plugin_registry else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "plugin registry not configured" })),
+        );
+    };
+    let name = match plugin_name_from_body(&body) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    match reg.unmount_plugin(&name).await {
+        Ok(info) => {
+            record_plugin_admin(
+                &state,
+                "plugin_unmount",
+                &name,
+                &format!("path={} transport={:?}", info.path, info.transport),
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "mounted": false, "plugin": info })),
+            )
+        }
+        Err(e) => (
+            plugin_mount_status(&e),
+            Json(json!({ "error": e.to_string() })),
+        ),
+    }
 }
 
 /// `POST /api/prompt`.

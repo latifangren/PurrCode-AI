@@ -427,6 +427,52 @@ pub const WEB_INDEX_CSS: &str = r#"    :root {
     .clowder-status-failed { color: var(--danger); }
     .clowder-status-pending { color: var(--text-muted); }
     .clowder-status-interrupted { color: var(--text-muted); }
+    /* Plugins tab (v0.4 B4) */
+    .plugin-card {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: rgba(49, 50, 68, 0.3);
+    }
+    .plugin-header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .plugin-name { font-weight: 600; }
+    .plugin-version { color: var(--text-muted); font-size: 0.85rem; }
+    .plugin-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .plugin-badge.mounted { color: var(--success); background: rgba(166, 227, 161, 0.15); }
+    .plugin-badge.unmounted { color: var(--text-muted); background: rgba(166, 173, 200, 0.15); }
+    .plugin-desc { color: var(--text); font-size: 0.9rem; margin-top: 6px; }
+    .plugin-meta {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      word-break: break-all;
+      margin-top: 6px;
+    }
+    .plugin-caps { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
+    .plugin-warn { color: var(--warning); font-size: 0.85rem; margin-top: 6px; }
+    .plugin-action {
+      margin-top: 8px;
+      background-color: var(--primary);
+      color: #11111b;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .plugin-action:disabled { opacity: 0.5; cursor: default; }
+    .plugins-status { color: var(--text-muted); font-size: 0.85rem; margin-top: 8px; min-height: 1.2em; }
     @media (max-width: 900px) {
       .inspector { display: none; }
     }"#;
