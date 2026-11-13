@@ -1,4 +1,5 @@
 use super::*;
+use crate::web::html::web_index_html;
 use purrcode_api::channel::Channel;
 use purrcode_api::event::AgentEvent;
 use purrcode_api::provider::{ChatMessage, MessageRole};
@@ -72,7 +73,10 @@ impl PromptDispatcher for RecordingDispatcher {
     }
 }
 
-/// One-shot raw HTTP request (Connection: close responses).
+/// One-shot raw HTTP request. Sends `Connection: close` so the
+/// server (Axum/hyper, keep-alive by default since B2) closes the
+/// connection after the response and `read_to_string` returns
+/// promptly instead of waiting out the 5s read timeout.
 fn http_raw(port: u16, request: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
@@ -117,58 +121,25 @@ fn http_sse_read(port: u16, path: &str, timeout: Duration) -> String {
 }
 
 fn get(port: u16, path: &str) -> String {
-    http_raw(port, &format!("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", path))
+    http_raw(
+        port,
+        &format!(
+            "GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            path
+        ),
+    )
 }
 
 fn post(port: u16, path: &str, body: &str) -> String {
     http_raw(
             port,
             &format!(
-                "POST {} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                "POST {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 path,
                 body.len(),
                 body
             ),
         )
-}
-
-#[test]
-fn test_request_has_token_exact_match_only() {
-    let req = "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer SECRET\r\n\r\n";
-    assert!(request_has_token(req, "/", "SECRET"));
-    // Lower-case scheme is fine.
-    let req = "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: bearer SECRET\r\n\r\n";
-    assert!(request_has_token(req, "/", "SECRET"));
-    // Query parameter is fine.
-    let req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-    assert!(request_has_token(req, "/?token=SECRET", "SECRET"));
-    // A token that merely appears in the body does NOT authenticate.
-    let req = "POST /api/prompt HTTP/1.1\r\nHost: x\r\n\r\n{\"prompt\": \"SECRET\"}";
-    assert!(!request_has_token(req, "/api/prompt", "SECRET"));
-    // Wrong token, wrong scheme, token as a different param.
-    assert!(!request_has_token(
-        "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer WRONG\r\n\r\n",
-        "/",
-        "SECRET"
-    ));
-    assert!(!request_has_token(
-        "GET / HTTP/1.1\r\nHost: x\r\n\r\n",
-        "/?other=SECRET",
-        "SECRET"
-    ));
-    // P2-1: a literal Authorization line inside the BODY does not
-    // authenticate — the scan stops at the header/body blank line.
-    assert!(!request_has_token(
-        "POST /api/prompt HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\n{\"prompt\": \"x\"}\nAuthorization: Bearer SECRET",
-        "/api/prompt",
-        "SECRET"
-    ));
-    // P2-1 (I-4): Bearer with trailing junk does not authenticate.
-    assert!(!request_has_token(
-        "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer SECRET extra\r\n\r\n",
-        "/",
-        "SECRET"
-    ));
 }
 
 #[test]
@@ -193,23 +164,6 @@ fn test_webui_template_has_no_inline_model_data_handlers() {
     assert!(web_index_html().contains("escapeHtml(c.description"));
     assert!(web_index_html().contains("escapeHtml(j.prompt"));
     assert!(web_index_html().contains("addEventListener('click'"));
-}
-
-#[test]
-fn test_draft_frontmatter_parsing() {
-    let content = "---\nname: git-helper\ndescription: Helps with git\n---\n\n# Skill\n";
-    assert_eq!(
-        draft_frontmatter(content),
-        (
-            Some("git-helper".to_string()),
-            Some("Helps with git".to_string())
-        )
-    );
-    assert_eq!(draft_frontmatter("no frontmatter"), (None, None));
-    assert_eq!(
-        draft_frontmatter("---\nname: only-name\n---\n"),
-        (Some("only-name".to_string()), None)
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -247,6 +201,9 @@ async fn test_server_sse_streams_bus_events_in_purrcode_shape() {
     });
     let out = http_sse_until_data(port);
     assert!(out.contains("text/event-stream"));
+    // The SSE response still carries the CORS header the hand-rolled
+    // server set (B2: the Axum handler sets it explicitly).
+    assert!(out.contains("access-control-allow-origin: *"), "out: {out}");
     // dev-muse serializes AgentEvent internally tagged
     // ({"type": "TextChunk", "payload": {...}}), not externally
     // tagged like the dev-claude reference.
@@ -299,7 +256,7 @@ async fn test_server_token_auth() {
     assert!(get(port, "/?token=SECRET").starts_with("HTTP/1.1 200 OK"));
     let with_header = http_raw(
         port,
-        "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer SECRET\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer SECRET\r\n\r\n",
     );
     assert!(with_header.starts_with("HTTP/1.1 200 OK"));
     // Token hidden inside a JSON body does not authenticate.
@@ -724,5 +681,107 @@ async fn test_server_nonstring_session_id_is_not_default() {
 
     let _ = cancel_tx.send(true);
     handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B2: a request body over the 1 MiB limit is a 413. The
+/// hand-rolled server counted headers + body; the Axum limit layer
+/// counts the body only — the observable contract (oversize body →
+/// 413) is the same, and this test locks it.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_oversize_body_is_413() {
+    let dir = test_dir("oversize");
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let big = "x".repeat(1024 * 1024 + 1024);
+    let body = format!(r#"{{"prompt": "{}"}}"#, big);
+    let resp = post(port, "/api/prompt", &body);
+    assert!(
+        resp.starts_with("HTTP/1.1 413"),
+        "resp head: {}",
+        &resp[..resp.len().min(60)]
+    );
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B2: a large prompt whose headers and body arrive as two
+/// TCP segments still dispatches. This replaces the R3 P1-2
+/// coverage (the hand-rolled server once dropped such requests
+/// with a single 8192-byte read); hyper's parser handles split
+/// reads natively, and this test proves the Axum server does too.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_split_read_large_prompt_dispatches() {
+    let dir = test_dir("split-read");
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let disp = Arc::new(RecordingDispatcher {
+        calls: calls.clone(),
+    });
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), Some(disp)).await;
+
+    let prompt = "y".repeat(100_000);
+    let body = format!(r#"{{"prompt": "{}"}}"#, prompt);
+    let headers = format!(
+        "POST /api/prompt HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(headers.as_bytes()).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    stream.write_all(body.as_bytes()).unwrap();
+    let mut buf = String::new();
+    let _ = stream.read_to_string(&mut buf);
+    assert!(
+        buf.contains("\"status\":\"dispatched\""),
+        "resp: {}",
+        &buf[..buf.len().min(200)]
+    );
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "calls: {calls:?}");
+    assert_eq!(calls[0].1.len(), 100_000);
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// v0.4 B2 fix (re-checker P1): Ctrl-C must stop the server even
+/// while a browser tab holds an SSE stream open. The old server
+/// returned as soon as the accept loop broke; the first Axum
+/// version waited on graceful shutdown forever because the SSE
+/// stream never ends. The server task must COMPLETE (not just be
+/// abortable) within 3s of cancel, with the SSE socket still held
+/// open by the client — 3s is under the 5s backstop, so a pass
+/// proves the stream ends on cancel rather than the backstop
+/// firing.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_cancel_completes_with_open_sse() {
+    let dir = test_dir("cancel-sse");
+    let (port, _reg, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+
+    // Hold an SSE stream open, like a browser tab does.
+    let mut sse_stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    sse_stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    sse_stream
+        .write_all(b"GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    // Read the response headers so the stream is established.
+    let mut header_buf = [0u8; 512];
+    let _ = sse_stream.read(&mut header_buf);
+
+    let _ = cancel_tx.send(true);
+    // No handle.abort() here: the point is that run() RETURNS.
+    let completed = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    assert!(
+        completed.is_ok(),
+        "server task did not complete after cancel with an open SSE stream"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
