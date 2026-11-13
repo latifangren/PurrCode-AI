@@ -360,3 +360,300 @@ async fn test_task_tool_dry_run_returns_preview_without_side_effects() {
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }
+
+/// Drain only the subagent lifecycle events from a bus receiver —
+/// the child loop also publishes its own TurnStarted/TextChunk/
+/// TurnFinished to the same bus, which this helper ignores.
+fn drain_subagent_events(rx: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(
+            ev,
+            AgentEvent::SubagentSpawned { .. } | AgentEvent::SubagentStatusChanged { .. }
+        ) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn test_task_tool_publishes_subagent_lifecycle_events() {
+    // v0.4 B3: a delegation announces itself on the session bus —
+    // Spawned (with role + brief), Running (child loop starts),
+    // Done (one-line summary) — so the WebUI Clowder panel can
+    // render the subagent live without polling the registry.
+    let temp_dir = std::env::temp_dir().join(format!("purr_orch_test_{}", uuid::Uuid::new_v4()));
+    let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
+        calls: AtomicUsize::new(0),
+    });
+    let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
+    let bus = Arc::new(EventBus::new(256));
+    let mut rx = bus.subscribe();
+    let task_tool = TaskTool::with_full_options(
+        reg.clone(),
+        provider.clone(),
+        "mock-model",
+        &temp_dir,
+        None,
+        None,
+        Some(Arc::new(ApprovalGate::new("tabby"))),
+        None,
+        true,
+    )
+    .with_event_bus(bus);
+
+    let ctx = ToolContext {
+        session_id: "root_sess".to_string(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: temp_dir.clone(),
+        is_dry_run: false,
+        is_cron: false,
+        sandbox: None,
+    };
+    let r = task_tool
+        .execute(
+            serde_json::json!({
+                "role": "whisker",
+                "brief": "Scout auth handler"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let id = r.metadata.unwrap()["subagent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let events = drain_subagent_events(&mut rx);
+    assert_eq!(
+        events.len(),
+        3,
+        "expected Spawned + Running + Done, got {events:?}"
+    );
+    match &events[0] {
+        AgentEvent::SubagentSpawned {
+            subagent_id,
+            parent_id,
+            role,
+            brief,
+        } => {
+            assert_eq!(subagent_id, &id);
+            assert_eq!(parent_id, "root_sess");
+            assert_eq!(role, "whisker");
+            assert_eq!(brief, "Scout auth handler");
+        }
+        other => panic!("first event must be SubagentSpawned, got {other:?}"),
+    }
+    match &events[1] {
+        AgentEvent::SubagentStatusChanged {
+            subagent_id,
+            status,
+            summary,
+        } => {
+            assert_eq!(subagent_id, &id);
+            assert_eq!(*status, SubagentStatus::Running);
+            assert!(summary.is_none());
+        }
+        other => panic!("second event must be Running, got {other:?}"),
+    }
+    match &events[2] {
+        AgentEvent::SubagentStatusChanged {
+            subagent_id,
+            status,
+            summary,
+        } => {
+            assert_eq!(subagent_id, &id);
+            assert_eq!(*status, SubagentStatus::Done);
+            let summary = summary.as_deref().unwrap_or("");
+            assert!(
+                summary.contains("call=1"),
+                "Done summary must carry the child result, got {summary:?}"
+            );
+        }
+        other => panic!("third event must be Done, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn test_task_tool_publishes_subagent_failed_on_shadow_block() {
+    // v0.4 B3: a delegation the shadow auditor blocks announces
+    // Spawned then Failed — never Running, never Done — so the
+    // Clowder panel does not show a blocked subagent as stuck.
+    let temp_dir = std::env::temp_dir().join(format!("purr_orch_test_{}", uuid::Uuid::new_v4()));
+    let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
+        calls: AtomicUsize::new(0),
+    });
+    let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
+    let bus = Arc::new(EventBus::new(256));
+    let mut rx = bus.subscribe();
+    let task_tool = TaskTool::with_full_options(
+        reg.clone(),
+        provider.clone(),
+        "mock-model",
+        &temp_dir,
+        None,
+        None,
+        Some(Arc::new(ApprovalGate::new("tabby"))),
+        None,
+        true,
+    )
+    .with_event_bus(bus);
+
+    let ctx = ToolContext {
+        session_id: "root_sess".to_string(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: temp_dir.clone(),
+        is_dry_run: false,
+        is_cron: false,
+        sandbox: None,
+    };
+    // "rm -rf" is a shadow trigger marker; the echo provider's
+    // verdict text carries no APPROVE, so Tuxeshadow objects and
+    // Tabby enforcement fails the delegation closed.
+    let err = task_tool
+        .execute(
+            serde_json::json!({
+                "role": "tinker",
+                "brief": "run rm -rf /tmp/x to clean up"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Tuxeshadow"),
+        "expected a shadow-block error, got {err}"
+    );
+
+    let events = drain_subagent_events(&mut rx);
+    assert_eq!(events.len(), 2, "expected Spawned + Failed, got {events:?}");
+    assert!(matches!(events[0], AgentEvent::SubagentSpawned { .. }));
+    match &events[1] {
+        AgentEvent::SubagentStatusChanged {
+            status, summary, ..
+        } => {
+            assert_eq!(*status, SubagentStatus::Failed);
+            assert!(
+                summary.as_deref().unwrap_or("").contains("Tuxeshadow"),
+                "Failed summary must name the blocker, got {summary:?}"
+            );
+        }
+        other => panic!("second event must be Failed, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn test_task_tool_publishes_subagent_failed_on_persistence_failure() {
+    // v0.4 B3 fix P2-1 (re-checker, live-reproduced via E2E): a
+    // step-7 persistence failure used to propagate with `?` and
+    // leave the Clowder panel stuck on "running". Plant a directory
+    // named history.json in the handoff dir so save_history fails
+    // with EISDIR, and expect Spawned → Running → Failed.
+    let temp_dir = std::env::temp_dir().join(format!("purr_orch_test_{}", uuid::Uuid::new_v4()));
+    let id = "purr_persistfail";
+    // Seed a registry record on disk so get_or_create returns this
+    // exact continuation id instead of minting a fresh one.
+    let sub_dir = temp_dir.join("subagents");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    std::fs::write(
+        sub_dir.join(format!("{id}.json")),
+        serde_json::json!({
+            "id": id,
+            "parent_id": "meowstro_root",
+            "role": "whisker",
+            "status": "running",
+            "created_at": "2026-11-13T00:00:00Z",
+            "updated_at": "2026-11-13T00:00:00Z",
+            "tokens_used": {"input": 0, "output": 0},
+            "summary": null,
+            "brief": "Scout auth handler"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // A non-empty directory: save_history writes history.json
+    // directly (std::fs::write), so even an empty directory would
+    // fail with EISDIR; the dummy file also defeats any future
+    // tmp+rename replacement of the path.
+    let poison = sub_dir.join(id).join("history.json");
+    std::fs::create_dir_all(&poison).unwrap();
+    std::fs::write(poison.join("dummy.txt"), b"poison").unwrap();
+
+    let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
+        calls: AtomicUsize::new(0),
+    });
+    let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
+    let bus = Arc::new(EventBus::new(256));
+    let mut rx = bus.subscribe();
+    let task_tool = TaskTool::with_full_options(
+        reg.clone(),
+        provider.clone(),
+        "mock-model",
+        &temp_dir,
+        None,
+        None,
+        Some(Arc::new(ApprovalGate::new("tabby"))),
+        None,
+        true,
+    )
+    .with_event_bus(bus);
+
+    let ctx = ToolContext {
+        session_id: "root_sess".to_string(),
+        agent_role: "meowstro".to_string(),
+        workspace_root: temp_dir.clone(),
+        is_dry_run: false,
+        is_cron: false,
+        sandbox: None,
+    };
+    let err = task_tool
+        .execute(
+            serde_json::json!({
+                "role": "whisker",
+                "id": id,
+                "brief": "Scout auth handler"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("Is a directory"),
+        "expected an EISDIR persistence error, got {err}"
+    );
+
+    let events = drain_subagent_events(&mut rx);
+    assert_eq!(
+        events.len(),
+        3,
+        "expected Spawned + Running + Failed, got {events:?}"
+    );
+    assert!(matches!(events[0], AgentEvent::SubagentSpawned { .. }));
+    assert!(matches!(
+        events[1],
+        AgentEvent::SubagentStatusChanged {
+            status: SubagentStatus::Running,
+            ..
+        }
+    ));
+    match &events[2] {
+        AgentEvent::SubagentStatusChanged {
+            status, summary, ..
+        } => {
+            assert_eq!(*status, SubagentStatus::Failed);
+            assert!(
+                summary.as_deref().unwrap_or("").contains("Is a directory"),
+                "Failed summary must carry the IO error, got {summary:?}"
+            );
+        }
+        other => panic!("third event must be Failed, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}

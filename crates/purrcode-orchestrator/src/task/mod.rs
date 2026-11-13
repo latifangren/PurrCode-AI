@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::{AgentEvent, SubagentStatus};
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::ModelProvider;
 use purrcode_api::tool::{
@@ -112,6 +113,43 @@ impl TaskTool {
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
         self.event_bus = Some(bus);
         self
+    }
+
+    /// Publish a subagent lifecycle event to the session bus (v0.4
+    /// B3: the `on_subagent_event` emission point). Best-effort by
+    /// design: a failed publish must never fail the delegation
+    /// itself — the bus is a view of the turn, not the turn.
+    fn publish_subagent(&self, event: AgentEvent) {
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(event);
+        }
+    }
+
+    /// Record a delegation failure in the registry AND announce it
+    /// on the bus, so the Clowder panel shows the subagent as failed
+    /// instead of stuck on "running". `registry_status` is the
+    /// registry record status ("failed" / "blocked"); the bus event
+    /// is always `Failed` — a blocked delegation never completed.
+    async fn record_subagent_failure(&self, id: &str, registry_status: &str, reason: &str) {
+        let mut reg = self.registry.lock().await;
+        let _ = reg.record_failure(id, registry_status, reason);
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: id.to_string(),
+            status: SubagentStatus::Failed,
+            summary: Some(reason.to_string()),
+        });
+    }
+
+    /// First line of a child result, truncated — the one-line summary
+    /// the Clowder panel shows for a finished subagent.
+    fn short_summary(text: &str) -> String {
+        const MAX_CHARS: usize = 200;
+        let first = text.lines().next().unwrap_or("").trim();
+        let mut short: String = first.chars().take(MAX_CHARS).collect();
+        if first.chars().count() > MAX_CHARS {
+            short.push('\u{2026}');
+        }
+        short
     }
 
     pub fn with_plugin_dispatcher(mut self, dispatcher: Arc<dyn PluginHookDispatcher>) -> Self {
@@ -355,15 +393,24 @@ impl Tool for TaskTool {
             let hist = reg.take_history(&id);
             (id, hist)
         };
+        self.publish_subagent(AgentEvent::SubagentSpawned {
+            subagent_id: subagent_id.clone(),
+            parent_id: ctx.session_id.clone(),
+            role: args.role.clone(),
+            brief: args.brief.clone(),
+        });
 
         // 2. Prepare handoff directory: sessions/<session_id>/subagents/<id>/
         let subagent_dir = self.session_dir.join("subagents").join(&subagent_id);
-        tokio::fs::create_dir_all(&subagent_dir)
-            .await
-            .map_err(|e| PurrError::Subagent {
+        if let Err(e) = tokio::fs::create_dir_all(&subagent_dir).await {
+            let reason = format!("Failed to create subagent handoff directory: {e}");
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
-                message: format!("Failed to create subagent handoff directory: {e}"),
-            })?;
+                message: reason,
+            });
+        }
 
         let brief_file = subagent_dir.join("brief.md");
         let result_file = subagent_dir.join("result.md");
@@ -395,12 +442,15 @@ impl Tool for TaskTool {
                 dprev
             ));
         }
-        tokio::fs::write(&brief_file, existing_brief.as_bytes())
-            .await
-            .map_err(|e| PurrError::Subagent {
+        if let Err(e) = tokio::fs::write(&brief_file, existing_brief.as_bytes()).await {
+            let reason = format!("Failed to write brief.md: {e}");
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
-                message: format!("Failed to write brief.md: {e}"),
-            })?;
+                message: reason,
+            });
+        }
 
         // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan/plan_json delegations (ADR-012).
         // `is_cron` is forced from the run context, not trusted from the
@@ -454,8 +504,9 @@ impl Tool for TaskTool {
             let verdict = match auditor.audit_raw_artifact(&existing_brief, ctx).await {
                 Ok(v) => v,
                 Err(e) => {
-                    let mut reg = self.registry.lock().await;
-                    let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                    let reason = e.to_string();
+                    self.record_subagent_failure(&subagent_id, "failed", &reason)
+                        .await;
                     return Err(e);
                 }
             };
@@ -476,8 +527,9 @@ impl Tool for TaskTool {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    let mut reg = self.registry.lock().await;
-                    let _ = reg.record_failure(&subagent_id, "blocked", &e.to_string());
+                    let reason = e.to_string();
+                    self.record_subagent_failure(&subagent_id, "blocked", &reason)
+                        .await;
                     return Err(e);
                 }
             }
@@ -542,6 +594,11 @@ impl Tool for TaskTool {
         );
 
         // 5. Run child loop (Clowder runs 2 council seats and merges verdicts)
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: subagent_id.clone(),
+            status: SubagentStatus::Running,
+            summary: None,
+        });
         let child_result_res = if args.role == "clowder" {
             let mut h1 = history.clone();
             let mut h2 = history.clone();
@@ -591,8 +648,9 @@ impl Tool for TaskTool {
         let child_result = match child_result_res {
             Ok(r) => r,
             Err(e) => {
-                let mut reg = self.registry.lock().await;
-                let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                let reason = e.to_string();
+                self.record_subagent_failure(&subagent_id, "failed", &reason)
+                    .await;
                 return Err(e);
             }
         };
@@ -606,14 +664,16 @@ impl Tool for TaskTool {
         ) {
             Ok(entry) => entry,
             Err(e) => {
-                let mut reg = self.registry.lock().await;
-                let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                let reason = e.to_string();
+                self.record_subagent_failure(&subagent_id, "failed", &reason)
+                    .await;
                 return Err(e);
             }
         };
         if let Err(e) = tokio::fs::write(&result_file, result_entry.as_bytes()).await {
-            let mut reg = self.registry.lock().await;
-            let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+            let reason = e.to_string();
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
             return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
                 message: format!("Failed to write result.md: {e}"),
@@ -621,11 +681,28 @@ impl Tool for TaskTool {
         }
 
         // 7. Save updated history & registry record to memory and disk
-        {
+        // (v0.4 B3 fix P2-1: a persistence failure here used to
+        // propagate with `?` and leave the Clowder panel stuck on
+        // "running" — the error is captured first, then announced
+        // as Failed. The registry lock is released before the
+        // announce, because record_subagent_failure locks the same
+        // registry and a held lock would deadlock it.)
+        let save_result = {
             let mut reg = self.registry.lock().await;
-            reg.save_history(&subagent_id, history)?;
-            reg.record_result(&subagent_id, &child_result)?;
+            reg.save_history(&subagent_id, history)
+                .and_then(|()| reg.record_result(&subagent_id, &child_result))
+        };
+        if let Err(e) = save_result {
+            let reason = e.to_string();
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(e);
         }
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: subagent_id.clone(),
+            status: SubagentStatus::Done,
+            summary: Some(Self::short_summary(&child_result)),
+        });
 
         // The summary below is complete and inline: the result.md path is a
         // session-state record, not a source to re-read. (Dogfooding 2026-11-12:

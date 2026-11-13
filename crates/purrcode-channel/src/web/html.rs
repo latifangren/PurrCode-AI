@@ -43,6 +43,12 @@ pub fn web_index_html() -> String {
         <div style="color: var(--text-muted); font-size: 0.85rem;">Loading sessions...</div>
       </div>
     </div>
+    <div class="clowder-section">
+      <div class="clowder-header">🐾 Clowder — live</div>
+      <div id="clowder-list">
+        <div style="color: var(--text-muted); font-size: 0.85rem;">Tidak ada subagent aktif.</div>
+      </div>
+    </div>
     <div class="status-badge">
       <div class="status-dot"></div>
       <span id="gateway-status">Gateway Connected</span>
@@ -60,11 +66,19 @@ pub fn web_index_html() -> String {
 
     <!-- Chat Tab -->
     <div class="content chat-view" id="tab-chat">
-      <div class="messages-container" id="messages">
-        <div class="msg assistant">
-          <div class="msg-header">🐾 PurrCode AI (Meowstro)</div>
-          <div>Selamat datang di PurrCode AI WebUI! Sistem orkestrasi The Clowder dan Gateway aktif. Ada yang bisa saya bantu analisa atau kerjakan?</div>
+      <div class="chat-body">
+        <div class="messages-container" id="messages">
+          <div class="msg assistant">
+            <div class="msg-header">🐾 PurrCode AI (Meowstro)</div>
+            <div>Selamat datang di PurrCode AI WebUI! Sistem orkestrasi The Clowder dan Gateway aktif. Ada yang bisa saya bantu analisa atau kerjakan?</div>
+          </div>
         </div>
+        <aside class="inspector" id="inspector">
+          <div class="inspector-header">🔍 Inspector</div>
+          <div id="inspector-content">
+            <div style="color: var(--text-muted); font-size: 0.85rem;">Klik tool call untuk melihat detail.</div>
+          </div>
+        </aside>
       </div>
       <div class="chat-input-bar">
         <textarea class="chat-input" id="prompt-input" rows="1" placeholder="Type a prompt for PurrCode AI... (Shift+Enter for newline)"></textarea>
@@ -145,4 +159,50 @@ pub fn web_index_html() -> String {
 </html>"#,
         WEB_INDEX_CSS, WEB_INDEX_JS
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::web::html_js::WEB_INDEX_JS;
+
+    /// v0.4 B3: the inspector column and the live Clowder list must
+    /// exist in the served page, and the JS must wire them without
+    /// inline handlers — call ids and briefs are model-controlled
+    /// and must never be interpolated into an HTML attribute or a
+    /// JS string literal (same tripwire rule as the R3 approval
+    /// cards in server/tests.rs).
+    #[test]
+    fn test_webui_has_inspector_and_clowder_panel() {
+        let html = web_index_html();
+        assert!(
+            html.contains("id=\"inspector\""),
+            "inspector column missing"
+        );
+        assert!(
+            html.contains("id=\"inspector-content\""),
+            "inspector content box missing"
+        );
+        assert!(html.contains("id=\"clowder-list\""), "clowder list missing");
+        assert!(
+            html.contains("class=\"chat-body\""),
+            "chat-body wrapper (transcript + inspector) missing"
+        );
+        assert!(
+            !WEB_INDEX_JS.contains("onclick=\""),
+            "JS must not use inline onclick"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("selectToolCall"),
+            "tool cards must wire a click-to-inspect handler"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("SubagentSpawned"),
+            "JS must handle the SubagentSpawned bus event"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("SubagentStatusChanged"),
+            "JS must handle the SubagentStatusChanged bus event"
+        );
+    }
 }

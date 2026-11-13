@@ -354,4 +354,79 @@ pub const WEB_INDEX_CSS: &str = r#"    :root {
     .msg.tool {
       opacity: 0.75;
       font-size: 0.85rem;
+    }
+    /* Chat body: transcript + inspector side by side (v0.4 B3). */
+    .chat-body {
+      flex-grow: 1;
+      display: flex;
+      gap: 16px;
+      min-height: 0;
+    }
+    .inspector {
+      width: 320px;
+      flex-shrink: 0;
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 14px;
+      overflow-y: auto;
+      font-size: 0.9rem;
+    }
+    .inspector-header {
+      font-weight: 600;
+      color: var(--primary);
+      margin-bottom: 10px;
+    }
+    .inspector h4 {
+      color: var(--warning);
+      margin: 12px 0 4px;
+      font-size: 0.85rem;
+    }
+    .inspector pre {
+      font-size: 0.8rem;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    .tool-card { cursor: pointer; }
+    .tool-card.selected {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px var(--primary);
+    }
+    /* Clowder — live subagent list in the sidebar (v0.4 B3). */
+    .clowder-section {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--card-border);
+    }
+    .clowder-header {
+      padding: 0 8px;
+      margin-bottom: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .clowder-item {
+      padding: 6px 8px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      font-size: 0.85rem;
+      background: rgba(49, 50, 68, 0.3);
+    }
+    .clowder-item .clowder-role { font-weight: 600; }
+    .clowder-item .clowder-brief {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .clowder-status-running { color: var(--warning); }
+    .clowder-status-done { color: var(--success); }
+    .clowder-status-failed { color: var(--danger); }
+    .clowder-status-pending { color: var(--text-muted); }
+    .clowder-status-interrupted { color: var(--text-muted); }
+    @media (max-width: 900px) {
+      .inspector { display: none; }
     }"#;
