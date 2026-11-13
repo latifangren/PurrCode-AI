@@ -194,6 +194,42 @@ async fn test_cron_parse_preview() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_cron_parse_nameless_failures_are_audited() {
+    // Fix pass B6 r1 P3-5: a missing or non-string schedule
+    // used to escape the audit (only failures carrying a
+    // schedule string were recorded). A malformed body still
+    // has nothing to attribute and stays unaudited.
+    let dir = test_dir("cron-parse-audit");
+    let reg = seed_registry();
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _reg, cancel, handle) =
+        start_server_with_cron_registry(None, dir, Some(reg), Some(Arc::new(sink))).await;
+    let missing = post(port, "/api/cron/parse", r#"{}"#);
+    assert!(missing.contains("400 Bad Request"), "resp: {missing}");
+    let wrong_type = post(port, "/api/cron/parse", r#"{"schedule": 123}"#);
+    assert!(wrong_type.contains("400 Bad Request"), "resp: {wrong_type}");
+    let empty = post(port, "/api/cron/parse", r#"{"schedule": ""}"#);
+    assert!(empty.contains("400 Bad Request"), "resp: {empty}");
+    assert!(
+        has_event(&events, "cron_parse", "(missing schedule)", "deny"),
+        "missing-schedule deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    assert!(
+        has_event(&events, "cron_parse", "123", "deny"),
+        "non-string-schedule deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    assert!(
+        has_event(&events, "cron_parse", "(empty schedule)", "deny"),
+        "empty-schedule deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    let _ = cancel.send(true);
+    handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cron_add_enable_disable_remove_and_audit() {
     let dir = test_dir("cron-crud");
     let reg = seed_registry();
@@ -244,9 +280,18 @@ async fn test_cron_add_enable_disable_remove_and_audit() {
     let en = post(port, "/api/cron/enable", r#"{"id": "cron_aaa"}"#);
     assert!(en.contains("\"enabled\":true"));
 
-    // Unknown job is a 404, audited deny.
+    // Unknown job is a 404, audited deny — and the message
+    // wraps the needle exactly once (fix pass B6 r1 P3-1).
     let missing = post(port, "/api/cron/enable", r#"{"name": "tidak-ada"}"#);
     assert!(missing.contains("404 Not Found"), "resp: {missing}");
+    assert!(
+        missing.contains("no cron job matching 'tidak-ada'"),
+        "resp: {missing}"
+    );
+    assert!(
+        !missing.contains("no cron job matching 'no cron job"),
+        "double-wrapped 404 message: {missing}"
+    );
     assert!(has_event(&events, "cron_enable", "tidak-ada", "deny"));
 
     // Remove by id, then again → 404.

@@ -143,16 +143,25 @@ pub async fn cron_parse(
     let schedule = match required_str_field(&val, "schedule") {
         Ok(s) => s,
         Err(e) => {
-            let name = val
-                .get("schedule")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .chars()
-                .take(80)
-                .collect::<String>();
-            if !name.is_empty() {
-                audit_rejected(&state, "cron_parse", &name, &e);
-            }
+            // Audit every refusal (fix pass B6 r1 P3-5): attribute
+            // to the schedule value when one is present — a
+            // non-string value audits as its JSON rendering, a
+            // missing one as "(missing schedule)", an empty one
+            // as "(empty schedule)". Only a malformed body has
+            // nothing to attribute, and stays unaudited (the B5
+            // r1 P3-3 rule).
+            let raw_name: String = match val.get("schedule") {
+                Some(Value::String(s)) => s.chars().take(80).collect(),
+                Some(other) => serde_json::to_string(other)
+                    .unwrap_or_else(|_| "(invalid schedule)".to_string()),
+                None => "(missing schedule)".to_string(),
+            };
+            let name = if raw_name.is_empty() {
+                "(empty schedule)".to_string()
+            } else {
+                raw_name
+            };
+            audit_rejected(&state, "cron_parse", &name, &e);
             return e;
         }
     };

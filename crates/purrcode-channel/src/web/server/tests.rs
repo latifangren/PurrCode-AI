@@ -159,6 +159,27 @@ async fn test_server_cron_lists_jobs_jsonc() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_server_cron_corrupt_file_is_500_not_empty_list() {
+    // Fix pass B6 r1 P3-4: a present-but-unparsable jobs file
+    // used to list as an empty array, hiding every job; the
+    // POSTs 400'd on the same file. A missing file still lists
+    // as 200 [] (no jobs yet).
+    let dir = test_dir("cron-corrupt");
+    std::fs::create_dir_all(dir.join("cron")).unwrap();
+    std::fs::write(dir.join("cron").join("jobs.jsonc"), "{not valid json!!!").unwrap();
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let resp = get(port, "/api/cron");
+    assert!(
+        resp.contains("500 Internal Server Error"),
+        "corrupt file must be a 500, resp: {resp}"
+    );
+    assert!(resp.contains("invalid JSON"));
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_server_skills_lists_drafts_and_live() {
     let dir = test_dir("skills");
     std::fs::create_dir_all(dir.join("skills").join(".drafts")).unwrap();

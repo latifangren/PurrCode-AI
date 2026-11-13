@@ -56,11 +56,17 @@ impl WebCronRegistry {
         }
     }
 
+    /// Load the store. Any load failure is a server-side state
+    /// problem (the file is missing → empty store, never an
+    /// error; a present-but-unreadable file is corrupt or
+    /// permission-denied), so it maps to `Internal` (500), never
+    /// to `InvalidInput` (400): a corrupt `jobs.jsonc` is not
+    /// the client's fault (fix pass B6 r1 P3-4). The message
+    /// keeps the service's path detail — the path is the local
+    /// user's own `purrcode_dir`, already exposed by
+    /// `GET /api/status` to the same authenticated user.
     fn load_store(&self) -> Result<CronStore, CronError> {
-        CronStore::load(&self.purrcode_dir).map_err(|e| match e {
-            purrcode_api::error::PurrError::Io(_) => CronError::Internal(e.to_string()),
-            _ => CronError::InvalidInput(e.to_string()),
-        })
+        CronStore::load(&self.purrcode_dir).map_err(|e| CronError::Internal(e.to_string()))
     }
 
     /// Pin the preset rails exactly like `cron add` (CLI): load
@@ -164,9 +170,16 @@ impl CronRegistry for WebCronRegistry {
             .map_err(|e| CronError::InvalidInput(e.to_string()))?;
         let snapshot = self.preset_snapshot(input.preset.as_deref())?;
         let tools = self.allowlist(input.allow)?;
-        let job_name = match input.name.as_deref().map(str::trim) {
-            Some(name) if !name.is_empty() => name.to_string(),
-            _ => format!("job-{}", &new_job_id()[5..]),
+        let job_name = match input.name {
+            // Verbatim, like the CLI: `cron add` stores the name
+            // as given (fix pass B6 r1 P3-3 — the web used to
+            // trim it and auto-name whitespace-only input, while
+            // the CLI stores it verbatim and rejects a blank
+            // name). Only an absent name is auto-generated.
+            // A blank name is rejected below by `store.add`
+            // (`validate_job`), exactly like the CLI.
+            Some(name) => name,
+            None => format!("job-{}", &new_job_id()[5..]),
         };
         let delivery = match self.config.telegram.as_ref() {
             Some(tg) if !tg.allow_from.is_empty() => DeliveryTarget::Telegram {
@@ -200,9 +213,14 @@ impl CronRegistry for WebCronRegistry {
             last_status: None,
         };
         let mut store = self.load_store()?;
-        if store.find(&job.name).is_some() {
-            return Err(CronError::AlreadyExists(job.name.clone()));
-        }
+        // No duplicate pre-check here: `store.add` rejects an
+        // exact duplicate name itself, and its error already
+        // maps to 409 below (fix pass B6 r1 P3-2 — the pre-check
+        // used `find`, which matches by id prefix, so a name
+        // equal to another job's id prefix was 409'd while the
+        // CLI accepts it; the store is the single source of
+        // truth for the duplicate rule). The mutation lock makes
+        // the load → add pair atomic against other web requests.
         store.add(job.clone()).map_err(|e| {
             // The lock makes this unreachable in practice (the
             // pre-check above just ran under it), but a CLI
@@ -224,9 +242,13 @@ impl CronRegistry for WebCronRegistry {
     async fn set_enabled(&self, needle: &str, enabled: bool) -> Result<CronJobView, CronError> {
         let _guard = self.mutation_lock.lock().await;
         let mut store = self.load_store()?;
-        let job = store
-            .find_mut(needle)
-            .ok_or_else(|| CronError::NotFound(format!("no cron job matching '{needle}'")))?;
+        let job = store.find_mut(needle).ok_or_else(|| {
+            // Bare needle: `CronError`'s `Display` already wraps
+            // it as "no cron job matching '…'" — passing the
+            // wrapped text here double-wrapped the message
+            // (fix pass B6 r1 P3-1).
+            CronError::NotFound(needle.to_string())
+        })?;
         job.enabled = enabled;
         let view = job_view(job);
         store.save().map_err(|e| match e {
@@ -240,9 +262,9 @@ impl CronRegistry for WebCronRegistry {
         let _guard = self.mutation_lock.lock().await;
         let mut store = self.load_store()?;
         if store.find(needle).is_none() {
-            return Err(CronError::NotFound(format!(
-                "no cron job matching '{needle}'"
-            )));
+            // Bare needle — see the `Display` note in
+            // `set_enabled` (fix pass B6 r1 P3-1).
+            return Err(CronError::NotFound(needle.to_string()));
         }
         let job = store.remove(needle).map_err(|e| match e {
             purrcode_api::error::PurrError::Io(_) => CronError::Internal(e.to_string()),
@@ -413,6 +435,100 @@ mod tests {
             })
             .await,
             Err(CronError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_not_found_message_is_not_double_wrapped() {
+        // Fix pass B6 r1 P3-1: the registry used to build
+        // `NotFound("no cron job matching 'x'")` and `Display`
+        // wrapped it again ("… 'no cron job matching 'x''").
+        let root = tmp_root("notfound-msg");
+        let reg = registry(&root);
+        let err = reg.set_enabled("tidak-ada", true).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "no cron job matching 'tidak-ada'",
+            "message must wrap the needle exactly once"
+        );
+        let err = reg.remove_job("tidak-ada").await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "no cron job matching 'tidak-ada'",
+            "message must wrap the needle exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_id_prefix_name_accepted_like_cli() {
+        // Fix pass B6 r1 P3-2: the web used to 409 a name equal
+        // to another job's id prefix (the duplicate pre-check
+        // used `find`, which matches by id prefix); the CLI's
+        // `store.add` only rejects an exact duplicate name.
+        let root = tmp_root("prefix-name");
+        let reg = registry(&root);
+        let first = reg.add_job(add_input("prefix-target")).await.unwrap();
+        let by_prefix = reg
+            .add_job(CronAddInput {
+                name: Some(first.id[..10].to_string()),
+                ..add_input("unused")
+            })
+            .await
+            .unwrap();
+        assert_eq!(by_prefix.name, first.id[..10]);
+        let by_full_id = reg
+            .add_job(CronAddInput {
+                name: Some(first.id.clone()),
+                ..add_input("unused")
+            })
+            .await
+            .unwrap();
+        assert_eq!(by_full_id.name, first.id);
+    }
+
+    #[tokio::test]
+    async fn test_name_stored_verbatim_like_cli() {
+        // Fix pass B6 r1 P3-3: the web used to trim names and
+        // auto-name whitespace-only input; the CLI stores the
+        // name verbatim and rejects a blank one via
+        // `validate_job`.
+        let root = tmp_root("verbatim-name");
+        let reg = registry(&root);
+        assert!(matches!(
+            reg.add_job(CronAddInput {
+                name: Some("   ".to_string()),
+                ..add_input("x")
+            })
+            .await,
+            Err(CronError::InvalidInput(_))
+        ));
+        let spaced = reg
+            .add_job(CronAddInput {
+                name: Some("  spaced  ".to_string()),
+                ..add_input("x2")
+            })
+            .await
+            .unwrap();
+        assert_eq!(spaced.name, "  spaced  ");
+    }
+
+    #[tokio::test]
+    async fn test_corrupt_store_is_internal_not_invalid_input() {
+        // Fix pass B6 r1 P3-4: a present-but-unparsable
+        // `jobs.jsonc` used to map to 400; a load failure is a
+        // server-side state problem (500).
+        let root = tmp_root("corrupt");
+        let cron_dir = root.join(".purrcode").join("cron");
+        fs::create_dir_all(&cron_dir).unwrap();
+        fs::write(cron_dir.join("jobs.jsonc"), "{not valid json!!!").unwrap();
+        let reg = registry(&root);
+        assert!(matches!(
+            reg.add_job(add_input("x")).await,
+            Err(CronError::Internal(_))
+        ));
+        assert!(matches!(
+            reg.set_enabled("x", true).await,
+            Err(CronError::Internal(_))
         ));
     }
 

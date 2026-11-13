@@ -52,39 +52,51 @@ pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {
 
 /// `GET /api/cron` — dev-muse stores jobs in `cron/jobs.jsonc` as
 /// `{"jobs": [...]}` (JSONC — comments allowed); the WebUI table
-/// wants a plain array with display fields.
-pub async fn cron(State(state): State<Arc<WebState>>) -> Json<Value> {
+/// wants a plain array with display fields. A missing file means
+/// no jobs yet (200 `[]`); a present-but-unparsable file is a
+/// server-side state problem (500, not a silent `[]` — fix pass
+/// B6 r1 P3-4: the old code hid a corrupt store behind an empty
+/// list while the POSTs 400'd on the same file).
+pub async fn cron(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
     let jobs_path = state.purrcode_dir.join("cron").join("jobs.jsonc");
-    let mut jobs: Vec<Value> = Vec::new();
-    if let Ok(raw) = tokio::fs::read_to_string(&jobs_path).await {
-        let cleaned = clean_jsonc(&raw);
-        if let Ok(val) = serde_json::from_str::<Value>(&cleaned) {
-            if let Some(list) = val.get("jobs").and_then(|j| j.as_array()) {
-                jobs = list
-                    .iter()
-                    .map(|j| {
-                        let schedule = j
-                            .get("schedule")
-                            .and_then(|s| s.get("display"))
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let tools = j.get("tools").cloned().unwrap_or_else(|| json!([]));
-                        json!({
-                            "id": j.get("id").cloned().unwrap_or(Value::Null),
-                            "name": j.get("name").cloned().unwrap_or(Value::Null),
-                            "schedule": schedule,
-                            "prompt": j.get("prompt").cloned().unwrap_or(Value::Null),
-                            "allowed_tools": tools,
-                            "next_run": j.get("next_run").cloned().unwrap_or(Value::Null),
-                            "enabled": j.get("enabled").cloned().unwrap_or(Value::Null),
-                        })
-                    })
-                    .collect();
-            }
-        }
-    }
-    Json(Value::Array(jobs))
+    let Ok(raw) = tokio::fs::read_to_string(&jobs_path).await else {
+        return (StatusCode::OK, Json(Value::Array(Vec::new())));
+    };
+    let cleaned = clean_jsonc(&raw);
+    let Ok(val) = serde_json::from_str::<Value>(&cleaned) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cron jobs file is invalid JSON" })),
+        );
+    };
+    let Some(list) = val.get("jobs").and_then(|j| j.as_array()) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cron jobs file has no jobs array" })),
+        );
+    };
+    let jobs: Vec<Value> = list
+        .iter()
+        .map(|j| {
+            let schedule = j
+                .get("schedule")
+                .and_then(|s| s.get("display"))
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tools = j.get("tools").cloned().unwrap_or_else(|| json!([]));
+            json!({
+                "id": j.get("id").cloned().unwrap_or(Value::Null),
+                "name": j.get("name").cloned().unwrap_or(Value::Null),
+                "schedule": schedule,
+                "prompt": j.get("prompt").cloned().unwrap_or(Value::Null),
+                "allowed_tools": tools,
+                "next_run": j.get("next_run").cloned().unwrap_or(Value::Null),
+                "enabled": j.get("enabled").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    (StatusCode::OK, Json(Value::Array(jobs)))
 }
 
 /// `GET /api/skills` and `/api/skills/candidates`.
