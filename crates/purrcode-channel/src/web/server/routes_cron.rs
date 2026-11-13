@@ -96,10 +96,32 @@ fn allow_field(val: &Value) -> Result<Option<Vec<String>>, (StatusCode, Json<Val
 
 /// The job needle for enable/disable/remove: `id` or `name`,
 /// either key, must be a non-empty string.
-fn needle_from_body(body: &Bytes) -> Result<String, (StatusCode, Json<Value>)> {
+/// Render a JSON value for audit attribution (fix pass B6 r2
+/// P3-1, generalizing the r1 P3-5 parse fix): a string audits
+/// as itself (truncated), any other present value as its JSON
+/// rendering, a missing key as the caller-supplied label, an
+/// empty string as "(empty <key>)". A refusal whose body
+/// carries an attributable value belongs in the audit log; only
+/// a malformed body has nothing to attribute.
+fn audit_name(val: &Value, key: &str, missing: &str) -> String {
+    let raw: String = match val.get(key) {
+        Some(Value::String(s)) => s.chars().take(80).collect(),
+        Some(other) => {
+            serde_json::to_string(other).unwrap_or_else(|_| "(invalid value)".to_string())
+        }
+        None => missing.to_string(),
+    };
+    if raw.is_empty() {
+        format!("(empty {key})")
+    } else {
+        raw
+    }
+}
+
+fn needle_from_body(body: &Bytes) -> Result<String, (Option<String>, (StatusCode, Json<Value>))> {
     let err = |msg: &str| (StatusCode::BAD_REQUEST, Json(json!({ "error": msg })));
     let Ok(val) = serde_json::from_slice::<Value>(body) else {
-        return Err(err("malformed JSON body"));
+        return Err((None, err("malformed JSON body")));
     };
     for key in ["id", "name"] {
         if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
@@ -108,7 +130,15 @@ fn needle_from_body(body: &Bytes) -> Result<String, (StatusCode, Json<Value>)> {
             }
         }
     }
-    Err(err("id or name is required"))
+    // No usable needle, but the body may still carry an
+    // attributable value (fix pass B6 r2 P3-1): a non-string
+    // `id` audits as its JSON rendering, a missing `id` falls
+    // back to `name`, both missing to "(missing needle)".
+    let name = match val.get("id") {
+        Some(_) => audit_name(&val, "id", "(missing needle)"),
+        None => audit_name(&val, "name", "(missing needle)"),
+    };
+    Err((Some(name), err("id or name is required")))
 }
 
 /// Audit a rejected cron request when it names the job (the B5
@@ -143,24 +173,11 @@ pub async fn cron_parse(
     let schedule = match required_str_field(&val, "schedule") {
         Ok(s) => s,
         Err(e) => {
-            // Audit every refusal (fix pass B6 r1 P3-5): attribute
-            // to the schedule value when one is present — a
-            // non-string value audits as its JSON rendering, a
-            // missing one as "(missing schedule)", an empty one
-            // as "(empty schedule)". Only a malformed body has
-            // nothing to attribute, and stays unaudited (the B5
-            // r1 P3-3 rule).
-            let raw_name: String = match val.get("schedule") {
-                Some(Value::String(s)) => s.chars().take(80).collect(),
-                Some(other) => serde_json::to_string(other)
-                    .unwrap_or_else(|_| "(invalid schedule)".to_string()),
-                None => "(missing schedule)".to_string(),
-            };
-            let name = if raw_name.is_empty() {
-                "(empty schedule)".to_string()
-            } else {
-                raw_name
-            };
+            // Audit every refusal (fix pass B6 r1 P3-5): the
+            // schedule value is attributed via `audit_name`;
+            // only a malformed body has nothing to attribute
+            // (the B5 r1 P3-3 rule).
+            let name = audit_name(&val, "schedule", "(missing schedule)");
             audit_rejected(&state, "cron_parse", &name, &e);
             return e;
         }
@@ -198,9 +215,13 @@ pub async fn cron_add(
     let input = match parse_add_body(&val) {
         Ok(input) => input,
         Err(e) => {
-            if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
-                audit_rejected(&state, "cron_add", name, &e);
-            }
+            // Audit every refusal (fix pass B6 r2 P3-1, same
+            // class as r1 P3-5 for parse): a non-string `name`
+            // used to escape the audit because only string
+            // names were attributed; the name is now attributed
+            // via `audit_name` for any JSON type.
+            let name = audit_name(&val, "name", "(missing name)");
+            audit_rejected(&state, "cron_add", &name, &e);
             return e;
         }
     };
@@ -261,7 +282,12 @@ async fn cron_toggle(
     };
     let needle = match needle_from_body(&body) {
         Ok(n) => n,
-        Err(e) => return e,
+        Err((audit, e)) => {
+            if let Some(name) = audit {
+                audit_rejected(&state, event, &name, &e);
+            }
+            return e;
+        }
     };
     match reg.set_enabled(&needle, enabled).await {
         Ok(job) => {
@@ -318,7 +344,12 @@ pub async fn cron_remove(
     };
     let needle = match needle_from_body(&body) {
         Ok(n) => n,
-        Err(e) => return e,
+        Err((audit, e)) => {
+            if let Some(name) = audit {
+                audit_rejected(&state, "cron_remove", &name, &e);
+            }
+            return e;
+        }
     };
     match reg.remove_job(&needle).await {
         Ok(job) => {

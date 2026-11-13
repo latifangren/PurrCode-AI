@@ -230,6 +230,50 @@ async fn test_cron_parse_nameless_failures_are_audited() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_cron_add_nonstr_name_and_toggle_nonstr_id_are_audited() {
+    // Fix pass B6 r2 P3-1: `cron_add` with a non-string `name`
+    // used to 400 without an audit entry (only string names
+    // were attributed); the same gap existed in the needle
+    // handlers (`needle_from_body` returned the 400 without
+    // auditing). Both now attribute via the JSON rendering.
+    let dir = test_dir("cron-nonstr-audit");
+    let reg = seed_registry();
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _reg, cancel, handle) =
+        start_server_with_cron_registry(None, dir, Some(reg), Some(Arc::new(sink))).await;
+    let bad_name = post(
+        port,
+        "/api/cron/add",
+        r#"{"name": 123, "schedule": "tiap pagi jam 8", "prompt": "x"}"#,
+    );
+    assert!(bad_name.contains("400 Bad Request"), "resp: {bad_name}");
+    assert!(
+        has_event(&events, "cron_add", "123", "deny"),
+        "non-string-name deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    let bad_id = post(port, "/api/cron/enable", r#"{"id": 123}"#);
+    assert!(bad_id.contains("400 Bad Request"), "resp: {bad_id}");
+    assert!(
+        has_event(&events, "cron_enable", "123", "deny"),
+        "non-string-id deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    let missing_needle = post(port, "/api/cron/remove", r#"{}"#);
+    assert!(
+        missing_needle.contains("400 Bad Request"),
+        "resp: {missing_needle}"
+    );
+    assert!(
+        has_event(&events, "cron_remove", "(missing needle)", "deny"),
+        "missing-needle deny missing: {:?}",
+        events.lock().unwrap()
+    );
+    let _ = cancel.send(true);
+    handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_cron_add_enable_disable_remove_and_audit() {
     let dir = test_dir("cron-crud");
     let reg = seed_registry();
