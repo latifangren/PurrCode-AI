@@ -381,12 +381,12 @@ impl SkillManager {
         new_content.push_str(new_string);
         new_content.push_str(&original[end..]);
 
-        if new_content.len() > 100_000 {
+        if new_content.chars().count() > 100_000 {
             return Err(PurrError::Tool {
                 tool: "manage_skill".to_string(),
                 message: format!(
                     "Patched skill content exceeds 100,000 characters limit (was {})",
-                    new_content.len()
+                    new_content.chars().count()
                 ),
             });
         }
@@ -695,10 +695,19 @@ fn parse_skill_file(path: &Path, source: SkillSource) -> Result<SkillMetadata> {
         }
     }
 
-    let (name, description) = parse_skill_frontmatter(&content, &fallback_name);
+    // The directory name is the skill's identity — the
+    // frontmatter `name:` is NOT trusted on read (fix pass B5
+    // r2 P2-6): a file whose frontmatter declares another name
+    // (written by the pre-fix build, by hand, or synced from
+    // another machine) used to list under a name the WebUI could
+    // never update or delete, because every write path keys on
+    // the directory. Only the description is taken from the
+    // frontmatter; the write path already rebuilds the header
+    // with the directory name (fix pass r1).
+    let (_, description) = parse_skill_frontmatter(&content, &fallback_name);
 
     Ok(SkillMetadata {
-        name,
+        name: fallback_name,
         description,
         file_path: Some(path.to_path_buf()),
         embedded_body: None,

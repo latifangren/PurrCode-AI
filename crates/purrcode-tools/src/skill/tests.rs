@@ -240,3 +240,27 @@ fn test_create_skill_content_cap_counts_characters() {
     assert!(err.to_string().contains("100,000 characters"));
     assert!(err.to_string().contains("100001"));
 }
+
+#[test]
+fn test_discovery_uses_directory_name_not_frontmatter_name() {
+    // Fix pass B5 r2 P2-6: the read path used to trust the
+    // frontmatter `name:`, so a file whose header declares
+    // another name listed under a name the WebUI could never
+    // update or delete. The directory name is canonical.
+    let tmp = TempTestDir::new();
+    let dir = tmp.path().join(".purrcode").join("skills").join("legacy1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: ghost-name\ndescription: Legacy\n---\n\n# Legacy\n",
+    )
+    .unwrap();
+    let mut mgr = SkillManager::new();
+    mgr.discover_all(tmp.path());
+    let meta = mgr.get("legacy1").expect("listed under directory name");
+    assert_eq!(meta.description, "Legacy");
+    assert_eq!(meta.source, SkillSource::Project);
+    assert!(mgr.get("ghost-name").is_none());
+    let body = mgr.read_skill_body("legacy1").unwrap();
+    assert!(body.contains("ghost-name"));
+}
