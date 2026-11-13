@@ -144,6 +144,12 @@ async fn kill_child_group(child: &mut tokio::process::Child, pid: Option<u32>) {
             }
         }
     }
+    // On non-Unix targets the pid is only used by the killpg
+    // block above; silence the unused-variable warning there
+    // (fix pass #3 — a `-D warnings` Windows build would fail
+    // on it otherwise).
+    #[cfg(not(unix))]
+    let _ = pid;
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
