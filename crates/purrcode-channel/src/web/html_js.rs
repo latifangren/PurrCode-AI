@@ -178,7 +178,8 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
       activeTab = tab;
 
       if (tab === 'cron') loadCronJobs();
-      if (tab === 'skills') loadCandidates();
+      if (tab === 'skills') { loadCandidates(); loadAllSkills(); }
+      if (tab === 'memory') { loadMemoryInfo(); loadMemoryDoc('MEMORY.md'); }
       if (tab === 'plugins') loadPlugins();
     }
 
@@ -259,16 +260,6 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
       }
     }
 
-    async function loadMemoryDoc(doc) {
-      try {
-        const res = await fetch(apiUrl(`/api/memory?file=${doc}`));
-        if (!res.ok) return;
-        const text = await res.text();
-        document.getElementById('memory-content').textContent = text;
-      } catch (e) {
-        console.error('Failed to load memory doc:', e);
-      }
-    }
 
     async function loadPlugins() {
       const container = document.getElementById('plugins-container');
@@ -647,6 +638,10 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
     });
 
     document.getElementById('new-session-btn').addEventListener('click', () => createSession());
+    document.getElementById('skill-add-btn').addEventListener('click', () => createSkill());
+    document.getElementById('skill-edit-save').addEventListener('click', () => updateSkill());
+    document.getElementById('skill-edit-cancel').addEventListener('click', () => { document.getElementById('skill-edit-card').style.display = 'none'; });
+    document.getElementById('memory-save-btn').addEventListener('click', () => saveMemoryDoc());
 
     window.onload = function() {
       loadSessions();

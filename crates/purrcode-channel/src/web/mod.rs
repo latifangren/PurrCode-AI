@@ -4,6 +4,7 @@ pub mod channel;
 pub mod html;
 pub mod html_css;
 pub mod html_js;
+pub mod html_js_b5;
 pub mod server;
 pub mod sessions;
 

@@ -6,6 +6,7 @@ pub mod event;
 pub mod memory;
 pub mod plugin;
 pub mod provider;
+pub mod skill;
 pub mod tool;
 
 pub use channel::{Channel, ChannelCapabilities};
@@ -19,6 +20,7 @@ pub use provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, StreamChunk, TokenUsage,
     ToolCallDelta, ToolCallRequest,
 };
+pub use skill::{SkillDetail, SkillError, SkillInfo, SkillRegistry, SkillScope, SkillSource};
 pub use tool::{
     ApprovalDecision, ApprovalTier, AuditSink, PolicyGate, Tool, ToolContext, ToolDefinition,
     ToolRegistry, ToolResult,

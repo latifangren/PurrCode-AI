@@ -258,7 +258,18 @@ fn plugin_name_from_body(body: &Bytes) -> std::result::Result<String, (StatusCod
     Ok(name.to_string())
 }
 
-fn record_plugin_admin(state: &WebState, event: &str, name: &str, decision: &str, detail: &str) {
+/// One admin action in the audit log (session/agent "web").
+/// Shared by the plugin (B4), memory and skill (B5) endpoints:
+/// the event names the action (`plugin_mount`, `memory_save`,
+/// `skill_create`, ...), `name` is the item, `decision` is
+/// "allow" on success and "deny" on a refused attempt.
+pub(crate) fn record_admin(
+    state: &WebState,
+    event: &str,
+    name: &str,
+    decision: &str,
+    detail: &str,
+) {
     if let Some(sink) = &state.audit_sink {
         sink.record_event("web", "web", event, Some(name), decision, detail);
     }
@@ -284,7 +295,7 @@ pub async fn plugins_mount(
     };
     match reg.mount_plugin(&name).await {
         Ok(info) => {
-            record_plugin_admin(
+            record_admin(
                 &state,
                 "plugin_mount",
                 &name,
@@ -300,7 +311,7 @@ pub async fn plugins_mount(
             // Failed attempts are audited too (decision `deny`):
             // a 404/409/400 that leaves no trace is invisible in
             // the log a user reads after a mount that "did nothing".
-            record_plugin_admin(&state, "plugin_mount", &name, "deny", &e.to_string());
+            record_admin(&state, "plugin_mount", &name, "deny", &e.to_string());
             (
                 plugin_mount_status(&e),
                 Json(json!({ "error": e.to_string() })),
@@ -328,7 +339,7 @@ pub async fn plugins_unmount(
     };
     match reg.unmount_plugin(&name).await {
         Ok(info) => {
-            record_plugin_admin(
+            record_admin(
                 &state,
                 "plugin_unmount",
                 &name,
@@ -341,7 +352,7 @@ pub async fn plugins_unmount(
             )
         }
         Err(e) => {
-            record_plugin_admin(&state, "plugin_unmount", &name, "deny", &e.to_string());
+            record_admin(&state, "plugin_unmount", &name, "deny", &e.to_string());
             (
                 plugin_mount_status(&e),
                 Json(json!({ "error": e.to_string() })),

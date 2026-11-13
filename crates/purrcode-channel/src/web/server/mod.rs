@@ -34,6 +34,7 @@ use axum::{
 };
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::PluginRegistry;
+use purrcode_api::skill::SkillRegistry;
 use purrcode_api::tool::AuditSink;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,6 +44,8 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 mod auth;
 mod routes;
+mod routes_memory;
+mod routes_skills;
 mod sessions;
 mod sse;
 
@@ -52,6 +55,8 @@ mod test_support;
 mod tests;
 #[cfg(test)]
 mod tests_plugins;
+#[cfg(test)]
+mod tests_skills;
 
 #[async_trait::async_trait]
 pub trait PromptDispatcher: Send + Sync {
@@ -71,12 +76,18 @@ pub trait PromptDispatcher: Send + Sync {
 /// mount/unmount endpoints mutate; `audit_sink` records those
 /// admin actions. Both are absent in tests that do not wire them
 /// (GET /api/plugins then lists nothing; mount/unmount answer 503).
+/// `skill_registry` (v0.4 B5) is the same shape for skills: the
+/// list/detail/create/update/delete endpoints route through
+/// `manage_skill` via this trait, and answer 503 without it. The
+/// memory endpoints need no registry — they read/write
+/// `purrcode_dir` directly.
 pub struct WebState {
     pub registry: Arc<WebSessionRegistry>,
     pub purrcode_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub dispatcher: Option<Arc<dyn PromptDispatcher>>,
     pub plugin_registry: Option<Arc<dyn PluginRegistry>>,
+    pub skill_registry: Option<Arc<dyn SkillRegistry>>,
     pub audit_sink: Option<Arc<dyn AuditSink>>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
@@ -90,6 +101,7 @@ pub struct WebServer {
     workspace_root: PathBuf,
     dispatcher: Option<Arc<dyn PromptDispatcher>>,
     plugin_registry: Option<Arc<dyn PluginRegistry>>,
+    skill_registry: Option<Arc<dyn SkillRegistry>>,
     audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
@@ -133,6 +145,7 @@ impl WebServer {
             workspace_root: workspace_root.into(),
             dispatcher: None,
             plugin_registry: None,
+            skill_registry: None,
             audit_sink: None,
         }
     }
@@ -148,6 +161,13 @@ impl WebServer {
     /// server.
     pub fn with_plugin_registry(mut self, registry: Arc<dyn PluginRegistry>) -> Self {
         self.plugin_registry = Some(registry);
+        self
+    }
+
+    /// Wire the skill registry (v0.4 B5): the skill endpoints
+    /// route through `manage_skill` via this trait.
+    pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
+        self.skill_registry = Some(registry);
         self
     }
 
@@ -178,6 +198,7 @@ impl WebServer {
             workspace_root: self.workspace_root.clone(),
             dispatcher: self.dispatcher.clone(),
             plugin_registry: self.plugin_registry.clone(),
+            skill_registry: self.skill_registry.clone(),
             audit_sink: self.audit_sink.clone(),
             shutdown_rx: cancel_rx.clone(),
         });
@@ -197,13 +218,22 @@ impl WebServer {
             .route("/api/cron", get(routes::cron))
             .route("/api/skills", get(routes::skills))
             .route("/api/skills/candidates", get(routes::skills))
+            .route("/api/skills/all", get(routes_skills::skills_all))
+            .route("/api/skills/{name}", get(routes_skills::skill_detail))
             .route("/api/skills/approve", post(routes::skills_approve))
             .route("/api/skills/reject", post(routes::skills_reject))
+            .route("/api/skills/create", post(routes_skills::skills_create))
+            .route("/api/skills/update", post(routes_skills::skills_update))
+            .route("/api/skills/delete", post(routes_skills::skills_delete))
             .route("/api/plugins", get(routes::plugins))
             .route("/api/plugins/mount", post(routes::plugins_mount))
             .route("/api/plugins/unmount", post(routes::plugins_unmount))
             .route("/api/prompt", post(routes::prompt))
-            .route("/api/memory", get(routes::memory))
+            .route(
+                "/api/memory",
+                get(routes::memory).post(routes_memory::memory_save),
+            )
+            .route("/api/memory/info", get(routes_memory::memory_info))
             .route("/api/approval", post(routes::approval))
             .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
             .layer(middleware::from_fn_with_state(

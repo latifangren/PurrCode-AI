@@ -53,6 +53,35 @@ pub(crate) async fn start_server_with_registry(
     tokio::sync::watch::Sender<bool>,
     tokio::task::JoinHandle<()>,
 ) {
+    start_server_with_skill_registry(
+        token,
+        purrcode_dir,
+        dispatcher,
+        plugin_registry,
+        None,
+        audit_sink,
+    )
+    .await
+}
+
+/// Full builder: plugin registry, skill registry, and audit sink.
+/// The skill endpoints (B5) answer 503 without a registry, so
+/// tests that exercise them pass one in; the memory endpoints
+/// need no registry and are tested through this helper too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_server_with_skill_registry(
+    token: Option<String>,
+    purrcode_dir: PathBuf,
+    dispatcher: Option<Arc<dyn PromptDispatcher>>,
+    plugin_registry: Option<Arc<dyn PluginRegistry>>,
+    skill_registry: Option<Arc<dyn purrcode_api::skill::SkillRegistry>>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
+) -> (
+    u16,
+    Arc<WebSessionRegistry>,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
     let port = free_port();
     let registry = Arc::new(WebSessionRegistry::new(purrcode_dir.clone()));
     let mut server = WebServer::new(
@@ -68,6 +97,9 @@ pub(crate) async fn start_server_with_registry(
     }
     if let Some(reg) = plugin_registry {
         server = server.with_plugin_registry(reg);
+    }
+    if let Some(reg) = skill_registry {
+        server = server.with_skill_registry(reg);
     }
     if let Some(sink) = audit_sink {
         server = server.with_audit_sink(sink);

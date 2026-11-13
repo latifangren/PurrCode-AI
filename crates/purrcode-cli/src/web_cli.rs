@@ -231,11 +231,15 @@ pub async fn run_web_command(
         port,
         token,
         session_registry,
-        purrcode_dir,
+        purrcode_dir.clone(),
         workspace_root.to_path_buf(),
     )
     .with_dispatcher(dispatcher)
     .with_plugin_registry(plugin_manager)
+    .with_skill_registry(Arc::new(crate::web_skill_registry::WebSkillRegistry::new(
+        workspace_root.to_path_buf(),
+        purrcode_dir.clone(),
+    )))
     .with_audit_sink(state.audit_sink.clone());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

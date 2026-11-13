@@ -8,6 +8,7 @@ mod onboard;
 mod one_shot;
 mod tui_mode;
 mod web_cli;
+mod web_skill_registry;
 
 use clap::Parser;
 use cli::{Cli, Commands};
