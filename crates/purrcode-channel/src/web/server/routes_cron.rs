@@ -118,7 +118,14 @@ fn audit_name(val: &Value, key: &str, missing: &str) -> String {
     }
 }
 
-fn needle_from_body(body: &Bytes) -> Result<String, (Option<String>, (StatusCode, Json<Value>))> {
+/// Error from `needle_from_body`: an optional audit name plus
+/// the HTTP error response. A named `type` alias (not a nested
+/// tuple spelled out in the signature) keeps clippy's
+/// `type_complexity` lint quiet (fix pass B6 r3 P1 — the r2
+/// fix pass's nested tuple failed the `-D warnings` gate).
+type NeedleError = (Option<String>, (StatusCode, Json<Value>));
+
+fn needle_from_body(body: &Bytes) -> Result<String, NeedleError> {
     let err = |msg: &str| (StatusCode::BAD_REQUEST, Json(json!({ "error": msg })));
     let Ok(val) = serde_json::from_slice::<Value>(body) else {
         return Err((None, err("malformed JSON body")));
