@@ -5,6 +5,7 @@ pub mod html;
 pub mod html_css;
 pub mod html_js;
 pub mod html_js_b5;
+pub mod html_js_b6;
 pub mod server;
 pub mod sessions;
 

@@ -240,6 +240,11 @@ pub async fn run_web_command(
         workspace_root.to_path_buf(),
         purrcode_dir.clone(),
     )))
+    .with_cron_registry(Arc::new(crate::web_cron_registry::WebCronRegistry::new(
+        config.clone(),
+        workspace_root.to_path_buf(),
+        purrcode_dir.clone(),
+    )))
     .with_audit_sink(state.audit_sink.clone());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

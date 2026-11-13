@@ -32,6 +32,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use purrcode_api::cron::CronRegistry;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::PluginRegistry;
 use purrcode_api::skill::SkillRegistry;
@@ -44,6 +45,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 mod auth;
 mod routes;
+mod routes_cron;
 mod routes_memory;
 mod routes_skills;
 mod sessions;
@@ -53,6 +55,8 @@ mod sse;
 mod test_support;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_cron;
 #[cfg(test)]
 mod tests_plugins;
 #[cfg(test)]
@@ -88,6 +92,7 @@ pub struct WebState {
     pub dispatcher: Option<Arc<dyn PromptDispatcher>>,
     pub plugin_registry: Option<Arc<dyn PluginRegistry>>,
     pub skill_registry: Option<Arc<dyn SkillRegistry>>,
+    pub cron_registry: Option<Arc<dyn CronRegistry>>,
     pub audit_sink: Option<Arc<dyn AuditSink>>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
@@ -102,6 +107,7 @@ pub struct WebServer {
     dispatcher: Option<Arc<dyn PromptDispatcher>>,
     plugin_registry: Option<Arc<dyn PluginRegistry>>,
     skill_registry: Option<Arc<dyn SkillRegistry>>,
+    cron_registry: Option<Arc<dyn CronRegistry>>,
     audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
@@ -146,6 +152,7 @@ impl WebServer {
             dispatcher: None,
             plugin_registry: None,
             skill_registry: None,
+            cron_registry: None,
             audit_sink: None,
         }
     }
@@ -168,6 +175,13 @@ impl WebServer {
     /// route through `manage_skill` via this trait.
     pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
         self.skill_registry = Some(registry);
+        self
+    }
+
+    /// Wire the cron registry (v0.4 B6): the scheduler endpoints
+    /// route through the CLI's `cron add` path via this trait.
+    pub fn with_cron_registry(mut self, registry: Arc<dyn CronRegistry>) -> Self {
+        self.cron_registry = Some(registry);
         self
     }
 
@@ -199,6 +213,7 @@ impl WebServer {
             dispatcher: self.dispatcher.clone(),
             plugin_registry: self.plugin_registry.clone(),
             skill_registry: self.skill_registry.clone(),
+            cron_registry: self.cron_registry.clone(),
             audit_sink: self.audit_sink.clone(),
             shutdown_rx: cancel_rx.clone(),
         });
@@ -216,6 +231,11 @@ impl WebServer {
             .route("/api/sessions", get(sessions::list).post(sessions::create))
             .route("/api/sessions/{id}/transcript", get(sessions::transcript))
             .route("/api/cron", get(routes::cron))
+            .route("/api/cron/parse", post(routes_cron::cron_parse))
+            .route("/api/cron/add", post(routes_cron::cron_add))
+            .route("/api/cron/enable", post(routes_cron::cron_enable))
+            .route("/api/cron/disable", post(routes_cron::cron_disable))
+            .route("/api/cron/remove", post(routes_cron::cron_remove))
             .route("/api/skills", get(routes::skills))
             .route("/api/skills/candidates", get(routes::skills))
             .route("/api/skills/all", get(routes_skills::skills_all))

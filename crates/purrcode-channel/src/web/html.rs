@@ -9,6 +9,7 @@
 use crate::web::html_css::WEB_INDEX_CSS;
 use crate::web::html_js::WEB_INDEX_JS;
 use crate::web::html_js_b5::WEB_INDEX_JS_B5;
+use crate::web::html_js_b6::WEB_INDEX_JS_B6;
 
 pub fn web_index_html() -> String {
     format!(
@@ -94,19 +95,33 @@ pub fn web_index_html() -> String {
         <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px;">
           Autonomous background jobs executing on a 60-second ticker with fail-closed tool allowlists.
         </p>
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+          <input id="cron-add-name" placeholder="name (optional — auto-generated when empty)" style="padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+          <input id="cron-add-schedule" placeholder="schedule — e.g. tiap pagi jam 8, every Monday 09:00" style="padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+          <textarea id="cron-add-prompt" rows="3" placeholder="What should the job do on every firing?" style="padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;"></textarea>
+          <input id="cron-add-allow" placeholder="allowed tools, comma-separated (empty = Meowstro read-only default; blank list = nothing allowed)" style="padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+          <input id="cron-add-preset" placeholder="preset (optional — config default; never oyen/yolo)" style="padding: 8px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px;">
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-secondary" id="cron-parse-btn">Parse schedule</button>
+            <button class="btn btn-primary" id="cron-add-btn">Create job</button>
+          </div>
+          <div id="cron-parse-preview" style="color: var(--text-muted); font-size: 0.9rem;"></div>
+          <div id="cron-add-status" style="font-size: 0.9rem;"></div>
+        </div>
         <table id="cron-table">
           <thead>
             <tr>
-              <th>ID</th>
+              <th>Job</th>
               <th>Schedule</th>
               <th>Prompt</th>
               <th>Allowed Tools</th>
               <th>Next Run</th>
               <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="cron-tbody">
-            <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Loading scheduled jobs...</td></tr>
+            <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Loading scheduled jobs...</td></tr>
           </tbody>
         </table>
       </div>
@@ -213,10 +228,11 @@ pub fn web_index_html() -> String {
   <script>
 {}
 {}
+{}
   </script>
 </body>
 </html>"#,
-        WEB_INDEX_CSS, WEB_INDEX_JS, WEB_INDEX_JS_B5
+        WEB_INDEX_CSS, WEB_INDEX_JS, WEB_INDEX_JS_B5, WEB_INDEX_JS_B6
     )
 }
 
@@ -365,6 +381,77 @@ mod tests {
         assert!(
             !WEB_INDEX_JS_B5.contains("onclick=\""),
             "B5 JS must not use inline onclick handlers"
+        );
+    }
+
+    /// v0.4 B6: the cron tab has an add form (name, schedule,
+    /// prompt, allowlist, preset) with a parse preview + Create
+    /// button, and an Actions column; the B6 JavaScript calls
+    /// the five scheduler endpoints and dispatches row buttons
+    /// via `dataset`, never an inline handler.
+    #[test]
+    fn test_webui_b6_cron_scheduler_controls() {
+        use crate::web::html_js_b6::WEB_INDEX_JS_B6;
+        let html = web_index_html();
+        assert!(
+            html.contains("id=\"cron-add-name\""),
+            "cron add form (name) missing"
+        );
+        assert!(
+            html.contains("id=\"cron-add-schedule\""),
+            "cron add form (schedule) missing"
+        );
+        assert!(
+            html.contains("id=\"cron-add-prompt\""),
+            "cron add form (prompt) missing"
+        );
+        assert!(
+            html.contains("id=\"cron-add-allow\""),
+            "cron add form (allowlist) missing"
+        );
+        assert!(
+            html.contains("id=\"cron-parse-btn\""),
+            "cron parse button missing"
+        );
+        assert!(
+            html.contains("id=\"cron-add-btn\""),
+            "cron create button missing"
+        );
+        assert!(
+            html.contains("<th>Actions</th>"),
+            "cron table Actions column missing"
+        );
+        assert!(
+            WEB_INDEX_JS.contains("data-cron-action"),
+            "cron rows must carry the action in a data attribute"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("/api/cron/parse"),
+            "JS must call the cron parse endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("/api/cron/add"),
+            "JS must call the cron add endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("/api/cron/enable"),
+            "JS must call the cron enable endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("/api/cron/disable"),
+            "JS must call the cron disable endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("/api/cron/remove"),
+            "JS must call the cron remove endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B6.contains("dataset.cronId"),
+            "cron id must travel via dataset, not an inline handler"
+        );
+        assert!(
+            !WEB_INDEX_JS_B6.contains("onclick=\""),
+            "B6 JS must not use inline onclick handlers"
         );
     }
 }

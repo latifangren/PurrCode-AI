@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod channel;
+pub mod cron;
 pub mod error;
 pub mod event;
 pub mod memory;

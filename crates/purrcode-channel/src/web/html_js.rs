@@ -190,17 +190,21 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
         const jobs = await res.json();
         const tbody = document.getElementById('cron-tbody');
         if (!jobs || jobs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No scheduled cron jobs found.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No scheduled cron jobs found.</td></tr>';
           return;
         }
         tbody.innerHTML = jobs.map(j => `
           <tr>
-            <td><code>${escapeHtml(j.id || '')}</code></td>
+            <td><strong>${escapeHtml(j.name || '')}</strong><br><code>${escapeHtml(j.id || '')}</code></td>
             <td><strong>${escapeHtml(j.schedule || '')}</strong></td>
             <td>${escapeHtml(j.prompt || '')}</td>
             <td><code>${escapeHtml(j.allowed_tools ? j.allowed_tools.join(', ') : 'read-only (default)')}</code></td>
             <td>${escapeHtml(j.next_run || 'pending')}</td>
             <td><span class="tag ${j.enabled ? 'primary' : ''}">${j.enabled ? 'Enabled' : 'Disabled'}</span></td>
+            <td style="white-space: nowrap;">
+              <button class="btn btn-secondary" data-cron-id="${escapeHtml(j.id || '')}" data-cron-action="${j.enabled ? 'disable' : 'enable'}">${j.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-secondary" data-cron-id="${escapeHtml(j.id || '')}" data-cron-action="remove">Remove</button>
+            </td>
           </tr>
         `).join('');
       } catch (e) {

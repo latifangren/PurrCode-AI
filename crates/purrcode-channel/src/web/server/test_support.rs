@@ -113,6 +113,45 @@ pub(crate) async fn start_server_with_skill_registry(
     (port, registry, cancel_tx, handle)
 }
 
+/// Same builder, plus a cron registry (v0.4 B6): the scheduler
+/// endpoints answer 503 without one, so tests that exercise them
+/// pass one in.
+pub(crate) async fn start_server_with_cron_registry(
+    token: Option<String>,
+    purrcode_dir: PathBuf,
+    cron_registry: Option<Arc<dyn purrcode_api::cron::CronRegistry>>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
+) -> (
+    u16,
+    Arc<WebSessionRegistry>,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let port = free_port();
+    let registry = Arc::new(WebSessionRegistry::new(purrcode_dir.clone()));
+    let mut server = WebServer::new(
+        "127.0.0.1",
+        port,
+        token,
+        registry.clone(),
+        purrcode_dir,
+        PathBuf::from("/tmp/ws"),
+    );
+    if let Some(reg) = cron_registry {
+        server = server.with_cron_registry(reg);
+    }
+    if let Some(sink) = audit_sink {
+        server = server.with_audit_sink(sink);
+    }
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        let _ = server.run(cancel_rx).await;
+    });
+    // Give the listener a moment to bind.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    (port, registry, cancel_tx, handle)
+}
+
 /// A dispatcher that records (session_id, prompt) instead of
 /// running a turn — the B1 prompt-routing tests assert the server
 /// picked the right session.

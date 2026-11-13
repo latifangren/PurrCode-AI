@@ -72,6 +72,7 @@ pub async fn cron(State(state): State<Arc<WebState>>) -> Json<Value> {
                         let tools = j.get("tools").cloned().unwrap_or_else(|| json!([]));
                         json!({
                             "id": j.get("id").cloned().unwrap_or(Value::Null),
+                            "name": j.get("name").cloned().unwrap_or(Value::Null),
                             "schedule": schedule,
                             "prompt": j.get("prompt").cloned().unwrap_or(Value::Null),
                             "allowed_tools": tools,

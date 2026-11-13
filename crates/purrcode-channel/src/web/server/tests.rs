@@ -148,6 +148,7 @@ async fn test_server_cron_lists_jobs_jsonc() {
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
     let jobs: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(jobs[0]["id"], "cron_abc");
+    assert_eq!(jobs[0]["name"], "t");
     assert_eq!(jobs[0]["schedule"], "hourly");
     assert_eq!(jobs[0]["prompt"], "hi");
     assert_eq!(jobs[0]["allowed_tools"], serde_json::json!(["read"]));
