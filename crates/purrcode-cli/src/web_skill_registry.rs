@@ -31,6 +31,14 @@ use tokio::sync::Mutex;
 pub struct WebSkillRegistry {
     workspace_root: PathBuf,
     purrcode_dir: PathBuf,
+    /// Serializes web skill mutations (create/update/delete)
+    /// so the check-then-act pairs in them — the same-scope
+    /// 409 check, the existence pre-check — hold against
+    /// concurrent requests (fix pass B5 r1 P2-4: parallel
+    /// creates of one name used to slip past the 409 check and
+    /// overwrite each other). Reads stay lock-free: every read
+    /// re-discovers from disk.
+    mutation_lock: Mutex<()>,
 }
 
 impl WebSkillRegistry {
@@ -38,6 +46,7 @@ impl WebSkillRegistry {
         Self {
             workspace_root,
             purrcode_dir,
+            mutation_lock: Mutex::new(()),
         }
     }
 
@@ -148,6 +157,7 @@ impl SkillRegistry for WebSkillRegistry {
         content: &str,
         scope: SkillScope,
     ) -> Result<SkillInfo, SkillError> {
+        let _guard = self.mutation_lock.lock().await;
         if self.scope_file(scope, name).exists() {
             return Err(SkillError::AlreadyExists(name.to_string()));
         }
@@ -168,6 +178,17 @@ impl SkillRegistry for WebSkillRegistry {
         let meta = result
             .metadata
             .and_then(|m| m.get("path").and_then(|p| p.as_str()).map(str::to_string));
+        // Report the skill as stored, not as requested: the
+        // stored description is authoritative when the body's
+        // frontmatter carries its own (fix pass B5 r1 P2-5).
+        if let Ok(detail) = self.get_skill(name).await {
+            return Ok(SkillInfo {
+                name: detail.name,
+                description: detail.description,
+                source: detail.source,
+                path: detail.path,
+            });
+        }
         Ok(SkillInfo {
             name: name.to_string(),
             description: description.to_string(),
@@ -186,6 +207,7 @@ impl SkillRegistry for WebSkillRegistry {
         content: &str,
         scope: SkillScope,
     ) -> Result<SkillInfo, SkillError> {
+        let _guard = self.mutation_lock.lock().await;
         if !self.scope_file(scope, name).exists() {
             return Err(SkillError::NotFound(name.to_string()));
         }
@@ -210,6 +232,15 @@ impl SkillRegistry for WebSkillRegistry {
         let meta = result
             .metadata
             .and_then(|m| m.get("path").and_then(|p| p.as_str()).map(str::to_string));
+        // Report the skill as stored (see create_skill).
+        if let Ok(detail) = self.get_skill(name).await {
+            return Ok(SkillInfo {
+                name: detail.name,
+                description: detail.description,
+                source: detail.source,
+                path: detail.path,
+            });
+        }
         Ok(SkillInfo {
             name: name.to_string(),
             description: description.to_string(),
@@ -222,6 +253,7 @@ impl SkillRegistry for WebSkillRegistry {
     }
 
     async fn delete_skill(&self, name: &str, scope: SkillScope) -> Result<(), SkillError> {
+        let _guard = self.mutation_lock.lock().await;
         if !self.scope_file(scope, name).exists() {
             return Err(SkillError::NotFound(name.to_string()));
         }
@@ -320,6 +352,64 @@ mod tests {
             reg.get_skill("deploy-notes").await,
             Err(SkillError::NotFound(_))
         ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn test_web_skill_registry_parallel_create_one_winner() {
+        // Fix pass B5 r1 P2-4: parallel creates of one name
+        // used to slip past the 409 check and overwrite each
+        // other — the mutation lock makes exactly one win.
+        let root = tmp_root("race");
+        let reg = Arc::new(registry(&root));
+        let mut tasks = Vec::new();
+        for i in 0..10 {
+            let reg = reg.clone();
+            tasks.push(tokio::spawn(async move {
+                reg.create_skill(
+                    "race-one",
+                    &format!("Racer {i}"),
+                    "# Race\n",
+                    SkillScope::Project,
+                )
+                .await
+            }));
+        }
+        let mut ok = 0;
+        let mut dup = 0;
+        for t in tasks {
+            match t.await.unwrap() {
+                Ok(_) => ok += 1,
+                Err(SkillError::AlreadyExists(_)) => dup += 1,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        assert_eq!(ok, 1, "exactly one create must win");
+        assert_eq!(dup, 9);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn test_web_skill_registry_create_reports_stored_description() {
+        // Fix pass B5 r1 P2-5: the response must echo the
+        // description as stored, not the form value — a body
+        // whose frontmatter carries its own description wins.
+        let root = tmp_root("stored-desc");
+        let reg = registry(&root);
+        let created = reg
+            .create_skill(
+                "fm-desc",
+                "FORM-DESC",
+                "---\ndescription: BODY-DESC\n---\n\n# Body\n",
+                SkillScope::Project,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.description, "BODY-DESC");
+        assert_eq!(
+            reg.get_skill("fm-desc").await.unwrap().description,
+            "BODY-DESC"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

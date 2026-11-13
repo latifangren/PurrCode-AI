@@ -36,12 +36,21 @@ const MAX_MEMORY_CHARS: usize = 100_000;
 /// is NOT writable from the WebUI: it belongs to the project,
 /// and the web session's write scope is the global identity.
 fn memory_file_name(val: &Value) -> Result<&str, (StatusCode, Json<Value>)> {
-    match val.get("file").and_then(|f| f.as_str()) {
+    match val.get("file") {
+        // Absent means the default file.
         None => Ok("MEMORY.md"),
-        Some(name @ ("MEMORY.md" | "USER.md" | "SOUL.md")) => Ok(name),
-        Some(other) => Err((
+        Some(Value::String(name)) => match name.as_str() {
+            "MEMORY.md" | "USER.md" | "SOUL.md" => Ok(name.as_str()),
+            other => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("unknown memory file '{other}'") })),
+            )),
+        },
+        // Present but not a string must not silently fall back
+        // to the default file (fix pass B5 r1 P3-4).
+        Some(_) => Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("unknown memory file '{other}'") })),
+            Json(json!({ "error": "file must be a string" })),
         )),
     }
 }
@@ -82,7 +91,8 @@ pub async fn memory_info(State(state): State<Arc<WebState>>) -> Json<Value> {
 /// the same directory, like the cron store) so a half-written
 /// memory can never reach the next turn. 400 on an unknown file,
 /// oversize content, or NUL bytes; every refusal is audited
-/// with decision "deny".
+/// with decision "deny" — including an unknown file name, which
+/// IS attributable (it came in the request body).
 pub async fn memory_save(
     State(state): State<Arc<WebState>>,
     body: Bytes,
@@ -95,7 +105,15 @@ pub async fn memory_save(
     };
     let file = match memory_file_name(&val) {
         Ok(f) => f,
-        Err(e) => return e,
+        Err(e) => {
+            // An unknown file name is attributable — audit the
+            // refusal (fix pass B5 r1 P3-3). A non-string `file`
+            // has no name to attribute, so it audits nothing.
+            if let Some(name) = val.get("file").and_then(|f| f.as_str()) {
+                record_admin(&state, "memory_save", name, "deny", "unknown memory file");
+            }
+            return e;
+        }
     };
     let Some(content) = val.get("content").and_then(|c| c.as_str()) else {
         record_admin(&state, "memory_save", file, "deny", "missing content field");
@@ -131,7 +149,15 @@ pub async fn memory_save(
         );
     }
     let target = state.purrcode_dir.join(file);
-    let tmp = target.with_extension("md.tmp");
+    // A tmp name unique per save (pid + monotonic counter):
+    // concurrent saves used to share one deterministic tmp, so
+    // all but one failed to rename and the reported success did
+    // not match the file that actually won (fix pass B5 r1
+    // P3-2). With unique tmps every save succeeds and the last
+    // rename wins, as documented.
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp_n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = target.with_extension(format!("md.tmp-{}-{tmp_n}", std::process::id()));
     let saved: std::io::Result<()> = async {
         tokio::fs::create_dir_all(&state.purrcode_dir).await?;
         tokio::fs::write(&tmp, content.as_bytes()).await?;

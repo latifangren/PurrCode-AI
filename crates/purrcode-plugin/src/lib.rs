@@ -166,6 +166,16 @@ async fn kill_child_group(child: &mut tokio::process::Child, pid: Option<u32>) {
 /// the group when the child was still alive). A child that
 /// already exited 0 is a valid no-op plugin — dispatch fails open
 /// for it, as today.
+///
+/// The exit is observed with `timeout(wait())`, not with a
+/// single `try_wait` poll after `sleep`: `wait()` stays
+/// registered on the SIGCHLD notification, so an exit is
+/// observed whenever the signal is processed inside the window —
+/// a lone poll can miss a child that already died but has not
+/// been reaped yet under full-suite load (fix pass B5 r1 P1).
+/// The window is 100 ms: long enough to absorb fork/exec + signal
+/// lag under load, short enough that "dies immediately" still
+/// means what it says.
 async fn verify_command_spawns(
     command: &str,
     name: &str,
@@ -185,26 +195,25 @@ async fn verify_command_spawns(
     // longer be addressed (fix pass #2 — the first attempt read
     // the pid inside `kill_child_group`, after the reap).
     let pid = child.id();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    match child.try_wait() {
-        Ok(Some(status)) if !status.success() => {
+    match tokio::time::timeout(std::time::Duration::from_millis(100), child.wait()).await {
+        Ok(Ok(status)) if !status.success() => {
             kill_child_group(&mut child, pid).await;
             Err(PluginMountError::SpawnFailed(format!(
                 "'{command}' for plugin '{name}' exited immediately with status {status}"
             )))
         }
-        Ok(Some(_)) => {
+        Ok(Ok(_)) => {
             kill_child_group(&mut child, pid).await;
             Ok(())
         }
         // Still alive: kill the whole process group explicitly
         // and reap, instead of relying on `kill_on_drop` + the
         // orphan queue.
-        Ok(None) => {
+        Err(_) => {
             kill_child_group(&mut child, pid).await;
             Ok(())
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             kill_child_group(&mut child, pid).await;
             Err(PluginMountError::SpawnFailed(format!(
                 "could not check '{command}' for plugin '{name}': {e}"

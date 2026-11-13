@@ -3,6 +3,9 @@
 pub mod manage;
 pub mod tool;
 
+#[cfg(test)]
+mod tests;
+
 use purrcode_api::error::{PurrError, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -222,35 +225,47 @@ impl SkillManager {
                 message: msg,
             })?;
 
-        if content.len() > 100_000 {
+        if content.chars().count() > 100_000 {
             return Err(PurrError::Tool {
                 tool: "manage_skill".to_string(),
                 message: format!(
                     "Skill content exceeds 100,000 characters limit (was {})",
-                    content.len()
+                    content.chars().count()
                 ),
             });
         }
 
-        let full_content = if content.trim_start().starts_with("---") {
-            let (fm_name, fm_desc) = parse_skill_frontmatter(content, &valid_name);
-            if fm_name.is_empty() || fm_desc.is_empty() {
-                format!(
-                    "---\nname: {}\ndescription: {}\n---\n\n{}",
-                    valid_name,
-                    valid_desc,
-                    content.trim()
+        // Normalize the frontmatter: the directory name is the
+        // skill's identity, so a body whose frontmatter declares
+        // another name must not rename the skill on disk (a
+        // renamed skill can no longer be updated or deleted by
+        // its old name), and a stray `name:`/`description:` line
+        // smuggled in through the form description must not take
+        // effect either. The body after the frontmatter is kept
+        // verbatim; only the header is rebuilt, with the
+        // description from the body's own frontmatter when it has
+        // one (the body is the author's text) and the form
+        // description otherwise.
+        let (full_content, stored_desc) = match split_frontmatter(content) {
+            Some((fm, body)) => {
+                let desc = frontmatter_description(fm)
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| valid_desc.clone());
+                (
+                    format!(
+                        "---\nname: {valid_name}\ndescription: {desc}\n---\n\n{}",
+                        body.trim()
+                    ),
+                    desc,
                 )
-            } else {
-                content.to_string()
             }
-        } else {
-            format!(
-                "---\nname: {}\ndescription: {}\n---\n\n{}",
-                valid_name,
-                valid_desc,
-                content.trim()
-            )
+            None => (
+                format!(
+                    "---\nname: {valid_name}\ndescription: {valid_desc}\n---\n\n{}",
+                    content.trim()
+                ),
+                valid_desc.clone(),
+            ),
         };
 
         let target_dir = match scope {
@@ -280,7 +295,7 @@ impl SkillManager {
             valid_name.clone(),
             SkillMetadata {
                 name: valid_name,
-                description: valid_desc,
+                description: stored_desc,
                 file_path: Some(file_path.clone()),
                 embedded_body: None,
                 source,
@@ -407,13 +422,47 @@ impl SkillManager {
     pub fn delete_skill(
         &mut self,
         name: &str,
-        _scope: Option<SkillScope>,
-        _workspace_root: &Path,
+        scope: Option<SkillScope>,
+        workspace_root: &Path,
     ) -> Result<String> {
         let valid_name = validate_skill_name(name).map_err(|msg| PurrError::Tool {
             tool: "manage_skill".to_string(),
             message: msg,
         })?;
+
+        // An explicit scope deletes ONLY that scope's copy: the
+        // old code ignored the scope and deleted whichever copy
+        // the precedence-resolved index pointed at, so deleting
+        // the global copy of a shadowed skill silently removed
+        // the project copy instead (fix pass B5 r1 P2-1).
+        if let Some(scope) = scope {
+            let Some(file_path) = scope_skill_file(scope, &valid_name, workspace_root) else {
+                return Err(PurrError::Tool {
+                    tool: "manage_skill".to_string(),
+                    message: format!("Skill '{}' not found", valid_name),
+                });
+            };
+            if !file_path.exists() {
+                return Err(PurrError::Tool {
+                    tool: "manage_skill".to_string(),
+                    message: format!("Skill '{}' not found", valid_name),
+                });
+            }
+            std::fs::remove_file(&file_path).map_err(PurrError::Io)?;
+            if let Some(parent) = file_path.parent() {
+                if parent.file_name().and_then(|s| s.to_str()) == Some(valid_name.as_str()) {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
+            let scope_name = match scope {
+                SkillScope::Project => "project",
+                SkillScope::Global => "global",
+            };
+            self.reindex_skill(&valid_name, workspace_root);
+            return Ok(format!(
+                "Deleted {scope_name} copy of skill '{valid_name}'."
+            ));
+        }
 
         let meta = self
             .skills
@@ -481,6 +530,55 @@ impl SkillManager {
         }
         false
     }
+
+    /// Rebuild the index entry for `name` after a scoped delete:
+    /// the other scope's copy (if any) now owns the name, else
+    /// the embedded fallback, else the name is gone.
+    fn reindex_skill(&mut self, name: &str, workspace_root: &Path) {
+        let project = workspace_root
+            .join(".purrcode")
+            .join("skills")
+            .join(name)
+            .join("SKILL.md");
+        if project.exists() {
+            if let Ok(meta) = parse_skill_file(&project, SkillSource::Project) {
+                self.skills.insert(name.to_string(), meta);
+                return;
+            }
+        }
+        if let Some(global) = scope_skill_file(SkillScope::Global, name, workspace_root) {
+            if global.exists() {
+                if let Ok(meta) = parse_skill_file(&global, SkillSource::Global) {
+                    self.skills.insert(name.to_string(), meta);
+                    return;
+                }
+            }
+        }
+        if !self.restore_embedded_fallback_if_exists(name) {
+            self.skills.remove(name);
+        }
+    }
+}
+
+/// The `SKILL.md` path for one scope's copy of a skill.
+/// `None` for the global scope when no home directory can be
+/// determined.
+fn scope_skill_file(scope: SkillScope, name: &str, workspace_root: &Path) -> Option<PathBuf> {
+    match scope {
+        SkillScope::Project => Some(
+            workspace_root
+                .join(".purrcode")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md"),
+        ),
+        SkillScope::Global => dirs_home().map(|h| {
+            h.join(".purrcode")
+                .join("skills")
+                .join(name)
+                .join("SKILL.md")
+        }),
+    }
 }
 
 impl Default for SkillManager {
@@ -494,10 +592,10 @@ pub fn validate_skill_name(name: &str) -> std::result::Result<String, String> {
     if trimmed.is_empty() {
         return Err("Skill name cannot be empty".to_string());
     }
-    if trimmed.len() > 64 {
+    if trimmed.chars().count() > 64 {
         return Err(format!(
             "Skill name exceeds 64 characters limit (was {})",
-            trimmed.len()
+            trimmed.chars().count()
         ));
     }
     if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
@@ -521,11 +619,19 @@ pub fn validate_skill_description(desc: &str) -> std::result::Result<String, Str
     if trimmed.is_empty() {
         return Err("Skill description cannot be empty".to_string());
     }
-    if trimmed.len() > 500 {
+    if trimmed.chars().count() > 500 {
         return Err(format!(
             "Skill description exceeds 500 characters limit (was {})",
-            trimmed.len()
+            trimmed.chars().count()
         ));
+    }
+    // A newline inside the description would be interpolated
+    // verbatim into the frontmatter, where the parser takes the
+    // last `name:`/`description:` line — a pasted newline could
+    // rename the skill or rewrite its description (fix pass B5
+    // r1 P2-3). Descriptions are single-line by contract.
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err("Skill description must be a single line".to_string());
     }
     Ok(trimmed.to_string())
 }
@@ -549,6 +655,27 @@ pub fn parse_skill_frontmatter(content: &str, default_name: &str) -> (String, St
     }
 
     (name, description)
+}
+
+/// Split a leading `---` frontmatter block from the body.
+/// Returns (frontmatter, body-after-closing-fence).
+fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
+    let rest = content.trim_start().strip_prefix("---")?;
+    let end = rest.find("---")?;
+    Some((&rest[..end], &rest[end + 3..]))
+}
+
+/// The value of the `description:` line inside a frontmatter
+/// block, or `None` when the key is absent. Last occurrence
+/// wins, matching `parse_skill_frontmatter`.
+fn frontmatter_description(frontmatter: &str) -> Option<String> {
+    let mut found = None;
+    for line in frontmatter.lines() {
+        if let Some(v) = line.trim().strip_prefix("description:") {
+            found = Some(v.trim().to_string());
+        }
+    }
+    found
 }
 
 fn parse_skill_file(path: &Path, source: SkillSource) -> Result<SkillMetadata> {
@@ -587,130 +714,5 @@ fn dirs_home() -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TempTestDir(PathBuf);
-    impl TempTestDir {
-        fn new() -> Self {
-            let p = std::env::temp_dir().join(format!("purrcode-test-{}", uuid::Uuid::new_v4()));
-            let _ = std::fs::create_dir_all(&p);
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempTestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn test_embedded_skills_always_available() {
-        let mgr = SkillManager::new();
-        assert_eq!(mgr.list().len(), 8);
-        let body = mgr.read_skill_body("git").unwrap();
-        assert!(body.contains("Git Safety Skill"));
-    }
-
-    #[test]
-    fn test_create_and_read_custom_skill() {
-        let tmp = TempTestDir::new();
-        let mut mgr = SkillManager::new();
-        let (path, _) = mgr
-            .create_skill(
-                "docker-deploy",
-                "Deployment guidelines for container environments",
-                "# Docker Deploy\nRun compose up -d.",
-                SkillScope::Project,
-                tmp.path(),
-            )
-            .unwrap();
-
-        assert!(path.exists());
-        let meta = mgr.get("docker-deploy").unwrap();
-        assert_eq!(meta.source, SkillSource::Project);
-        assert_eq!(
-            meta.description,
-            "Deployment guidelines for container environments"
-        );
-
-        let body = mgr.read_skill_body("docker-deploy").unwrap();
-        assert!(body.contains("Run compose up -d."));
-        assert!(body.contains("name: docker-deploy"));
-    }
-
-    #[test]
-    fn test_patch_skill_fuzzy_matching() {
-        let tmp = TempTestDir::new();
-        let mut mgr = SkillManager::new();
-        mgr.create_skill(
-            "custom-test",
-            "Initial custom test skill",
-            "# Test Skill\nStep 1: run cargo test\nStep 2: finish",
-            SkillScope::Project,
-            tmp.path(),
-        )
-        .unwrap();
-
-        let (_path, diff, new_body) = mgr
-            .patch_skill(
-                "custom-test",
-                "Step 1: run cargo test",
-                "Step 1: run cargo test --workspace",
-                None,
-                tmp.path(),
-            )
-            .unwrap();
-
-        assert!(new_body.contains("run cargo test --workspace"));
-        assert!(diff.contains("-Step 1: run cargo test"));
-        assert!(diff.contains("+Step 1: run cargo test --workspace"));
-    }
-
-    #[test]
-    fn test_delete_custom_skill_and_embedded_protection() {
-        let tmp = TempTestDir::new();
-        let mut mgr = SkillManager::new();
-
-        // Attempting to delete embedded bundled skill should fail
-        let err = mgr.delete_skill("git", None, tmp.path()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Cannot delete embedded bundled skill"));
-
-        // Creating and deleting custom skill should succeed
-        mgr.create_skill(
-            "temp-skill",
-            "Temporary skill description",
-            "Temporary content",
-            SkillScope::Project,
-            tmp.path(),
-        )
-        .unwrap();
-        assert!(mgr.get("temp-skill").is_some());
-
-        let msg = mgr.delete_skill("temp-skill", None, tmp.path()).unwrap();
-        assert!(msg.contains("Successfully deleted skill 'temp-skill'"));
-        assert!(mgr.get("temp-skill").is_none());
-    }
-
-    #[test]
-    fn test_skill_name_and_description_validation() {
-        assert!(validate_skill_name("valid-skill_1").is_ok());
-        assert!(validate_skill_name("../escape").is_err());
-        assert!(validate_skill_name("has/slash").is_err());
-        assert!(validate_skill_name("").is_err());
-
-        assert!(validate_skill_description("A concise routing contract").is_ok());
-        assert!(validate_skill_description("").is_err());
-        let too_long = "a".repeat(501);
-        assert!(validate_skill_description(&too_long).is_err());
     }
 }

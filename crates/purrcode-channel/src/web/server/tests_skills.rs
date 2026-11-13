@@ -311,7 +311,9 @@ async fn test_skills_crud_statuses_and_audit() {
     assert!(resp.contains("200 OK"), "resp: {resp}");
     let resp = post(port, "/api/skills/delete", r#"{"name": "notes"}"#);
     assert!(resp.contains("404 Not Found"), "resp: {resp}");
-    // Audit: allows and denies both recorded, in order.
+    // Audit: allows and denies both recorded, in order. The
+    // bad-scope 400 is a parse rejection WITH a name, so it
+    // audits a deny too (fix pass B5 r1 P3-3).
     let got = events.lock().unwrap().clone();
     let kinds: Vec<(String, String)> = got
         .iter()
@@ -320,10 +322,12 @@ async fn test_skills_crud_statuses_and_audit() {
     assert_eq!(kinds[0], ("skill_create".to_string(), "allow".to_string()));
     assert_eq!(kinds[1], ("skill_create".to_string(), "deny".to_string()));
     assert_eq!(kinds[2], ("skill_create".to_string(), "deny".to_string()));
-    assert_eq!(kinds[3], ("skill_update".to_string(), "allow".to_string()));
-    assert_eq!(kinds[4], ("skill_update".to_string(), "deny".to_string()));
-    assert_eq!(kinds[5], ("skill_delete".to_string(), "allow".to_string()));
-    assert_eq!(kinds[6], ("skill_delete".to_string(), "deny".to_string()));
+    assert_eq!(kinds[3], ("skill_create".to_string(), "deny".to_string()));
+    assert_eq!(kinds[4], ("skill_update".to_string(), "allow".to_string()));
+    assert_eq!(kinds[5], ("skill_update".to_string(), "deny".to_string()));
+    assert_eq!(kinds[6], ("skill_delete".to_string(), "allow".to_string()));
+    assert_eq!(kinds[7], ("skill_delete".to_string(), "deny".to_string()));
+    assert_eq!(kinds.len(), 8);
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
@@ -423,9 +427,9 @@ async fn test_memory_save_roundtrip_and_validation() {
     let body = serde_json::json!({"file": "USER.md", "content": big}).to_string();
     let resp = post(port, "/api/memory", &body);
     assert!(resp.contains("400 Bad Request"), "resp: {resp}");
-    // Audit: one allow, then denies for the refused saves. The
-    // unknown-file 400 audits nothing (no file name to attribute,
-    // same as a malformed body in the plugin endpoints).
+    // Audit: one allow, then denies for the refused saves —
+    // including the unknown file, whose name came in the request
+    // body and is therefore attributable (fix pass B5 r1 P3-3).
     let got = events.lock().unwrap().clone();
     let kinds: Vec<(String, String, String)> = got
         .iter()
@@ -437,7 +441,61 @@ async fn test_memory_save_roundtrip_and_validation() {
         .iter()
         .skip(1)
         .all(|k| k.0 == "memory_save" && k.2 == "deny"));
-    assert_eq!(kinds.len(), 4);
+    assert_eq!(kinds.len(), 5);
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_memory_save_parallel_all_succeed_and_no_tmp_left() {
+    // Fix pass B5 r1 P3-2: concurrent saves used to share one
+    // deterministic tmp, so all but one failed to rename — and
+    // the file that won belonged to a save that reported 500.
+    // With a unique tmp per save, every save succeeds and the
+    // last rename wins.
+    let dir = test_dir("memory-save-parallel");
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let mut tasks = Vec::new();
+    for i in 0..5 {
+        let body = serde_json::json!({"file": "MEMORY.md", "content": format!("payload-{i}\n")})
+            .to_string();
+        tasks.push(tokio::task::spawn_blocking(move || {
+            post(port, "/api/memory", &body)
+        }));
+    }
+    for t in tasks {
+        let resp = t.await.unwrap();
+        assert!(resp.contains("200 OK"), "resp: {resp}");
+        assert!(resp.contains("\"saved\":true"), "resp: {resp}");
+    }
+    let saved = std::fs::read_to_string(dir.join("MEMORY.md")).unwrap();
+    assert!(
+        (0..5).any(|i| saved == format!("payload-{i}\n")),
+        "saved: {saved:?}"
+    );
+    // No tmp of any save left behind (unique names now).
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "leftovers: {leftovers:?}");
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_memory_save_nonstring_file_is_400() {
+    // Fix pass B5 r1 P3-4: a non-string `file` used to fall
+    // through to the default and save MEMORY.md.
+    let dir = test_dir("memory-save-nonstring");
+    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let resp = post(port, "/api/memory", r#"{"file": 123, "content": "x"}"#);
+    assert!(resp.contains("400 Bad Request"), "resp: {resp}");
+    assert!(!dir.join("MEMORY.md").exists());
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);

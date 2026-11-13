@@ -368,9 +368,13 @@ async fn test_server_prompt_routes_to_session() {
     );
     assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
 
-    // The dispatcher runs in a spawned task; give it a moment.
+    // The dispatcher runs in spawned tasks, so the two calls
+    // can land in either order — assert the set, not the order
+    // (fix pass B5 r1 P1: the ordered assert flaked under
+    // full-suite load).
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let calls = calls.lock().unwrap();
+    let mut calls = calls.lock().unwrap().clone();
+    calls.sort();
     assert_eq!(calls.len(), 2, "calls: {calls:?}");
     assert_eq!(calls[0], ("purr_web".to_string(), "hi default".to_string()));
     assert_eq!(calls[1], (session_a.id.clone(), "hi a".to_string()));

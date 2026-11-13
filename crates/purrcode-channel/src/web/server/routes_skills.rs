@@ -29,7 +29,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use purrcode_api::skill::{SkillError, SkillScope};
+use purrcode_api::skill::{SkillError, SkillInfo, SkillScope};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -124,10 +124,36 @@ fn skill_write_from_body(
     })
 }
 
+/// Audit a rejected skill write when the request names the
+/// skill (fix pass B5 r1 P3-3): a refusal the client can
+/// attribute to a name belongs in the audit log; only a
+/// nameless or malformed body has nothing to attribute.
+fn audit_rejected_parse(
+    state: &Arc<WebState>,
+    event: &str,
+    body: &Bytes,
+    err: &(StatusCode, Json<Value>),
+) {
+    let detail = err
+        .1
+         .0
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("rejected request body");
+    if let Ok(val) = serde_json::from_slice::<Value>(body) {
+        if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
+            record_admin(state, event, name, "deny", detail);
+        }
+    }
+}
 /// `POST /api/skills/create {"name", "description", "content",
 /// "scope"?}` — 409 when a skill of that name already exists in
 /// the scope; 400 when `manage_skill` rejects the name,
-/// description, or content.
+/// description, or content. The response echoes the skill as
+/// stored on disk (re-read after the write), not the form
+/// values — a body whose frontmatter declares another
+/// description must not make the API claim the form's (fix pass
+/// B5 r1 P2-5).
 pub async fn skills_create(
     State(state): State<Arc<WebState>>,
     body: Bytes,
@@ -137,7 +163,10 @@ pub async fn skills_create(
     };
     let fields = match skill_write_from_body(&body, true) {
         Ok(f) => f,
-        Err(e) => return e,
+        Err(e) => {
+            audit_rejected_parse(&state, "skill_create", &body, &e);
+            return e;
+        }
     };
     match reg
         .create_skill(
@@ -160,9 +189,18 @@ pub async fn skills_create(
                     info.path.as_deref().unwrap_or("embedded")
                 ),
             );
+            // Report the skill as stored, not as requested:
+            // the stored description is authoritative when the
+            // body's frontmatter carries its own.
+            let stored = reg.get_skill(&fields.name).await.ok().map(|d| SkillInfo {
+                name: d.name,
+                description: d.description,
+                source: d.source,
+                path: d.path,
+            });
             (
                 StatusCode::OK,
-                Json(json!({ "created": true, "skill": info })),
+                Json(json!({ "created": true, "skill": stored.unwrap_or(info) })),
             )
         }
         Err(e) => {
@@ -189,7 +227,10 @@ pub async fn skills_update(
     };
     let fields = match skill_write_from_body(&body, true) {
         Ok(f) => f,
-        Err(e) => return e,
+        Err(e) => {
+            audit_rejected_parse(&state, "skill_update", &body, &e);
+            return e;
+        }
     };
     match reg
         .update_skill(
@@ -212,9 +253,17 @@ pub async fn skills_update(
                     info.path.as_deref().unwrap_or("embedded")
                 ),
             );
+            // Report the skill as stored, not as requested (see
+            // skills_create).
+            let stored = reg.get_skill(&fields.name).await.ok().map(|d| SkillInfo {
+                name: d.name,
+                description: d.description,
+                source: d.source,
+                path: d.path,
+            });
             (
                 StatusCode::OK,
-                Json(json!({ "updated": true, "skill": info })),
+                Json(json!({ "updated": true, "skill": stored.unwrap_or(info) })),
             )
         }
         Err(e) => {
@@ -239,7 +288,10 @@ pub async fn skills_delete(
     };
     let fields = match skill_write_from_body(&body, false) {
         Ok(f) => f,
-        Err(e) => return e,
+        Err(e) => {
+            audit_rejected_parse(&state, "skill_delete", &body, &e);
+            return e;
+        }
     };
     match reg.delete_skill(&fields.name, fields.scope).await {
         Ok(()) => {
