@@ -528,6 +528,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_spawn_check_kills_fast_exiting_grandchildren() {
+        // Fix pass #2 (round-2 re-check P2): the first group-kill
+        // fix only killed the group when the child was STILL ALIVE
+        // at the end of the 50 ms window. A script that backgrounds
+        // a writer and exits immediately leaked the grandchild —
+        // the group survives its leader, so the kill must run in
+        // every outcome of the spawn check, including the
+        // already-exited arms.
+        let root = temp_root("grandchild-fast");
+        let dir = root.join("plugins").join("fast-leaky-hook");
+        let marker = dir.join("grandchild.txt");
+        let script = format!(
+            "#!/bin/sh\n(sleep 0.5; echo x >> {}) &\nexit 0\n",
+            marker.display()
+        );
+        write_plugin(
+            &dir,
+            "name: fast-leaky-hook\nversion: 0.1.0\ntransport: process\ncommand: ./hook.sh\n",
+            Some(("hook.sh", &script)),
+        );
+        let mgr = manager_for(&root);
+        mgr.mount_plugin("fast-leaky-hook").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(
+            !marker.exists(),
+            "backgrounded grandchild of a fast-exiting child survived the mount spawn check"
+        );
+    }
+
+    #[tokio::test]
     async fn test_mount_rejects_immediately_dying_command() {
         let root = temp_root("dying");
         write_plugin(

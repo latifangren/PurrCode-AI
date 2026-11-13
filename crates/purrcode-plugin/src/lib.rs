@@ -127,12 +127,15 @@ async fn spawn_with_txtbsy_retry(
 /// killing only the direct child leaves the grandchild running
 /// with no parent tracking it. The child is its own group leader
 /// (`process_group(0)` at spawn), so the group id equals the pid.
-/// On non-Unix platforms there is no process group, so the direct
-/// kill is the only guard.
-async fn kill_child_group(child: &mut tokio::process::Child) {
+/// The pid is taken at spawn and passed in: once the child has
+/// been reaped (`try_wait`/`wait`), `Child::id()` reports `None`
+/// and the group could no longer be addressed. On non-Unix
+/// platforms there is no process group, so the direct kill is the
+/// only guard.
+async fn kill_child_group(child: &mut tokio::process::Child, pid: Option<u32>) {
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
+        if let Some(pid) = pid {
             // SAFETY: killpg targets only the child's own fresh
             // group (group id == child pid); nothing else can be
             // in it.
@@ -149,11 +152,14 @@ async fn kill_child_group(child: &mut tokio::process::Child) {
 /// that dies immediately must have exited successfully. A bad
 /// shebang or missing interpreter makes the child exit non-zero
 /// (spawn itself succeeds — the exec failure happens inside the
-/// child), so the exit status is the only signal. A child still
-/// alive after the grace window is killed (whole process group)
-/// and reaped (no zombie, no leaked fds, no leaked grandchildren);
-/// a child that already exited 0 is a valid no-op
-/// plugin — dispatch fails open for it, as today.
+/// child), so the exit status is the only signal. The whole
+/// process group is killed in EVERY outcome — including a child
+/// that already exited: a plugin that backgrounds a grandchild
+/// and exits fast would otherwise leak it, because the group
+/// survives its leader (fix pass #2 — the first fix only killed
+/// the group when the child was still alive). A child that
+/// already exited 0 is a valid no-op plugin — dispatch fails open
+/// for it, as today.
 async fn verify_command_spawns(
     command: &str,
     name: &str,
@@ -168,22 +174,36 @@ async fn verify_command_spawns(
     let mut child = spawn_with_txtbsy_retry(&mut cmd).await.map_err(|e| {
         PluginMountError::SpawnFailed(format!("'{command}' for plugin '{name}': {e}"))
     })?;
+    // Capture the pid NOW: after `try_wait` reaps the child,
+    // `child.id()` reports `None` and the process group could no
+    // longer be addressed (fix pass #2 — the first attempt read
+    // the pid inside `kill_child_group`, after the reap).
+    let pid = child.id();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     match child.try_wait() {
-        Ok(Some(status)) if !status.success() => Err(PluginMountError::SpawnFailed(format!(
-            "'{command}' for plugin '{name}' exited immediately with status {status}"
-        ))),
-        Ok(Some(_)) => Ok(()),
+        Ok(Some(status)) if !status.success() => {
+            kill_child_group(&mut child, pid).await;
+            Err(PluginMountError::SpawnFailed(format!(
+                "'{command}' for plugin '{name}' exited immediately with status {status}"
+            )))
+        }
+        Ok(Some(_)) => {
+            kill_child_group(&mut child, pid).await;
+            Ok(())
+        }
         // Still alive: kill the whole process group explicitly
         // and reap, instead of relying on `kill_on_drop` + the
         // orphan queue.
         Ok(None) => {
-            kill_child_group(&mut child).await;
+            kill_child_group(&mut child, pid).await;
             Ok(())
         }
-        Err(e) => Err(PluginMountError::SpawnFailed(format!(
-            "could not check '{command}' for plugin '{name}': {e}"
-        ))),
+        Err(e) => {
+            kill_child_group(&mut child, pid).await;
+            Err(PluginMountError::SpawnFailed(format!(
+                "could not check '{command}' for plugin '{name}': {e}"
+            )))
+        }
     }
 }
 
@@ -539,6 +559,10 @@ impl ProcessPlugin {
                 plugin: self.manifest.name.clone(),
                 message: format!("Failed to spawn process plugin: {e}"),
             })?;
+        // Capture the pid now: after the child exits, `id()`
+        // reports `None` and its process group could no longer be
+        // addressed (same trap as the mount spawn check).
+        let pid = child.id();
 
         if let Some(mut stdin) = child.stdin.take() {
             let req = serde_json::json!({
@@ -569,7 +593,7 @@ impl ProcessPlugin {
         // group) as soon as its response is read, so a plugin must
         // finish its side effects BEFORE responding — nothing after
         // the response line is guaranteed to run.
-        kill_child_group(&mut child).await;
+        kill_child_group(&mut child, pid).await;
         Ok(result.unwrap_or(Value::Bool(true)))
     }
 }
