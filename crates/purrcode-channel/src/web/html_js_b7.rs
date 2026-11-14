@@ -63,7 +63,7 @@ pub const WEB_INDEX_JS_B7: &str = r#"    // Mobile drawer (v0.4 B7): below 900px
       document.getElementById('ov-gateway-workspace').textContent = gw.workspace || '';
 
       const sessions = data.sessions || {};
-      document.getElementById('ov-sessions-count').textContent = String(sessions.active || 0);
+      document.getElementById('ov-sessions-count').textContent = String(sessions.count || 0);
       const listEl = document.getElementById('ov-sessions-list');
       listEl.innerHTML = '';
       for (const s of (sessions.items || [])) {

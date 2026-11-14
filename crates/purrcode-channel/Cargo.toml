@@ -10,6 +10,7 @@ purrcode-api.workspace = true
 purrcode-core.workspace = true
 purrcode-config.workspace = true
 purrcode-tools.workspace = true
+chrono.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 uuid.workspace = true

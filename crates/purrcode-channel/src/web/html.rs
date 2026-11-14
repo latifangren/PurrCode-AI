@@ -102,7 +102,7 @@ pub fn web_index_html() -> String {
           <div style="color: var(--text-muted); font-size: 0.85rem;" id="ov-gateway-workspace"></div>
         </div>
         <div class="view-card ov-card">
-          <div class="ov-label">Sesi aktif</div>
+          <div class="ov-label">Sesi</div>
           <div class="ov-kpi" id="ov-sessions-count">…</div>
           <div id="ov-sessions-list" style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;"></div>
         </div>

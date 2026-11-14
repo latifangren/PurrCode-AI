@@ -41,7 +41,7 @@ async fn test_overview_empty_state() {
         "/tmp/ws",
         "test server workspace"
     );
-    assert_eq!(val["sessions"]["active"].as_u64().unwrap(), 0);
+    assert_eq!(val["sessions"]["count"].as_u64().unwrap(), 0);
     assert_eq!(val["sessions"]["items"].as_array().unwrap().len(), 0);
     assert!(val["next_cron"].is_null(), "no jobs yet: {val}");
     assert!(val["last_delivery"].is_null(), "no deliveries yet: {val}");
@@ -72,13 +72,57 @@ async fn test_overview_next_cron_picks_earliest_enabled() {
         val["next_cron"]["next_run"].as_str().unwrap(),
         "2026-11-14T08:00:00+07:00"
     );
-    assert_eq!(val["sessions"]["active"].as_u64().unwrap(), 1);
+    assert_eq!(val["sessions"]["count"].as_u64().unwrap(), 1);
     assert_eq!(
         val["sessions"]["items"][0]["id"].as_str().unwrap(),
         session_id,
         "overview lists the session just created"
     );
     assert!(val["warnings"].as_array().unwrap().is_empty());
+    let _ = cancel.send(true);
+    handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_overview_next_cron_mixed_offsets() {
+    // Re-checker P1-1, round 1: RFC3339 strings with different
+    // offsets do NOT sort chronologically — "2026-11-15T01:00:00
+    // +00:00" sorts before "2026-11-15T07:00:00+07:00" as text,
+    // but 01:00Z is an hour AFTER 00:00Z. The pick must compare
+    // parsed instants, not strings.
+    let dir = test_dir("overview-mixed-offsets");
+    seed_jobs(
+        &dir,
+        r#"{"jobs": [
+  {"id": "cron_x", "name": "x-wib", "schedule": {"display": "07:00 WIB"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T07:00:00+07:00", "enabled": true},
+  {"id": "cron_y", "name": "y-utc", "schedule": {"display": "01:00 UTC"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T01:00:00+00:00", "enabled": true}
+]}"#,
+    );
+    let (port, _reg, cancel, handle) = start_server(None, dir.clone(), None).await;
+    let body = get(port, "/api/overview");
+    let val: Value = serde_json::from_str(body_of(&body)).unwrap();
+    assert_eq!(
+        val["next_cron"]["id"].as_str().unwrap(),
+        "cron_x",
+        "00:00Z is earlier than 01:00Z: {val}"
+    );
+
+    // DST-style pair: same wall-clock time, different offsets —
+    // the +02:00 one (06:00Z) is earlier than the +01:00 one (07:00Z).
+    seed_jobs(
+        &dir,
+        r#"{"jobs": [
+  {"id": "cron_winter", "name": "winter", "schedule": {"display": "08:00 +01"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T08:00:00+01:00", "enabled": true},
+  {"id": "cron_summer", "name": "summer", "schedule": {"display": "08:00 +02"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T08:00:00+02:00", "enabled": true}
+]}"#,
+    );
+    let body = get(port, "/api/overview");
+    let val: Value = serde_json::from_str(body_of(&body)).unwrap();
+    assert_eq!(
+        val["next_cron"]["id"].as_str().unwrap(),
+        "cron_summer",
+        "06:00Z is earlier than 07:00Z: {val}"
+    );
     let _ = cancel.send(true);
     handle.await.unwrap();
 }

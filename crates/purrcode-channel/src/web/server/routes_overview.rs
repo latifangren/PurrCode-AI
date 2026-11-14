@@ -18,9 +18,31 @@
 use super::routes::read_cron_jobs;
 use super::WebState;
 use axum::{extract::State, http::StatusCode, Json};
+use chrono::DateTime;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
+
+/// Sort key for a `next_run` value: the parsed instant when the
+/// value is valid RFC3339, otherwise the raw string. Parsed
+/// instants sort before unparsed strings (a real time beats a
+/// malformed one); two unparsed strings sort lexicographically.
+/// Derived `Ord` on the enum gives exactly that: variants order
+/// by declaration, instants by instant.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum NextRunKey {
+    Instant(DateTime<chrono::FixedOffset>),
+    Raw(String),
+}
+
+impl NextRunKey {
+    fn from(value: &str) -> Self {
+        match DateTime::parse_from_rfc3339(value) {
+            Ok(instant) => Self::Instant(instant),
+            Err(_) => Self::Raw(value.to_string()),
+        }
+    }
+}
 
 /// `GET /api/overview`.
 pub async fn overview(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
@@ -30,12 +52,17 @@ pub async fn overview(State(state): State<Arc<WebState>>) -> (StatusCode, Json<V
     let sessions = state.registry.list_sessions();
 
     // Next cron: the enabled job with the earliest `next_run`.
-    // All `next_run` values are RFC3339 local timestamps written
-    // by the same store, so lexicographic order is chronological.
+    // `next_run` values are RFC3339 timestamps, but their offsets
+    // can differ (hand edits to `jobs.jsonc`, or jobs written on
+    // either side of a DST transition) — and RFC3339 strings with
+    // different offsets do NOT sort chronologically (re-checker
+    // P1-1, round 1). Compare parsed instants; a value that does
+    // not parse falls back to lexicographic order so it is still
+    // comparable, never skipped.
     let mut next_cron: Option<Value> = None;
     match read_cron_jobs(&state.purrcode_dir).await {
         Ok(jobs) => {
-            let mut best: Option<(String, &Value)> = None;
+            let mut best: Option<(NextRunKey, &Value)> = None;
             for job in &jobs {
                 if job.get("enabled").and_then(|e| e.as_bool()) != Some(true) {
                     continue;
@@ -43,12 +70,13 @@ pub async fn overview(State(state): State<Arc<WebState>>) -> (StatusCode, Json<V
                 let Some(next_run) = job.get("next_run").and_then(|v| v.as_str()) else {
                     continue;
                 };
+                let key = NextRunKey::from(next_run);
                 let earlier = match &best {
-                    Some((best_run, _)) => next_run < best_run.as_str(),
+                    Some((best_key, _)) => key < *best_key,
                     None => true,
                 };
                 if earlier {
-                    best = Some((next_run.to_string(), job));
+                    best = Some((key, job));
                 }
             }
             next_cron = best.map(|(_, job)| {
@@ -80,7 +108,7 @@ pub async fn overview(State(state): State<Arc<WebState>>) -> (StatusCode, Json<V
                 "workspace": state.workspace_root.display().to_string(),
             },
             "sessions": {
-                "active": sessions.len(),
+                "count": sessions.len(),
                 "items": sessions,
             },
             "next_cron": next_cron,
