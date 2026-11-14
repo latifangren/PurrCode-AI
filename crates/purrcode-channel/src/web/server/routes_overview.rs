@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Overview endpoint (v0.4 B7): one read-only aggregate for the
-//! dashboard canvas — gateway health, active sessions, the next
-//! cron job, and the last cron delivery.
+//! dashboard canvas — gateway health, sessions, the next cron
+//! job, and the last cron delivery.
 //!
 //! Every section reuses an existing reader: the session registry
 //! (the same list the sidebar shows), the shared cron projection
