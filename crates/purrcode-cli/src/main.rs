@@ -39,19 +39,25 @@ fn init_windows_console() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Rust ignores SIGPIPE by default, which turns a closed stdout pipe
-    // (e.g. `purrcode-ai cron list | head -1`) into a panic with exit 134.
-    // Restore the default disposition so the process dies with SIGPIPE
-    // (exit 141) like any other Unix command. No-op on Windows.
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-
     #[cfg(windows)]
     init_windows_console();
 
     let args = Cli::parse();
+
+    // Rust ignores SIGPIPE by default, which turns a closed stdout pipe
+    // (e.g. `purrcode-ai cron list | head -1`) into a panic with exit 134.
+    // Restore the default disposition — but ONLY for one-shot commands.
+    // The long-lived servers (web, gateway) and the TUI keep the ignore:
+    // a client closing a connection mid-response is routine, and with
+    // SIG_DFL any write to that closed socket kills the whole process
+    // (fix pass B8 r3 P1: the unconditional reset killed the web server
+    // with SIGPIPE during the prompt-429 loop). No-op on Windows.
+    #[cfg(unix)]
+    if !cli::is_long_lived(&args.command) {
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
 
     // Orchestrator is the default (PRD §4.5.6: Meowstro read-only + delegation,
     // enforced at harness level). `--direct` opts out to a single general

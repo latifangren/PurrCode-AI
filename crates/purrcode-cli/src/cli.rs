@@ -93,6 +93,31 @@ mod tests {
         assert_eq!(agent_role_for(true), "meowstro");
         assert_eq!(agent_role_for(false), "agent");
     }
+
+    #[test]
+    fn test_is_long_lived_scopes_sigpipe_reset() {
+        // Fix pass B8 r3 P1: only the long-lived commands keep
+        // SIGPIPE ignored; every one-shot command gets SIG_DFL.
+        assert!(is_long_lived(&None));
+        assert!(is_long_lived(&Some(Commands::Gateway)));
+        assert!(is_long_lived(&Some(Commands::Web {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            token: None,
+        })));
+        assert!(!is_long_lived(&Some(Commands::Doctor)));
+        assert!(!is_long_lived(&Some(Commands::Exec { prompt: None })));
+        assert!(!is_long_lived(&Some(Commands::Cron {
+            action: "list".to_string(),
+            name: None,
+            schedule: None,
+            prompt: None,
+            allow: None,
+            preset: None,
+            yes: false,
+        })));
+        assert!(!is_long_lived(&Some(Commands::Onboard)));
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,4 +200,18 @@ pub enum Commands {
         #[arg(default_value = "status")]
         action: String,
     },
+}
+
+/// Long-lived commands keep Rust's default SIGPIPE disposition
+/// (ignore): for a server, a write to a socket a client just
+/// closed is a normal EPIPE error, not a reason to die. The
+/// one-shot commands get SIG_DFL instead (see main), so
+/// `purrcode-ai cron list | head -1` exits 141 like any other
+/// Unix command. `None` is the default interactive TUI, which
+/// is long-lived too.
+pub fn is_long_lived(cmd: &Option<Commands>) -> bool {
+    matches!(
+        cmd,
+        None | Some(Commands::Gateway) | Some(Commands::Web { .. })
+    )
 }
