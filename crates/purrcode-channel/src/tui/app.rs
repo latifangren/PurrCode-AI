@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use purrcode_config::UiConfig;
 use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::oneshot;
 
@@ -94,7 +95,34 @@ pub struct TuiApp {
     pub pending_approval: Option<ApprovalRequest>,
     pub pending_ask: Option<AskPromptRequest>,
     pub active_subagents: Vec<(String, String, String)>,
+    pub ui_config: UiConfig,
+    pub show_reasoning: bool,
+    pub prompt_history: Vec<String>,
+    pub history_idx: Option<usize>,
+    pub history_draft: String,
+    pub spinner_tick: usize,
 }
+
+pub const TUI_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Show available commands"),
+    ("/new", "Start a fresh session"),
+    ("/resume", "Resume a saved session (/resume <id> or list)"),
+    ("/fork", "Fork the current session"),
+    ("/compact", "Compact session context (/compact [focus])"),
+    ("/clear", "Clear visible transcript"),
+    ("/memory", "Show loaded MEMORY.md / USER.md / SOUL.md"),
+    ("/export", "Export session (/export [jsonl|md])"),
+    ("/theme", "Switch TUI palette (/theme <name>)"),
+    ("/reasoning", "Toggle reasoning display"),
+    ("/model", "Switch active model (/model <provider:model>)"),
+    ("/preset", "Switch autonomy preset (/preset [name])"),
+    (
+        "/model-preset",
+        "Switch model preset (/model-preset [name])",
+    ),
+    ("/status", "Show active session telemetry"),
+    ("/quit", "Exit PurrCode AI"),
+];
 
 impl TuiApp {
     pub fn new(
@@ -102,6 +130,8 @@ impl TuiApp {
         preset_name: impl Into<String>,
         session_id: impl Into<String>,
     ) -> Self {
+        let ui_config = UiConfig::default();
+        let show_reasoning = ui_config.show_reasoning;
         Self {
             input: String::new(),
             cursor_pos: 0,
@@ -118,12 +148,81 @@ impl TuiApp {
             pending_approval: None,
             pending_ask: None,
             active_subagents: Vec::new(),
+            ui_config,
+            show_reasoning,
+            prompt_history: Vec::new(),
+            history_idx: None,
+            history_draft: String::new(),
+            spinner_tick: 0,
         }
     }
 
     pub fn with_model_preset(mut self, model_preset: impl Into<String>) -> Self {
         self.model_preset_name = model_preset.into();
         self
+    }
+
+    pub fn with_ui_config(mut self, ui: UiConfig) -> Self {
+        self.show_reasoning = ui.show_reasoning;
+        self.ui_config = ui;
+        self
+    }
+
+    pub fn history_prev(&mut self) {
+        if self.prompt_history.is_empty() {
+            return;
+        }
+        let next_idx = match self.history_idx {
+            None => {
+                self.history_draft = self.input.clone();
+                self.prompt_history.len() - 1
+            }
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        self.history_idx = Some(next_idx);
+        self.input = self.prompt_history[next_idx].clone();
+        self.cursor_pos = self.input.len();
+    }
+
+    pub fn history_next(&mut self) {
+        let Some(idx) = self.history_idx else {
+            return;
+        };
+        if idx + 1 < self.prompt_history.len() {
+            let next_idx = idx + 1;
+            self.history_idx = Some(next_idx);
+            self.input = self.prompt_history[next_idx].clone();
+            self.cursor_pos = self.input.len();
+        } else {
+            self.history_idx = None;
+            self.input = std::mem::take(&mut self.history_draft);
+            self.cursor_pos = self.input.len();
+        }
+    }
+
+    pub fn slash_completions(&self) -> Vec<(&'static str, &'static str)> {
+        let trimmed = self.input.trim_start();
+        if !trimmed.starts_with('/') || trimmed.contains(' ') {
+            return Vec::new();
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        TUI_SLASH_COMMANDS
+            .iter()
+            .copied()
+            .filter(|(cmd, _)| cmd.starts_with(&lower))
+            .collect()
+    }
+
+    pub fn apply_slash_completion(&mut self) -> bool {
+        let matches = self.slash_completions();
+        if let Some((cmd, _)) = matches.first() {
+            self.input = format!("{cmd} ");
+            self.cursor_pos = self.input.len();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -172,9 +271,14 @@ impl TuiApp {
         let trimmed = self.input.trim().to_string();
         self.input.clear();
         self.cursor_pos = 0;
+        self.history_idx = None;
+        self.history_draft.clear();
         if trimmed.is_empty() {
             None
         } else {
+            if self.prompt_history.last() != Some(&trimmed) {
+                self.prompt_history.push(trimmed.clone());
+            }
             Some(trimmed)
         }
     }

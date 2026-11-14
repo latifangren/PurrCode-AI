@@ -37,20 +37,22 @@ docs contradicts your instinct, the docs win until the user changes them.
 
 | Agent | Role | Tool set (enforced at runtime, not by prompt) |
 |---|---|---|
-| Meowstro | Orchestrator, the user's representative | `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill` — **never `write`, `edit`, `bash`, `manage_skill`** |
-| Whisker | Explorer (absorbs Librarian) | read-only (`read`, `grep`, `glob`, `find`) + `webfetch`, `websearch` |
-| Sphinx | Oracle | read-only (`read`, `grep`, `glob`, `find`) + `ask` |
-| Calico | Designer (UI/TUI) | `read`, `write`, `edit`, `grep`, `glob`, `find` (no `bash`) |
-| Tinker | Fixer — the only full implementer | all v0.1 implementation tools (including `manage_skill`, no `task`) |
-| Tuxeshadow | Shadow Auditor — independent plan/risk critic | read-only (`read`, `grep`, `glob`, `find`) + `ask` (no `task`, no `write`/`edit`/`bash`) |
-| Clowder | Council, 2–3 seats, different models | read-only (`read`, `grep`, `glob`, `find`) |
+| Meowstro | Orchestrator, the user's representative | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill` |
+| Whisker | Explorer (absorbs Librarian) | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) + `webfetch`, `websearch` |
+| Sphinx | Oracle | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) + `ask` |
+| Calico | Designer (UI/TUI) | `read`, `write`, `edit`, `grep`, `glob`, `find`, `read_skill` (no `bash`) |
+| Tinker | Fixer — implementation specialist | all v0.1 implementation tools (including `bash`, `write`, `edit`, `manage_skill`, no `task`) |
+| Tuxeshadow | Shadow Auditor — independent plan/risk critic | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) + `ask` (no `task`, no `write`/`edit`/`bash`) |
+| Clowder | Council, 2–3 seats, different models | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) |
 
 Rules:
 
-- **Meowstro never writes code.** He understands the codebase (map,
-  architecture, key files), plans, delegates, verifies — implementation always
-  goes to Tinker. This protects the main context: it holds map + summaries +
-  decisions only. No exception for "faster to do it myself".
+- **Meowstro is the workflow orchestrator (OMO-aligned):** Plans, delegates,
+  monitors, reconciles, and verifies work. Delegates non-trivial implementation to
+  Tinker, deep research to Whisker, UI to Calico, and architecture review to Sphinx.
+  Acts directly when holding the needed context and the change is small/clear,
+  for documentation/summaries, or for direct commands (`cargo test`, `git status`,
+  verifications) — avoiding the cold-start latency of subagents for simple checks.
 - **Subagents never lose context.** Every delegation gets a stable
   continuation ID (`purr_<id>`); resume the same ID, never respawn.
   Handoff files `subagents/<id>/brief.md` + `result.md` + registry

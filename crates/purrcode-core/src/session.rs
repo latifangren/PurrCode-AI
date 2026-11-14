@@ -123,6 +123,28 @@ impl SessionStore {
         Ok(messages)
     }
 
+    pub fn replace_messages(&self, session_id: &str, messages: &[ChatMessage]) -> Result<()> {
+        let dir = self.sessions_dir();
+        std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;
+        let path = self.session_jsonl_path(session_id);
+        let tmp = dir.join(format!("{}.jsonl.tmp", session_id));
+        let mut buf = String::new();
+        let now = chrono::Utc::now().to_rfc3339();
+        for message in messages {
+            let entry = SessionTurnEntry {
+                version: "session/v1".to_string(),
+                session_id: session_id.to_string(),
+                timestamp: now.clone(),
+                message: message.clone(),
+            };
+            buf.push_str(&serde_json::to_string(&entry)?);
+            buf.push('\n');
+        }
+        std::fs::write(&tmp, buf.as_bytes()).map_err(PurrError::Io)?;
+        std::fs::rename(&tmp, &path).map_err(PurrError::Io)?;
+        Ok(())
+    }
+
     pub fn fork_session(&self, source_id: &str, new_id: &str) -> Result<()> {
         let src = self.session_jsonl_path(source_id);
         if !src.exists() {

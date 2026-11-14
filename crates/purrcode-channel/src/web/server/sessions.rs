@@ -147,7 +147,7 @@ pub fn handle_create_session(
                     "title": "New Session",
                     "branch": "main",
                     "preset": "tabby",
-                    "model": "antigravity/gemini-3.8-flash-tiered",
+                    "model": "",
                     "updatedAt": "Just now",
                     "messages": []
                 },
@@ -198,12 +198,20 @@ pub fn handle_delete_session(
     let sessions_json: Vec<serde_json::Value> = remaining
         .iter()
         .map(|s| {
+            let meta = registry.load_session_meta(&s.id);
+            let title = meta.title.filter(|t| !t.is_empty()).unwrap_or_else(|| {
+                if s.title.is_empty() {
+                    "New Chat".to_string()
+                } else {
+                    s.title.clone()
+                }
+            });
             json!({
                 "id": s.id,
-                "title": if s.title.is_empty() { "New Chat".to_string() } else { s.title.clone() },
+                "title": title,
                 "branch": "main",
-                "preset": "tabby",
-                "model": "antigravity/gemini-3.8-flash-tiered",
+                "preset": meta.preset.unwrap_or_else(|| "tabby".to_string()),
+                "model": meta.model.unwrap_or_default(),
                 "updatedAt": "Just now",
                 "messages": []
             })
@@ -229,7 +237,7 @@ pub fn handle_delete_session(
 pub fn handle_patch_session(
     registry: &Arc<WebSessionRegistry>,
     uri: &str,
-    _payload: &serde_json::Value,
+    payload: &serde_json::Value,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let id = uri
         .strip_prefix("/api/sessions/")
@@ -241,8 +249,32 @@ pub fn handle_patch_session(
             Json(json!({ "error": "invalid session id" })),
         );
     }
-    let _ = registry.ensure_session_if_exists(id);
-    (StatusCode::OK, Json(json!({ "status": "ok", "id": id })))
+    if registry.ensure_session_if_exists(id).is_err() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "session not found" })),
+        );
+    }
+    let mut meta = registry.load_session_meta(id);
+    if let Some(title) = payload.get("title").and_then(|v| v.as_str()) {
+        meta.title = Some(title.to_string());
+    }
+    if let Some(preset) = payload.get("preset").and_then(|v| v.as_str()) {
+        meta.preset = Some(preset.to_string());
+    }
+    if let Some(model) = payload.get("model").and_then(|v| v.as_str()) {
+        meta.model = Some(model.to_string());
+    }
+    if let Err(e) = registry.save_session_meta(id, &meta) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("failed to persist session metadata: {e}") })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({ "status": "ok", "id": id, "meta": meta })),
+    )
 }
 
 /// `GET /api/sessions/<id>/transcript` → `200 {"id","messages":[...]}`.

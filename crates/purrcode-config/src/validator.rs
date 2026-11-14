@@ -61,6 +61,7 @@ mod tests {
             telegram: None,
             cron: None,
             heartbeat: None,
+            ui: Default::default(),
         };
         assert!(validate_config(&cfg).is_err());
     }
@@ -88,6 +89,7 @@ mod tests {
             telegram: None,
             cron: None,
             heartbeat: None,
+            ui: Default::default(),
         };
         assert!(validate_config(&cfg).is_ok());
     }

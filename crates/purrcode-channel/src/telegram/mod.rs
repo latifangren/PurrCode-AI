@@ -9,6 +9,7 @@ pub mod approval;
 pub mod channel;
 pub mod chunk;
 pub mod client;
+pub mod format;
 pub mod render;
 pub mod sessions;
 pub mod types;

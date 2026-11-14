@@ -127,27 +127,32 @@ Meowstro menyusun DAG tugas (Whisker → Sphinx → Tinker, atau paralel bila
 independen), mengeksekusi sesuai dependensi, dan menyimpan graph di
 `session/workgraph.json` agar bisa dilanjutkan setelah restart.
 
-### 3.4 Meowstro: petinggi, bukan tukang (aturan harness)
+### 3.4 Meowstro: workflow orchestrator (OMO-aligned)
 
-Meowstro adalah perwakilan user di dalam sistem dan pemilik konteks utama.
-Ia memahami codebase — peta arsitektur, pola, file kunci — tapi **tidak pernah
-menulis atau mengubah kode** (keputusan user 2026-11-11 00:38 WIB; detail
-kontrak di PRD §4.5 butir 6). Alasannya satu: konteks Meowstro adalah konteks
-yang dibawa antar turn dan dipakai untuk semua keputusan; diff + isi file +
-log error dari pekerjaan implementasi akan membanjirinya, memaksanya
-compaction lebih cepat, dan rencana pun terpotong. Detail pekerjaan tinggal
-di subagent (`brief.md`/`result.md`); Meowstro memegang peta + ringkasan +
-keputusan.
+Meowstro adalah perwakilan user di dalam sistem dan pemilik alur kerja utama.
+Ia memahami codebase — peta arsitektur, pola, file kunci — dan memimpin eksekusi
+dengan filosofi yang selaras dengan Orchestrator pada oh-my-opencode-slim (OMO Slim).
+
+**Filosofi Delegasi & Eksekusi Langsung:**
+Meowstro memegang toolset eksekusi lengkap, namun tetap memprioritaskan produktivitas
+dan kebersihan konteks:
+- **Delegasi ke Spesialis:** Pekerjaan multi-file, refaktor rumit, atau perbaikan implementasi
+  didelegasikan ke Tinker (`task`). Riset kode mendalam ke Whisker, keputusan arsitektur ke
+  Sphinx, dan layout UI ke Calico.
+- **Tindakan Langsung:** Meowstro bertindak langsung saat ia sudah memegang konteks yang dibutuhkan
+  dan perubahannya kecil/jelas (< 20 baris), saat menulis dokumentasi/ringkasan, atau saat
+  menjalankan perintah verifikasi langsung (`cargo test`, `git status`, `curl`, cek direktori) —
+  menghindari cold-start latency dan pemborosan token spawning subagent untuk hal-hal sepele.
 
 | Agen | Tool set (preset, ditegakkan runtime) |
 |---|---|
-| Meowstro | `read`, `grep`, `glob`, `find`, `todo`, `ask`, `task` — **tanpa `write`, `edit`, `bash`** |
-| Whisker | `read`, `grep`, `glob`, `find`, `webfetch`, `websearch` (read-only penuh) |
-| Sphinx | `read`, `grep`, `glob`, `find`, `ask` |
-| Calico | `read`, `write`, `edit`, `grep`, `glob`, `find` |
-| Tinker | semua 12 tool v0.1 (satu-satunya agen implementasi penuh) |
-| Tuxeshadow | `read`, `grep`, `glob`, `find`, `ask` (read-only auditor independen; tanpa `task` dan tanpa `write`/`edit`/`bash`) |
-| Clowder | `read`, `grep`, `glob`, `find` (seat baca + menilai) |
+| Meowstro | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill` |
+| Whisker | `read`, `grep`, `glob`, `find`, `webfetch`, `websearch`, `read_skill` (read-only penuh) |
+| Sphinx | `read`, `grep`, `glob`, `find`, `ask`, `read_skill` |
+| Calico | `read`, `write`, `edit`, `grep`, `glob`, `find`, `read_skill` (tanpa `bash`) |
+| Tinker | semua tool implementasi (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `manage_skill`, tanpa `task`) |
+| Tuxeshadow | `read`, `grep`, `glob`, `find`, `ask`, `read_skill` (read-only auditor independen; tanpa `task` dan tanpa `write`/`edit`/`bash`) |
+| Clowder | `read`, `grep`, `glob`, `find`, `read_skill` (seat baca + menilai) |
 
 Penegakan: preset tool set didaftarkan per agen (ala preset Muse Code —
 mode = tool set); runtime menolak pemanggilan tool di luar preset dengan
@@ -614,14 +619,14 @@ Catatan: Implementasi crate v0.1 berjalan di `crates/` mengikuti panduan sprint 
 11. **Skill description sebagai kontrak routing + preset sebagai unit komposisi
     tool + event protocol JSON berversi ala MSP** (70 methods / 45 notifications /
     37 errors sebagai patokan bentuk, bukan wire) — sumber: `references/muse/ANALYSIS.md` §5, §10.
-12. **Meowstro tidak menulis kode (Set Clowder, keputusan user 2026-11-11
-    00:38 WIB).** Meowstro = petinggi/perwakilan user: paham codebase, susun
-    rencana, delegasi, verifikasi — implementasi selalu ke Tinker dkk. Tool set
-    Meowstro read-only + delegasi (`read`, `grep`, `glob`, `find`, `todo`,
-    `ask`, `task`); `write`/`edit`/`bash` tidak ada di preset-nya dan ditolak
-    runtime. Tujuannya menjaga konteks utama tetap ramping (hanya peta +
-    ringkasan + keputusan); detail tinggal di subagent. → PRD §4.5 butir 6,
-    ARCHITECTURE §3.4, DESIGN ADR-002.
+12. **Meowstro workflow orchestrator (OMO-aligned, keputusan user 2026-11-15).**
+    Meowstro memimpin workflow ala Orchestrator di oh-my-opencode-slim: paham
+    codebase, susun rencana, delegasi, dan verifikasi. Meowstro memegang toolset
+    eksekusi lengkap (`bash`, `write`, `edit`, `manage_skill`) di samping delegasi
+    (`task`). Implementasi non-trivial tetap didelegasikan ke Tinker/The Clowder,
+    namun Meowstro dapat menjalankan perintah langsung (`cargo test`, `git status`)
+    dan edit ringkas tanpa cold-start latency subagent.
+    → PRD §4.5 butir 6, ARCHITECTURE §3.4, DESIGN ADR-002.
 13. **Preset & guardrail berlapis (keputusan user 2026-11-11 00:47 WIB).**
     Preset = file `preset/v1` (bukan hardcode); tiga sumbu (approval ×
     guardrail × sandbox); Carrier/Tabby/Oyen; lapis ToS provider tidak bisa

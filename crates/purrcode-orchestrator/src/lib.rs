@@ -6,7 +6,9 @@ pub mod task;
 
 pub use meowstro::MeowstroOrchestrator;
 pub use shadow::{parse_shadow_verdict, should_trigger_shadow, ShadowAuditor, ShadowVerdict};
-pub use task::{format_validated_result_markdown, resolve_role_model_spec, TaskTool};
+pub use task::{
+    build_role_system_prompt, format_validated_result_markdown, resolve_role_model_spec, TaskTool,
+};
 
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::provider::ChatMessage;

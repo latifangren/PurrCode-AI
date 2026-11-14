@@ -96,6 +96,7 @@ struct WebState {
     /// (`Some` when the active preset declares `sandbox: "os"`).
     sandbox: Option<purrcode_api::tool::SandboxStrictness>,
     system_prompt: String,
+    session_registry: Arc<WebSessionRegistry>,
     use_orchestrator: bool,
     yolo: bool,
 }
@@ -168,7 +169,7 @@ pub async fn run_web_command(
     let memory = MarkdownMemory::new(&purrcode_dir);
     let mem_context = memory.load_context(Some(workspace_root)).await;
     let mut system_prompt = if use_orchestrator {
-        MeowstroOrchestrator::system_prompt(&skills_index)
+        MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(workspace_root))
     } else {
         let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
         if !skills_index.is_empty() {
@@ -219,6 +220,7 @@ pub async fn run_web_command(
             None
         },
         system_prompt,
+        session_registry: session_registry.clone(),
         use_orchestrator,
         yolo,
     });
@@ -269,7 +271,340 @@ impl PromptDispatcher for CliWebPromptDispatcher {
     }
 }
 
+fn resolve_env_or_literal(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(var_name) = trimmed
+        .strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+        .or_else(|| trimmed.strip_prefix('$'))
+    {
+        if !var_name.is_empty() {
+            if let Ok(val) = std::env::var(var_name) {
+                return val;
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn protocol_to_api_type(protocol: &str) -> String {
+    match protocol.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => "anthropic-messages".to_string(),
+        "gemini" => "gemini".to_string(),
+        "ollama" => "ollama".to_string(),
+        "deepseek" => "deepseek".to_string(),
+        _ => "openai-completions".to_string(),
+    }
+}
+
+struct TurnRuntime {
+    config: Config,
+    preset: String,
+    registry: Arc<ProviderRegistry>,
+    provider: Arc<dyn purrcode_api::provider::ModelProvider>,
+    wire_model: String,
+    approval_gate: Arc<ApprovalGate>,
+    sandbox: Option<purrcode_api::tool::SandboxStrictness>,
+    model_preset: Option<purrcode_config::ModelPreset>,
+}
+
 impl WebState {
+    fn resolve_turn_runtime(&self, session_id: &str) -> Result<TurnRuntime> {
+        let meta = self.session_registry.load_session_meta(session_id);
+        let mut turn_config = self.config.clone();
+
+        if let Some(ref p) = meta.preset {
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                turn_config.preset = trimmed.to_string();
+            }
+        }
+
+        // Merge WebUI provider overrides and custom endpoints from cockpit_providers.json
+        // so edits, toggles, API keys, and fetched models apply immediately without restarting.
+        let mut cockpit_models: Vec<(String, String)> = Vec::new();
+        let cockpit_prov_path = self.purrcode_dir.join("cockpit_providers.json");
+        if let Ok(raw) = std::fs::read_to_string(&cockpit_prov_path) {
+            if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
+                for entry in entries {
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let name_key = entry
+                        .get("configKey")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| id.strip_prefix("prov-").unwrap_or(id).to_string());
+
+                    let enabled = entry
+                        .get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if !enabled {
+                        turn_config.providers.remove(&name_key);
+                        continue;
+                    }
+
+                    let context_window = entry
+                        .get("contextWindow")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(131_072)
+                        .max(1024);
+
+                    let api_type = entry
+                        .get("protocol")
+                        .and_then(|v| v.as_str())
+                        .map(protocol_to_api_type);
+
+                    let base_url = entry
+                        .get("baseUrl")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+                        .map(str::to_string);
+
+                    let api_key = entry
+                        .get("apiKey")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(resolve_env_or_literal);
+
+                    let mut model_ids: Vec<String> = Vec::new();
+                    if let Some(arr) = entry.get("models").and_then(|v| v.as_array()) {
+                        for m in arr.iter().filter_map(|x| x.as_str()) {
+                            let m = m.trim();
+                            if !m.is_empty() && !model_ids.iter().any(|x| x == m) {
+                                model_ids.push(m.to_string());
+                            }
+                        }
+                    }
+                    if let Some(dm) = entry.get("defaultModel").and_then(|v| v.as_str()) {
+                        let dm = dm.trim();
+                        if !dm.is_empty() && !model_ids.iter().any(|x| x == dm) {
+                            model_ids.push(dm.to_string());
+                        }
+                    }
+
+                    for m in &model_ids {
+                        cockpit_models.push((name_key.clone(), m.clone()));
+                    }
+
+                    if let Some(existing) = turn_config.providers.get_mut(&name_key) {
+                        if let Some(url) = base_url {
+                            existing.base_url = Some(url);
+                        }
+                        if let Some(api) = api_type {
+                            existing.api = api;
+                        }
+                        if let Some(key) = api_key {
+                            existing.api_key = Some(key);
+                        }
+                        for m in model_ids {
+                            existing.models.entry(m.clone()).or_insert_with(|| {
+                                purrcode_config::ModelConfig {
+                                    name: Some(m),
+                                    reasoning: false,
+                                    reasoning_effort: None,
+                                    context_window,
+                                    max_tokens: Some(16_384),
+                                }
+                            });
+                        }
+                    } else if let Some(url) = base_url {
+                        let mut models_map = std::collections::HashMap::new();
+                        for m in model_ids {
+                            models_map.insert(
+                                m.clone(),
+                                purrcode_config::ModelConfig {
+                                    name: Some(m),
+                                    reasoning: false,
+                                    reasoning_effort: None,
+                                    context_window,
+                                    max_tokens: Some(16_384),
+                                },
+                            );
+                        }
+                        turn_config.providers.insert(
+                            name_key.clone(),
+                            purrcode_config::ProviderConfig {
+                                api: api_type.unwrap_or_else(|| "openai-completions".to_string()),
+                                base_url: Some(url),
+                                api_key,
+                                headers: std::collections::HashMap::new(),
+                                user_agent: None,
+                                models: models_map,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        let turn_registry = ProviderRegistry::from_config(&turn_config)
+            .map(Arc::new)
+            .unwrap_or_else(|_| self.registry.clone());
+
+        // Wire all Clowder Matrix roles from cockpit_routing.json into ModelPreset
+        // so subagent routing overrides take effect immediately on the backend.
+        let mut routing_model: Option<String> = None;
+        let mut turn_model_preset = self.model_preset.clone();
+        if let Ok(raw) = std::fs::read_to_string(self.purrcode_dir.join("cockpit_routing.json")) {
+            if let Ok(rows) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
+                let preset =
+                    turn_model_preset.get_or_insert_with(|| purrcode_config::ModelPreset {
+                        schema: "model-preset/v1".to_string(),
+                        name: "cockpit-matrix".to_string(),
+                        description: "WebUI Clowder Routing Matrix".to_string(),
+                        extends: None,
+                        agents: std::collections::HashMap::new(),
+                    });
+                for r in rows {
+                    let role = r
+                        .get("role")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if role.is_empty() {
+                        continue;
+                    }
+                    let primary = r
+                        .get("primaryModel")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let fallback = r
+                        .get("fallbackModel")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| vec![s.to_string()])
+                        .unwrap_or_default();
+                    let temperature = r
+                        .get("temperature")
+                        .and_then(|v| v.as_f64())
+                        .map(|f| f as f32);
+                    let variant = r
+                        .get("reasoningEffort")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .and_then(|s| match s.as_str() {
+                            "off" | "none" => Some("none".to_string()),
+                            "low" | "medium" | "high" => Some(s),
+                            _ => None,
+                        });
+
+                    let role_lower = role.to_ascii_lowercase();
+                    if role == "Meowstro" && !primary.is_empty() {
+                        routing_model = Some(primary.to_string());
+                    }
+                    if primary.is_empty()
+                        && fallback.is_empty()
+                        && variant.is_none()
+                        && temperature.is_none()
+                    {
+                        preset.agents.remove(&role_lower);
+                    } else {
+                        preset.agents.insert(
+                            role_lower,
+                            purrcode_config::AgentModelSpec {
+                                model: purrcode_config::ModelTarget::Single(primary.to_string()),
+                                variant,
+                                temperature,
+                                options: None,
+                                fallback,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        let requested_model = meta
+            .model
+            .filter(|m| !m.trim().is_empty())
+            .or(routing_model);
+
+        let mut selected_provider = self.registry.get(&self.provider_name);
+        let mut selected_wire_model = self.wire_model.clone();
+
+        if let Some(candidate) = requested_model {
+            if let Some((pname, wmodel, _, _)) = turn_config.resolve_model(&candidate) {
+                if let Some(p) = turn_registry.get(pname) {
+                    selected_provider = Some(p);
+                    selected_wire_model = wmodel.to_string();
+                    turn_config.model = Some(candidate);
+                }
+            } else if let Some((pname, wmodel)) = candidate.split_once(':') {
+                if let Some(p) = turn_registry
+                    .get(pname.trim())
+                    .or_else(|| turn_registry.get(&pname.trim().to_ascii_lowercase()))
+                {
+                    selected_provider = Some(p);
+                    selected_wire_model = wmodel.trim().to_string();
+                    turn_config.model = Some(candidate);
+                }
+            } else if let Some((pname, _)) =
+                cockpit_models.iter().find(|(_, mid)| mid == &candidate)
+            {
+                if let Some(p) = turn_registry.get(pname) {
+                    selected_provider = Some(p);
+                    selected_wire_model = candidate.clone();
+                    turn_config.model = Some(format!("{pname}:{candidate}"));
+                }
+            } else if let Some(p) = turn_registry.get(&self.provider_name) {
+                selected_provider = Some(p);
+                selected_wire_model = candidate.clone();
+                turn_config.model = Some(format!("{}:{candidate}", self.provider_name));
+            }
+        }
+
+        let (turn_gate, turn_sandbox) = if turn_config.preset != self.config.preset {
+            match ModePresetLoader::load_by_name_or_tabby(&turn_config.preset, &self.workspace_root)
+            {
+                Ok(preset) => {
+                    let gate = Arc::new(ApprovalGate::from_preset(&preset, self.yolo));
+                    let sb = if preset.sandbox == purrcode_config::SandboxMode::Os {
+                        Some(preset.sandbox_mode)
+                    } else {
+                        None
+                    };
+                    (gate, sb)
+                }
+                Err(_) => (self.approval_gate.clone(), self.sandbox),
+            }
+        } else {
+            (self.approval_gate.clone(), self.sandbox)
+        };
+
+        let provider =
+            selected_provider.ok_or_else(|| purrcode_api::error::PurrError::Channel {
+                channel: "web".to_string(),
+                message: format!(
+                    "Provider '{}' is not available for web turn",
+                    self.provider_name
+                ),
+            })?;
+        let preset_name = turn_config.preset.clone();
+        Ok(TurnRuntime {
+            config: turn_config,
+            preset: preset_name,
+            registry: turn_registry,
+            provider,
+            wire_model: selected_wire_model,
+            approval_gate: turn_gate,
+            sandbox: turn_sandbox,
+            model_preset: turn_model_preset,
+        })
+    }
+
     /// Run one agent turn for one browser prompt, then the F20 curator
     /// hook (mirrors `gateway::run_turn`, minus the Telegram renderer:
     /// events flow through the session's bus, errors surface as
@@ -283,6 +618,17 @@ impl WebState {
         let channel = session.channel.clone();
         let session_store = SessionStore::new(&self.purrcode_dir);
         let session_dir = session_store.session_dir(&session_id);
+
+        let TurnRuntime {
+            config: turn_config,
+            preset: turn_preset,
+            registry: turn_registry,
+            provider,
+            wire_model: turn_wire_model,
+            approval_gate: turn_approval_gate,
+            sandbox: turn_sandbox,
+            model_preset: turn_model_preset,
+        } = self.resolve_turn_runtime(&session_id)?;
 
         // Plugin session_start fires once per session lifetime.
         {
@@ -315,14 +661,6 @@ impl WebState {
             detail: format!("session={session_id}"),
         });
 
-        let provider = match self.registry.get(self.provider_name.as_str()) {
-            Some(p) => p,
-            None => {
-                return Err(PurrError::Config(
-                    "Provider not found in configuration.".to_string(),
-                ));
-            }
-        };
         // F20 curator provider (cloned before the orchestrator takes
         // the Arc below).
         let curator_provider = provider.clone();
@@ -330,22 +668,28 @@ impl WebState {
         let approval: Arc<dyn ApprovalRequester> = Arc::new(WebApprovalRequester {
             channel: channel.clone(),
         });
-        let policy_gate: Arc<dyn PolicyGate> = self.approval_gate.clone();
+        let policy_gate: Arc<dyn PolicyGate> = turn_approval_gate.clone();
 
         let agent_role = crate::cli::agent_role_for(self.use_orchestrator);
+        let meowstro_spec = turn_model_preset.as_ref().and_then(|p| {
+            p.agents
+                .get("Meowstro")
+                .or_else(|| p.agents.get("meowstro"))
+                .cloned()
+        });
         let meowstro = if self.use_orchestrator {
             Some(MeowstroOrchestrator::with_complete_options(
                 provider.clone(),
-                self.wire_model.clone(),
+                turn_wire_model.clone(),
                 &session_dir,
                 Some(approval.clone()),
                 None,
-                Some(self.approval_gate.clone()),
+                Some(turn_approval_gate.clone()),
                 Some(self.audit_sink.clone()),
                 Some(self.plugin_dispatcher.clone()),
-                self.model_preset.clone(),
-                Some(self.config.clone()),
-                Some(self.registry.clone()),
+                turn_model_preset,
+                Some(turn_config.clone()),
+                Some(turn_registry.clone()),
                 None,
                 None,
                 self.yolo,
@@ -362,21 +706,27 @@ impl WebState {
             let mut tool_registry =
                 ToolRegistry::with_defaults_and_options(None, Some(&self.workspace_root));
             let mode_preset =
-                ModePresetLoader::load_by_name_or_tabby(&self.config.preset, &self.workspace_root)?;
+                ModePresetLoader::load_by_name_or_tabby(&turn_preset, &self.workspace_root)?;
             if !mode_preset.tools.is_empty() {
                 let mode_tools = mode_preset.tools.clone();
                 tool_registry
                     .retain(|name| name == "read_skill" || mode_tools.iter().any(|a| a == name));
             }
-            Some(
-                AgentLoop::new(provider, self.wire_model.clone(), Arc::new(tool_registry))
+            let mut loop_inst =
+                AgentLoop::new(provider, turn_wire_model.clone(), Arc::new(tool_registry))
                     .with_approval_requester(approval.clone())
                     .with_policy_gate(policy_gate)
                     .with_audit_sink(self.audit_sink.clone())
                     .with_plugin_dispatcher(self.plugin_dispatcher.clone())
                     .with_event_bus(session.bus.clone())
-                    .with_yolo(self.yolo),
-            )
+                    .with_live_streaming(turn_config.ui.streaming_mode == "live")
+                    .with_yolo(self.yolo);
+            if let Some(spec) = meowstro_spec {
+                loop_inst = loop_inst
+                    .with_temperature(spec.temperature)
+                    .with_reasoning_effort(spec.variant);
+            }
+            Some(loop_inst)
         };
 
         // Fail-closed: exactly one of the two loops is built above.
@@ -396,7 +746,7 @@ impl WebState {
             workspace_root: self.workspace_root.clone(),
             is_dry_run: false,
             is_cron: false,
-            sandbox: self.sandbox,
+            sandbox: turn_sandbox,
         };
 
         // Load the chat's history (empty for a new session) and run the
@@ -450,7 +800,7 @@ impl WebState {
         let curator_runner =
             purrcode_service::curator::CuratorRunner::new(purrcode_service::curator::CuratorDeps {
                 provider: curator_provider,
-                model: self.wire_model.clone(),
+                model: turn_wire_model,
                 purrcode_dir: self.purrcode_dir.clone(),
                 audit_logger: self.audit_logger.clone(),
             });

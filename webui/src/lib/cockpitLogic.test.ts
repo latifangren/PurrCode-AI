@@ -42,6 +42,12 @@ test('parseNaturalLanguageCron parses common English and cron syntax', () => {
   assert.equal(raw.valid, true);
   assert.equal(raw.expression, '0 4 * * 0');
 
+  assert.equal(parseNaturalLanguageCron('61 9 * * *').valid, false);
+  assert.equal(parseNaturalLanguageCron('0 25 * * *').valid, false);
+  assert.equal(parseNaturalLanguageCron('0 9 32 * *').valid, false);
+  assert.equal(parseNaturalLanguageCron('0 9 * 13 *').valid, false);
+  assert.equal(parseNaturalLanguageCron('0 9 * * 9').valid, false);
+
   const bad = parseNaturalLanguageCron('sometime maybe');
   assert.equal(bad.valid, false);
 });

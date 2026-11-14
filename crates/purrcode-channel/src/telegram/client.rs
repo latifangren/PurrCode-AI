@@ -237,16 +237,58 @@ impl TelegramApiClient {
         text: &str,
         reply_markup: Option<InlineKeyboardMarkup>,
     ) -> Result<Message, TelegramError> {
+        self.send_message_formatted(chat_id, text, None, None, reply_markup)
+            .await
+    }
+
+    /// `sendMessage` with optional `parse_mode` (e.g. `"HTML"`) and
+    /// `reply_to_message_id`. Automatically falls back to plain text if
+    /// Telegram rejects entity parsing with HTTP 400.
+    pub async fn send_message_formatted(
+        &self,
+        chat_id: i64,
+        text: &str,
+        parse_mode: Option<&str>,
+        reply_to_message_id: Option<i64>,
+        reply_markup: Option<InlineKeyboardMarkup>,
+    ) -> Result<Message, TelegramError> {
         let mut body = serde_json::json!({
             "chat_id": chat_id,
             "text": text,
         });
-        if let Some(markup) = reply_markup {
+        if let Some(pm) = parse_mode {
+            body["parse_mode"] = serde_json::json!(pm);
+        }
+        if let Some(reply_id) = reply_to_message_id {
+            body["reply_to_message_id"] = serde_json::json!(reply_id);
+        }
+        if let Some(markup) = reply_markup.clone() {
             body["reply_markup"] = serde_json::to_value(markup).map_err(|e| {
                 TelegramError::InvalidResponse(format!("failed to encode keyboard: {e}"))
             })?;
         }
-        self.send_with_retry("sendMessage", body).await
+        match self.send_with_retry("sendMessage", body).await {
+            Ok(msg) => Ok(msg),
+            Err(TelegramError::Api {
+                code: 400,
+                description,
+            }) if parse_mode.is_some() && description.to_lowercase().contains("parse entities") => {
+                let mut plain_body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": text,
+                });
+                if let Some(reply_id) = reply_to_message_id {
+                    plain_body["reply_to_message_id"] = serde_json::json!(reply_id);
+                }
+                if let Some(markup) = reply_markup {
+                    plain_body["reply_markup"] = serde_json::to_value(markup).map_err(|e| {
+                        TelegramError::InvalidResponse(format!("failed to encode keyboard: {e}"))
+                    })?;
+                }
+                self.send_with_retry("sendMessage", plain_body).await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// `editMessageText`. Same 429 retry as send. A "message is not
@@ -258,12 +300,28 @@ impl TelegramApiClient {
         text: &str,
         reply_markup: Option<InlineKeyboardMarkup>,
     ) -> Result<(), TelegramError> {
+        self.edit_message_text_formatted(chat_id, message_id, text, None, reply_markup)
+            .await
+    }
+
+    /// `editMessageText` with optional `parse_mode` and automatic plain-text fallback.
+    pub async fn edit_message_text_formatted(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        parse_mode: Option<&str>,
+        reply_markup: Option<InlineKeyboardMarkup>,
+    ) -> Result<(), TelegramError> {
         let mut body = serde_json::json!({
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
         });
-        if let Some(markup) = reply_markup {
+        if let Some(pm) = parse_mode {
+            body["parse_mode"] = serde_json::json!(pm);
+        }
+        if let Some(markup) = reply_markup.clone() {
             body["reply_markup"] = serde_json::to_value(markup).map_err(|e| {
                 TelegramError::InvalidResponse(format!("failed to encode keyboard: {e}"))
             })?;
@@ -277,6 +335,33 @@ impl TelegramApiClient {
                 if description.contains("message is not modified") =>
             {
                 Ok(())
+            }
+            Err(TelegramError::Api {
+                code: 400,
+                description,
+            }) if parse_mode.is_some() && description.to_lowercase().contains("parse entities") => {
+                let mut plain_body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                });
+                if let Some(markup) = reply_markup {
+                    plain_body["reply_markup"] = serde_json::to_value(markup).map_err(|e| {
+                        TelegramError::InvalidResponse(format!("failed to encode keyboard: {e}"))
+                    })?;
+                }
+                match self
+                    .send_with_retry::<serde_json::Value>("editMessageText", plain_body)
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(TelegramError::Api { description, .. })
+                        if description.contains("message is not modified") =>
+                    {
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
             Err(e) => Err(e),
         }

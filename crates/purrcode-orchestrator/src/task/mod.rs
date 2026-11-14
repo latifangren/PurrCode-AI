@@ -22,9 +22,11 @@ use crate::shadow::{should_trigger_shadow, ShadowAuditor};
 use crate::SubagentRegistry;
 
 mod inference;
+pub(crate) mod prompts;
 mod result;
 
 pub use inference::{resolve_role_model_spec, ResolvedRoleInference};
+pub use prompts::build_role_system_prompt;
 pub use result::format_validated_result_markdown;
 
 pub struct TaskTool {
@@ -209,6 +211,13 @@ impl TaskTool {
 
     fn build_role_tools(&self, role: &str, workspace_root: Option<&Path>) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
+        let default_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let ws_root = workspace_root.unwrap_or(&default_root);
+        let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
+        skill_mgr.discover_all(ws_root);
+        let shared_skill_mgr = Arc::new(Mutex::new(skill_mgr));
+        let read_skill_tool = Arc::new(purrcode_tools::skill::ReadSkillTool::new(shared_skill_mgr));
+
         match role {
             "whisker" => {
                 let _ = reg.register(Arc::new(purrcode_tools::fs::ReadTool));
@@ -217,6 +226,7 @@ impl TaskTool {
                 let _ = reg.register(Arc::new(purrcode_tools::search::FindTool));
                 let _ = reg.register(Arc::new(purrcode_tools::web::WebfetchTool::new()));
                 let _ = reg.register(Arc::new(purrcode_tools::web::WebsearchTool::new()));
+                let _ = reg.register(read_skill_tool);
             }
             "sphinx" | "tuxeshadow" => {
                 let _ = reg.register(Arc::new(purrcode_tools::fs::ReadTool));
@@ -228,6 +238,7 @@ impl TaskTool {
                     None => purrcode_tools::coordination::AskTool::new(),
                 };
                 let _ = reg.register(Arc::new(ask_tool));
+                let _ = reg.register(read_skill_tool);
             }
             "calico" => {
                 let _ = reg.register(Arc::new(purrcode_tools::fs::ReadTool));
@@ -236,12 +247,14 @@ impl TaskTool {
                 let _ = reg.register(Arc::new(purrcode_tools::search::GrepTool));
                 let _ = reg.register(Arc::new(purrcode_tools::search::GlobTool));
                 let _ = reg.register(Arc::new(purrcode_tools::search::FindTool));
+                let _ = reg.register(read_skill_tool);
             }
             "clowder" => {
                 let _ = reg.register(Arc::new(purrcode_tools::fs::ReadTool));
                 let _ = reg.register(Arc::new(purrcode_tools::search::GrepTool));
                 let _ = reg.register(Arc::new(purrcode_tools::search::GlobTool));
                 let _ = reg.register(Arc::new(purrcode_tools::search::FindTool));
+                let _ = reg.register(read_skill_tool);
             }
             _ => {
                 reg = ToolRegistry::with_defaults_and_options(
@@ -588,9 +601,10 @@ impl Tool for TaskTool {
             child_loop = child_loop.with_event_bus(bus.clone());
         }
 
-        let system_prompt = format!(
-            "You are {}, a specialized subagent of PurrCode AI.\nYour continuation ID is '{}'.\nPerform your assigned task thoroughly using your allowed tools and return a concise structured summary (changed files:line, verified evidence, blockers, unverified items).",
-            args.role, subagent_id
+        let system_prompt = prompts::build_role_system_prompt_in(
+            &args.role,
+            &subagent_id,
+            Some(&ctx.workspace_root),
         );
 
         // 5. Run child loop (Clowder runs 2 council seats and merges verdicts)

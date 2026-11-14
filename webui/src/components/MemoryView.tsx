@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Check, Plus, Save } from 'lucide-react';
 import type { MemoryFile, SkillEntry } from '../types/cockpit';
 import { DiffViewer } from './DiffViewer';
@@ -35,14 +35,30 @@ export function MemoryView({
   const [skillName, setSkillName] = useState('');
   const [skillDesc, setSkillDesc] = useState('');
 
-  const activeDraft = drafts[currentFile.name] ?? currentFile.content;
+  useEffect(() => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const f of memoryFiles) {
+        if (!(f.name in next)) {
+          next[f.name] = f.content;
+        }
+      }
+      return next;
+    });
+  }, [memoryFiles]);
+
+  const activeDraft = currentFile ? (drafts[currentFile.name] ?? currentFile.content) : '';
 
   const handleSave = async () => {
+    if (!currentFile) return;
     setSaving(true);
-    await onSaveMemory(currentFile.name, activeDraft);
-    setSaving(false);
-    setSavedFlag(true);
-    setTimeout(() => setSavedFlag(false), 2000);
+    try {
+      await onSaveMemory(currentFile.name, activeDraft);
+      setSavedFlag(true);
+      setTimeout(() => setSavedFlag(false), 2000);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCreateSkill = async (e: React.FormEvent) => {

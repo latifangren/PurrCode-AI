@@ -5,6 +5,7 @@ pub mod loader;
 pub mod model;
 pub mod preset_mode;
 pub mod preset_model;
+pub mod ui;
 pub mod validator;
 
 pub use loader::ConfigLoader;
@@ -14,4 +15,5 @@ pub use model::{
 };
 pub use preset_mode::{ApprovalMode, GuardrailMode, ModePreset, ModePresetLoader, SandboxMode};
 pub use preset_model::{AgentModelSpec, ModelPreset, ModelPresetLoader, ModelTarget};
+pub use ui::{QuickCommandConfig, TelegramUiConfig, UiConfig};
 pub use validator::{validate_config, MIN_CONTEXT_WINDOW};

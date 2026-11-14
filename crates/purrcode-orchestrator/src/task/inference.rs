@@ -51,11 +51,21 @@ pub fn resolve_role_model_spec(
             .get(role)
             .or_else(|| preset.agents.get(&role_lower))
         {
-            let mut candidates = spec.model.candidates();
+            let mut candidates: Vec<String> = spec
+                .model
+                .candidates()
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             for fb in &spec.fallback {
-                if !candidates.contains(fb) {
-                    candidates.push(fb.clone());
+                let trimmed = fb.trim();
+                if !trimmed.is_empty() && !candidates.iter().any(|c| c == trimmed) {
+                    candidates.push(trimmed.to_string());
                 }
+            }
+            if candidates.is_empty() && !session_model.trim().is_empty() {
+                candidates.push(session_model.to_string());
             }
             let primary = candidates
                 .first()

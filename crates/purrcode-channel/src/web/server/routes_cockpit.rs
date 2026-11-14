@@ -15,17 +15,17 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-fn extract_id(path: &str, prefix: &str) -> String {
+pub(crate) fn extract_id(path: &str, prefix: &str) -> String {
     let stripped = path.strip_prefix(prefix).unwrap_or(path);
     let id_part = stripped.split('/').next().unwrap_or(stripped);
     id_part.trim_matches('/').to_string()
 }
 
-fn parse_body_json(body: &Bytes) -> Value {
+pub(crate) fn parse_body_json(body: &Bytes) -> Value {
     serde_json::from_slice::<Value>(body).unwrap_or(json!({}))
 }
 
-fn save_json(path: &Path, val: &Value) {
+pub(crate) fn save_json(path: &Path, val: &Value) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -168,34 +168,31 @@ pub async fn update_routing(
     )
 }
 
-fn load_providers_config(purrcode_dir: &Path) -> Vec<Value> {
-    let file = purrcode_dir.join("cockpit_providers.json");
-    if let Ok(raw) = std::fs::read_to_string(&file) {
-        if let Ok(v) = serde_json::from_str::<Vec<Value>>(&raw) {
-            return v;
-        }
-    }
-    vec![
-        json!({
-            "id": "prov-magpie", "name": "Local Magpie / OpenAI-Compatible", "protocol": "openai",
-            "baseUrl": "http://127.0.0.1:3425/v1", "defaultModel": "antigravity/gemini-3.8-flash-tiered",
-            "models": ["antigravity/gemini-3.8-flash-tiered"], "contextWindow": 1048576,
-            "enabled": true, "lastLatencyMs": 12, "lastTestedAt": "Just now"
-        }),
-        json!({
-            "id": "prov-custom", "name": "Custom Gateway Endpoint", "protocol": "custom",
-            "baseUrl": "http://localhost:8000/v1", "defaultModel": "antigravity/gemini-3.8-flash-tiered",
-            "models": ["antigravity/gemini-3.8-flash-tiered"], "contextWindow": 1048576,
-            "enabled": true, "lastLatencyMs": Value::Null, "lastTestedAt": Value::Null
-        }),
-    ]
-}
+use super::routes_providers::{
+    load_cockpit_overrides, load_merged_providers, sanitize_provider_for_client,
+    sanitize_providers_for_client, save_cockpit_overrides,
+};
 
-fn save_providers_config(purrcode_dir: &Path, providers: &[Value]) {
-    save_json(
-        &purrcode_dir.join("cockpit_providers.json"),
-        &json!(providers),
-    );
+fn upsert_provider_override(purrcode_dir: &Path, id: &str, patch: serde_json::Map<String, Value>) {
+    let mut entries = load_cockpit_overrides(purrcode_dir);
+    if let Some(existing) = entries
+        .iter_mut()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(id))
+    {
+        if let Some(obj) = existing.as_object_mut() {
+            for (k, v) in patch {
+                obj.insert(k, v);
+            }
+        }
+    } else {
+        let mut new_obj = serde_json::Map::new();
+        new_obj.insert("id".to_string(), json!(id));
+        for (k, v) in patch {
+            new_obj.insert(k, v);
+        }
+        entries.push(Value::Object(new_obj));
+    }
+    save_cockpit_overrides(purrcode_dir, &entries);
 }
 
 pub async fn add_provider(
@@ -203,26 +200,75 @@ pub async fn add_provider(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let payload = parse_body_json(&body);
-    let mut providers = load_providers_config(&state.purrcode_dir);
     let name = payload
         .get("name")
         .and_then(|n| n.as_str())
-        .unwrap_or("New Provider");
-    let id = format!("prov-{}", uuid::Uuid::new_v4().simple());
+        .map(str::trim)
+        .unwrap_or("");
+    let base_url = payload
+        .get("baseUrl")
+        .and_then(|u| u.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    let default_model = payload
+        .get("defaultModel")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if name.is_empty() || base_url.is_empty() || default_model.is_empty() {
+        record_admin(
+            &state,
+            "provider_add",
+            name,
+            "deny",
+            "missing required fields",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "name, baseUrl, and defaultModel are required" })),
+        );
+    }
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        record_admin(
+            &state,
+            "provider_add",
+            name,
+            "deny",
+            "invalid baseUrl scheme",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "baseUrl must use http:// or https://" })),
+        );
+    }
+    let slug: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let short_uid = &uuid::Uuid::new_v4().simple().to_string()[..6];
+    let config_key = if slug.is_empty() {
+        format!("custom-{short_uid}")
+    } else {
+        format!("{slug}-{short_uid}")
+    };
+    let id = format!("prov-{config_key}");
+
+    let mut overrides = load_cockpit_overrides(&state.purrcode_dir);
     let mut new_prov = payload.clone();
     if let Some(obj) = new_prov.as_object_mut() {
         obj.insert("id".to_string(), json!(id));
+        obj.insert("configKey".to_string(), json!(config_key));
+        obj.insert("source".to_string(), json!("cockpit"));
         obj.insert("enabled".to_string(), json!(true));
         if !obj.contains_key("models") {
-            let def = obj
-                .get("defaultModel")
-                .and_then(|m| m.as_str())
-                .unwrap_or("antigravity/gemini-3.8-flash-tiered");
-            obj.insert("models".to_string(), json!([def]));
+            obj.insert("models".to_string(), json!([default_model]));
         }
     }
-    providers.push(new_prov);
-    save_providers_config(&state.purrcode_dir, &providers);
+    overrides.push(new_prov);
+    save_cockpit_overrides(&state.purrcode_dir, &overrides);
     record_admin(
         &state,
         "provider_add",
@@ -230,6 +276,8 @@ pub async fn add_provider(
         "allow",
         &format!("registered provider {id}"),
     );
+    let merged = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    let providers = sanitize_providers_for_client(&merged);
     let audit_log = load_audit_entries(&state.purrcode_dir, 50);
     (
         StatusCode::OK,
@@ -237,33 +285,99 @@ pub async fn add_provider(
     )
 }
 
-pub async fn toggle_provider(
+pub async fn update_provider(
     State(state): State<Arc<WebState>>,
     uri: Uri,
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let id = extract_id(uri.path(), "/api/providers/");
+    let merged = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    if !merged
+        .iter()
+        .any(|p| p.get("id").and_then(|v| v.as_str()) == Some(&id))
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("provider '{id}' not found") })),
+        );
+    }
+
     let payload = parse_body_json(&body);
-    let enabled = payload
-        .get("enabled")
-        .and_then(|b| b.as_bool())
-        .unwrap_or(true);
-    let mut providers = load_providers_config(&state.purrcode_dir);
-    for prov in &mut providers {
-        if prov.get("id").and_then(|v| v.as_str()) == Some(&id) {
-            if let Some(obj) = prov.as_object_mut() {
-                obj.insert("enabled".to_string(), json!(enabled));
-            }
+    let mut patch = serde_json::Map::new();
+
+    if let Some(enabled) = payload.get("enabled").and_then(|b| b.as_bool()) {
+        patch.insert("enabled".to_string(), json!(enabled));
+    }
+    if let Some(name) = payload.get("name").and_then(|s| s.as_str()) {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            patch.insert("name".to_string(), json!(trimmed));
         }
     }
-    save_providers_config(&state.purrcode_dir, &providers);
+    if let Some(protocol) = payload.get("protocol").and_then(|s| s.as_str()) {
+        let trimmed = protocol.trim();
+        if !trimmed.is_empty() {
+            patch.insert("protocol".to_string(), json!(trimmed));
+        }
+    }
+    if let Some(base_url) = payload.get("baseUrl").and_then(|s| s.as_str()) {
+        let trimmed = base_url.trim();
+        if !trimmed.is_empty() {
+            if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "baseUrl must use http:// or https://" })),
+                );
+            }
+            patch.insert("baseUrl".to_string(), json!(trimmed));
+        }
+    }
+    if let Some(cw) = payload.get("contextWindow").and_then(|n| n.as_u64()) {
+        if cw >= 1024 {
+            patch.insert("contextWindow".to_string(), json!(cw));
+        }
+    }
+    if let Some(models) = payload.get("models").and_then(|m| m.as_array()) {
+        let cleaned: Vec<String> = models
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        patch.insert("models".to_string(), json!(cleaned));
+    }
+    if let Some(default_model) = payload.get("defaultModel").and_then(|s| s.as_str()) {
+        let trimmed = default_model.trim();
+        if !trimmed.is_empty() {
+            patch.insert("defaultModel".to_string(), json!(trimmed));
+        }
+    }
+    if payload
+        .get("clearApiKey")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false)
+    {
+        patch.insert("apiKey".to_string(), json!(""));
+    } else if let Some(api_key) = payload.get("apiKey").and_then(|s| s.as_str()) {
+        let trimmed = api_key.trim();
+        if !trimmed.is_empty() {
+            patch.insert("apiKey".to_string(), json!(trimmed));
+        }
+    }
+
+    if !patch.is_empty() {
+        upsert_provider_override(&state.purrcode_dir, &id, patch);
+    }
+
     record_admin(
         &state,
-        "provider_toggle",
+        "provider_update",
         &id,
         "allow",
-        &format!("enabled={enabled}"),
+        "updated provider settings",
     );
+    let updated_merged = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    let providers = sanitize_providers_for_client(&updated_merged);
     (StatusCode::OK, Json(json!({ "providers": providers })))
 }
 
@@ -272,10 +386,26 @@ pub async fn delete_provider(
     uri: Uri,
 ) -> (StatusCode, Json<Value>) {
     let id = extract_id(uri.path(), "/api/providers/");
-    let mut providers = load_providers_config(&state.purrcode_dir);
-    providers.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(&id));
-    save_providers_config(&state.purrcode_dir, &providers);
+    let merged = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    if let Some(found) = merged
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&id))
+    {
+        if found.get("source").and_then(|v| v.as_str()) == Some("config") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "Provider is defined in purrcode.yaml/purrcode.jsonc; toggle it disabled instead or remove it from the config file."
+                })),
+            );
+        }
+    }
+    let mut overrides = load_cockpit_overrides(&state.purrcode_dir);
+    overrides.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(&id));
+    save_cockpit_overrides(&state.purrcode_dir, &overrides);
     record_admin(&state, "provider_delete", &id, "allow", "provider removed");
+    let updated = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    let providers = sanitize_providers_for_client(&updated);
     (StatusCode::OK, Json(json!({ "providers": providers })))
 }
 
@@ -284,71 +414,136 @@ pub async fn test_provider(
     uri: Uri,
 ) -> (StatusCode, Json<Value>) {
     let id = extract_id(uri.path(), "/api/providers/");
-    let mut providers = load_providers_config(&state.purrcode_dir);
-    let mut target_prov = None;
+    let merged = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    let entry = merged
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&id));
 
-    for prov in &mut providers {
-        if prov.get("id").and_then(|v| v.as_str()) == Some(&id) {
-            let base_url = prov
-                .get("baseUrl")
-                .and_then(|u| u.as_str())
-                .unwrap_or("http://127.0.0.1:3425/v1");
-            let target_url = format!("{}/models", base_url.trim_end_matches('/'));
+    let base_url_opt = entry
+        .and_then(|p| p.get("baseUrl").and_then(|u| u.as_str()))
+        .map(str::to_string);
+    let api_key_opt = entry
+        .and_then(|p| p.get("apiKey").and_then(|k| k.as_str()))
+        .map(str::to_string)
+        .or_else(|| {
+            let clean = id.strip_prefix("prov-").unwrap_or(&id);
+            purrcode_config::ConfigLoader::load_effective()
+                .ok()
+                .and_then(|cfg| cfg.providers.get(clean).and_then(|p| p.api_key.clone()))
+        });
 
-            let start = Instant::now();
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(1500))
-                .build();
-            let latency = if let Ok(c) = client {
-                match c.get(&target_url).send().await {
-                    Ok(_) => start.elapsed().as_millis() as u64,
-                    Err(_) => 14,
-                }
-            } else {
-                12
-            };
-
-            if let Some(obj) = prov.as_object_mut() {
-                obj.insert("lastLatencyMs".to_string(), json!(latency));
-                obj.insert("lastTestedAt".to_string(), json!("Just now"));
-            }
-            target_prov = Some(prov.clone());
-            break;
-        }
+    let Some(base_url) = base_url_opt else {
+        record_admin(&state, "provider_ping", &id, "deny", "provider not found");
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("provider '{id}' not found") })),
+        );
+    };
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        record_admin(
+            &state,
+            "provider_ping",
+            &id,
+            "deny",
+            "invalid baseUrl scheme",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "provider baseUrl must use http:// or https://" })),
+        );
     }
 
-    save_providers_config(&state.purrcode_dir, &providers);
+    let target_url = format!("{}/models", base_url.trim_end_matches('/'));
+    let start = Instant::now();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(3000))
+        .build();
+    let probe = match client {
+        Ok(c) => {
+            let mut req = c.get(&target_url);
+            if let Some(ref key) = api_key_opt {
+                if !key.trim().is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", key.trim()));
+                }
+            }
+            match req.send().await {
+                Ok(resp) if resp.status().is_success() => Ok(start.elapsed().as_millis() as u64),
+                Ok(resp) => Err(format!("HTTP {}", resp.status())),
+                Err(e) => Err(format!("connection failed: {e}")),
+            }
+        }
+        Err(e) => Err(format!("http client error: {e}")),
+    };
+
+    let (status_code, latency_val, detail, ok) = match probe {
+        Ok(ms) => (
+            StatusCode::OK,
+            json!(ms),
+            "endpoint reachable".to_string(),
+            true,
+        ),
+        Err(err) => (StatusCode::BAD_GATEWAY, Value::Null, err, false),
+    };
+
+    let mut patch = serde_json::Map::new();
+    patch.insert("lastLatencyMs".to_string(), latency_val.clone());
+    patch.insert(
+        "lastTestedAt".to_string(),
+        json!(if ok { "Just now" } else { "Failed" }),
+    );
+    upsert_provider_override(&state.purrcode_dir, &id, patch);
+
     record_admin(
         &state,
         "provider_ping",
         &id,
-        "allow",
-        "measured roundtrip latency",
+        if ok { "allow" } else { "deny" },
+        &detail,
     );
-    let prov = target_prov.unwrap_or_else(
-        || json!({ "id": id, "name": "Provider", "lastLatencyMs": 14, "lastTestedAt": "Just now" }),
-    );
-    (
-        StatusCode::OK,
-        Json(json!({ "provider": prov, "providers": providers })),
-    )
+
+    let updated = load_merged_providers(&state.workspace_root, &state.purrcode_dir);
+    let providers = sanitize_providers_for_client(&updated);
+    let prov = providers
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(&id))
+        .map(sanitize_provider_for_client)
+        .unwrap_or_else(|| {
+            json!({ "id": id, "lastLatencyMs": latency_val, "lastTestedAt": if ok { "Just now" } else { "Failed" } })
+        });
+    if ok {
+        (
+            status_code,
+            Json(json!({ "provider": prov, "providers": providers })),
+        )
+    } else {
+        (
+            status_code,
+            Json(json!({ "error": detail, "provider": prov, "providers": providers })),
+        )
+    }
 }
 
-fn load_sandbox_state(purrcode_dir: &Path, workspace_root: &Path) -> Value {
+pub(crate) fn load_sandbox_state(purrcode_dir: &Path, workspace_root: &Path) -> Value {
     let file = purrcode_dir.join("cockpit_sandbox.json");
     if let Ok(raw) = std::fs::read_to_string(&file) {
-        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+        if let Ok(mut v) = serde_json::from_str::<Value>(&raw) {
+            if let Some(obj) = v.as_object_mut() {
+                // Seccomp network enforcement is not yet wired; keep network status honest.
+                obj.insert("networkEnforced".to_string(), json!(false));
+            }
             return v;
         }
     }
+    let landlock_supported = cfg!(target_os = "linux");
     json!({
-        "landlockAbi": "ABI v3", "enforced": true, "outboundNetworkEnabled": false,
+        "landlockAbi": if landlock_supported { "ABI v8 (Linux Landlock)" } else { "Unavailable (non-Linux)" },
+        "enforced": landlock_supported,
+        "networkEnforced": false,
+        "outboundNetworkEnabled": true,
         "blockedCidrs": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16"],
         "paths": [
             { "id": "sp-1", "path": workspace_root.display().to_string(), "mode": "rw", "addedAt": "Session start" },
-            { "id": "sp-2", "path": "/usr/local/cargo/registry", "mode": "ro", "addedAt": "System default" },
-            { "id": "sp-3", "path": "/usr/include", "mode": "ro", "addedAt": "System default" },
-            { "id": "sp-4", "path": "~/.purrcode/skills", "mode": "ro", "addedAt": "System default" }
+            { "id": "sp-2", "path": "/usr", "mode": "ro", "addedAt": "System default" }
         ],
         "auditLog": []
     })
@@ -358,18 +553,68 @@ fn save_sandbox_state(purrcode_dir: &Path, state: &Value) {
     save_json(&purrcode_dir.join("cockpit_sandbox.json"), state);
 }
 
+fn validate_sandbox_path(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err("path must not be empty or contain NUL bytes");
+    }
+    if trimmed.split(['/', '\\']).any(|seg| seg == "..") {
+        return Err("path traversal ('..') is forbidden");
+    }
+    if !trimmed.starts_with('/') && !trimmed.starts_with("~/") && !trimmed.starts_with("./") {
+        return Err("path must start with '/', '~/', or './'");
+    }
+    let normalized = trimmed.trim_end_matches('/').to_string();
+    if normalized.is_empty() || normalized == "~" {
+        return Err("root or bare home directory cannot be mounted directly");
+    }
+    const BLOCKED_PREFIXES: &[&str] = &[
+        "/etc",
+        "/root",
+        "/var/run",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/boot",
+        "/usr/sbin",
+        "/sbin",
+    ];
+    if BLOCKED_PREFIXES
+        .iter()
+        .any(|p| normalized == *p || normalized.starts_with(&format!("{p}/")))
+    {
+        return Err("sensitive system directory is blocked by policy");
+    }
+    const BLOCKED_FRAGMENTS: &[&str] = &[".ssh", ".gnupg", ".aws", ".kube", "id_rsa", "id_ed25519"];
+    let lower = normalized.to_ascii_lowercase();
+    if BLOCKED_FRAGMENTS.iter().any(|f| lower.contains(f)) {
+        return Err("credential paths cannot be exposed in sandbox rules");
+    }
+    Ok(normalized)
+}
+
 pub async fn add_sandbox_path(
     State(state): State<Arc<WebState>>,
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let payload = parse_body_json(&body);
-    let mut sb = load_sandbox_state(&state.purrcode_dir, &state.workspace_root);
-    let path_str = payload
-        .get("path")
-        .and_then(|p| p.as_str())
-        .unwrap_or("")
-        .to_string();
+    let raw_path = payload.get("path").and_then(|p| p.as_str()).unwrap_or("");
     let mode = payload.get("mode").and_then(|m| m.as_str()).unwrap_or("ro");
+    if mode != "ro" && mode != "rw" {
+        record_admin(&state, "sandbox_path_add", raw_path, "deny", "invalid mode");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "mode must be 'ro' or 'rw'" })),
+        );
+    }
+    let path_str = match validate_sandbox_path(raw_path) {
+        Ok(p) => p,
+        Err(reason) => {
+            record_admin(&state, "sandbox_path_add", raw_path, "deny", reason);
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": reason })));
+        }
+    };
+    let mut sb = load_sandbox_state(&state.purrcode_dir, &state.workspace_root);
     let rule_id = format!("sp-{}", uuid::Uuid::new_v4().simple());
     if let Some(paths) = sb.get_mut("paths").and_then(|p| p.as_array_mut()) {
         paths.push(json!({ "id": rule_id, "path": path_str, "mode": mode, "addedAt": "Just now" }));
@@ -438,12 +683,68 @@ pub async fn save_memory_files(
         .get("name")
         .and_then(|n| n.as_str())
         .unwrap_or("MEMORY.md");
-    let content = payload
-        .get("content")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-    let target_path = state.workspace_root.join(name);
-    let _ = std::fs::write(&target_path, content);
+    if !matches!(name, "MEMORY.md" | "USER.md" | "SOUL.md") {
+        record_admin(
+            &state,
+            "memory_file_save",
+            name,
+            "deny",
+            "invalid memory file name",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "name must be MEMORY.md, USER.md, or SOUL.md" })),
+        );
+    }
+    let Some(content) = payload.get("content").and_then(|c| c.as_str()) else {
+        record_admin(
+            &state,
+            "memory_file_save",
+            name,
+            "deny",
+            "content must be a string",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "content must be a string" })),
+        );
+    };
+    if content.contains('\0') {
+        record_admin(
+            &state,
+            "memory_file_save",
+            name,
+            "deny",
+            "NUL byte rejected",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "content must not contain NUL bytes" })),
+        );
+    }
+
+    let ws_target = state.workspace_root.join(name);
+    let target_path = if ws_target.exists() {
+        ws_target
+    } else {
+        state.purrcode_dir.join(name)
+    };
+    if let Some(parent) = target_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            record_admin(&state, "memory_file_save", name, "deny", &e.to_string());
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("failed to prepare directory: {e}") })),
+            );
+        }
+    }
+    if let Err(e) = std::fs::write(&target_path, content) {
+        record_admin(&state, "memory_file_save", name, "deny", &e.to_string());
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("failed to save {name}: {e}") })),
+        );
+    }
     record_admin(
         &state,
         "memory_file_save",
@@ -455,8 +756,13 @@ pub async fn save_memory_files(
     let names = ["MEMORY.md", "USER.md", "SOUL.md"];
     let mut memory_files = Vec::new();
     for fname in names {
-        let fpath = state.workspace_root.join(fname);
-        let text = std::fs::read_to_string(&fpath).unwrap_or_default();
+        let ws_path = state.workspace_root.join(fname);
+        let read_path = if ws_path.exists() {
+            ws_path
+        } else {
+            state.purrcode_dir.join(fname)
+        };
+        let text = std::fs::read_to_string(&read_path).unwrap_or_default();
         let desc = match fname {
             "MEMORY.md" => "Persistent architectural facts and invariants.",
             "USER.md" => "Operator preferences, coding style, and workflow defaults.",
@@ -472,281 +778,4 @@ pub async fn save_memory_files(
         StatusCode::OK,
         Json(json!({ "memoryFiles": memory_files, "auditLog": audit_log })),
     )
-}
-
-pub async fn manage_skills(
-    State(state): State<Arc<WebState>>,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    let payload = parse_body_json(&body);
-    let action = payload
-        .get("action")
-        .and_then(|a| a.as_str())
-        .unwrap_or("toggle");
-    let file = state.purrcode_dir.join("cockpit_skills.json");
-    let mut skills: Vec<Value> = std::fs::read_to_string(&file).ok().and_then(|r| serde_json::from_str(&r).ok())
-        .unwrap_or_else(|| vec![
-            json!({ "id": "sk-plan", "name": "plan", "scope": "bundled", "description": "Pre-flight multi-step implementation plan.", "trigger": "Multi-file edits", "enabled": true }),
-            json!({ "id": "sk-review", "name": "review", "scope": "bundled", "description": "Unified diff and AST invariant review.", "trigger": "Review request", "enabled": true }),
-            json!({ "id": "sk-git", "name": "git", "scope": "bundled", "description": "Branch inspection and safety.", "trigger": "Git ops", "enabled": true }),
-            json!({ "id": "sk-debug", "name": "debug", "scope": "bundled", "description": "Failure root cause analysis.", "trigger": "Test panics", "enabled": true }),
-            json!({ "id": "sk-scaffold", "name": "scaffold", "scope": "bundled", "description": "Deterministic crate scaffolding.", "trigger": "Scaffold prompts", "enabled": true }),
-            json!({ "id": "sk-frontend", "name": "frontend-design", "scope": "bundled", "description": "Component polish & design tokens.", "trigger": "UI edits", "enabled": true }),
-            json!({ "id": "sk-doctor", "name": "doctor", "scope": "bundled", "description": "Workspace sanity and Landlock check.", "trigger": "Diagnostics", "enabled": true })
-        ]);
-
-    if action == "toggle" {
-        if let Some(id) = payload.get("skillId").and_then(|s| s.as_str()) {
-            for sk in &mut skills {
-                if sk.get("id").and_then(|v| v.as_str()) == Some(id) {
-                    if let Some(obj) = sk.as_object_mut() {
-                        let curr = obj.get("enabled").and_then(|b| b.as_bool()).unwrap_or(true);
-                        obj.insert("enabled".to_string(), json!(!curr));
-                    }
-                }
-            }
-        }
-    } else if action == "create" {
-        let name = payload
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("custom-skill");
-        let desc = payload
-            .get("description")
-            .and_then(|d| d.as_str())
-            .unwrap_or("Custom user synthesized skill");
-        skills.push(json!({ "id": format!("sk-{}", name), "name": name, "scope": "project", "description": desc, "trigger": format!("When using {}", name), "enabled": true }));
-    }
-
-    save_json(&file, &json!(skills));
-    record_admin(
-        &state,
-        "skill_manage",
-        action,
-        "allow",
-        &format!("action={action}"),
-    );
-    let audit_log = load_audit_entries(&state.purrcode_dir, 50);
-    (
-        StatusCode::OK,
-        Json(json!({ "skills": skills, "auditLog": audit_log })),
-    )
-}
-
-fn load_mcp_servers(purrcode_dir: &Path) -> Vec<Value> {
-    let file = purrcode_dir.join("cockpit_mcp.json");
-    if let Ok(raw) = std::fs::read_to_string(&file) {
-        if let Ok(v) = serde_json::from_str::<Vec<Value>>(&raw) {
-            return v;
-        }
-    }
-    vec![json!({
-        "id": "mcp-fs", "name": "Local Filesystem & Git Inspector", "transport": "stdio",
-        "endpoint": "purrcode-mcp-fs", "status": "connected", "latencyMs": 14,
-        "tools": [{ "name": "fs_list_untracked", "description": "Enumerate untracked files", "inputSchema": { "type": "object" } }]
-    })]
-}
-
-pub async fn add_mcp_server(
-    State(state): State<Arc<WebState>>,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    let payload = parse_body_json(&body);
-    let mut servers = load_mcp_servers(&state.purrcode_dir);
-    let name = payload
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("New MCP Server");
-    let id = format!("mcp-{}", uuid::Uuid::new_v4().simple());
-    let mut srv = payload.clone();
-    if let Some(obj) = srv.as_object_mut() {
-        obj.insert("id".to_string(), json!(id));
-        obj.insert("status".to_string(), json!("connected"));
-        obj.insert("latencyMs".to_string(), json!(15));
-        obj.insert("tools".to_string(), json!([]));
-    }
-    servers.push(srv);
-    let file = state.purrcode_dir.join("cockpit_mcp.json");
-    save_json(&file, &json!(servers));
-    record_admin(
-        &state,
-        "mcp_server_add",
-        name,
-        "allow",
-        &format!("connected {id}"),
-    );
-    let audit_log = load_audit_entries(&state.purrcode_dir, 50);
-    (
-        StatusCode::CREATED,
-        Json(json!({ "mcpServers": servers, "auditLog": audit_log })),
-    )
-}
-
-pub async fn ping_mcp_server(
-    State(state): State<Arc<WebState>>,
-    uri: Uri,
-) -> (StatusCode, Json<Value>) {
-    let id = extract_id(uri.path(), "/api/mcp/servers/");
-    let mut servers = load_mcp_servers(&state.purrcode_dir);
-    for s in &mut servers {
-        if s.get("id").and_then(|v| v.as_str()) == Some(&id) {
-            if let Some(obj) = s.as_object_mut() {
-                obj.insert("status".to_string(), json!("connected"));
-                obj.insert("latencyMs".to_string(), json!(12));
-            }
-        }
-    }
-    record_admin(&state, "mcp_server_ping", &id, "allow", "ping successful");
-    (StatusCode::OK, Json(json!({ "mcpServers": servers })))
-}
-
-pub async fn delete_mcp_server(
-    State(state): State<Arc<WebState>>,
-    uri: Uri,
-) -> (StatusCode, Json<Value>) {
-    let id = extract_id(uri.path(), "/api/mcp/servers/");
-    let mut servers = load_mcp_servers(&state.purrcode_dir);
-    servers.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&id));
-    let file = state.purrcode_dir.join("cockpit_mcp.json");
-    save_json(&file, &json!(servers));
-    record_admin(
-        &state,
-        "mcp_server_delete",
-        &id,
-        "allow",
-        "mcp server removed",
-    );
-    (StatusCode::OK, Json(json!({ "mcpServers": servers })))
-}
-
-fn load_cron_jobs_state(purrcode_dir: &Path) -> Vec<Value> {
-    let file = purrcode_dir.join("cockpit_cron.json");
-    if let Ok(raw) = std::fs::read_to_string(&file) {
-        if let Ok(v) = serde_json::from_str::<Vec<Value>>(&raw) {
-            return v;
-        }
-    }
-    vec![
-        json!({
-            "id": "cron-1", "naturalPrompt": "every 15 minutes", "expression": "*/15 * * * *",
-            "summary": "Runs every 15 minutes", "nextRun": "Today at 14:30", "targetAgent": "Tuxeshadow", "enabled": true
-        }),
-        json!({
-            "id": "cron-2", "naturalPrompt": "weekdays at 9:00am", "expression": "0 9 * * 1-5",
-            "summary": "Runs Monday–Friday at 09:00", "nextRun": "Next weekday at 09:00", "targetAgent": "Sphinx", "enabled": true
-        }),
-    ]
-}
-
-pub async fn add_cron_job(
-    State(state): State<Arc<WebState>>,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    let payload = parse_body_json(&body);
-    let mut jobs = load_cron_jobs_state(&state.purrcode_dir);
-    let natural = payload
-        .get("naturalPrompt")
-        .and_then(|p| p.as_str())
-        .unwrap_or("every hour");
-    let agent = payload
-        .get("targetAgent")
-        .and_then(|a| a.as_str())
-        .unwrap_or("Tuxeshadow");
-    let id = format!("cron-{}", uuid::Uuid::new_v4().simple());
-    jobs.push(json!({
-        "id": id, "naturalPrompt": natural, "expression": "0 * * * *",
-        "summary": format!("Runs on schedule: {}", natural), "nextRun": "In 1 hour",
-        "targetAgent": agent, "enabled": true
-    }));
-    let file = state.purrcode_dir.join("cockpit_cron.json");
-    save_json(&file, &json!(jobs));
-    record_admin(
-        &state,
-        "cron_job_add",
-        natural,
-        "allow",
-        &format!("target={agent}"),
-    );
-    let audit_log = load_audit_entries(&state.purrcode_dir, 50);
-    (
-        StatusCode::CREATED,
-        Json(json!({ "cronJobs": jobs, "auditLog": audit_log })),
-    )
-}
-
-pub async fn toggle_cron_job(
-    State(state): State<Arc<WebState>>,
-    uri: Uri,
-) -> (StatusCode, Json<Value>) {
-    let id = extract_id(uri.path(), "/api/cron/jobs/");
-    let mut jobs = load_cron_jobs_state(&state.purrcode_dir);
-    for j in &mut jobs {
-        if j.get("id").and_then(|v| v.as_str()) == Some(&id) {
-            if let Some(obj) = j.as_object_mut() {
-                let curr = obj.get("enabled").and_then(|b| b.as_bool()).unwrap_or(true);
-                obj.insert("enabled".to_string(), json!(!curr));
-            }
-        }
-    }
-    let file = state.purrcode_dir.join("cockpit_cron.json");
-    save_json(&file, &json!(jobs));
-    record_admin(&state, "cron_job_toggle", &id, "allow", "toggled status");
-    (StatusCode::OK, Json(json!({ "cronJobs": jobs })))
-}
-
-pub async fn delete_cron_job(
-    State(state): State<Arc<WebState>>,
-    uri: Uri,
-) -> (StatusCode, Json<Value>) {
-    let id = extract_id(uri.path(), "/api/cron/jobs/");
-    let mut jobs = load_cron_jobs_state(&state.purrcode_dir);
-    jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some(&id));
-    let file = state.purrcode_dir.join("cockpit_cron.json");
-    save_json(&file, &json!(jobs));
-    record_admin(&state, "cron_job_delete", &id, "allow", "removed schedule");
-    (StatusCode::OK, Json(json!({ "cronJobs": jobs })))
-}
-
-pub async fn handle_approval(
-    State(state): State<Arc<WebState>>,
-    uri: Uri,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    let id = extract_id(uri.path(), "/api/approvals/");
-    let payload = parse_body_json(&body);
-    let decision = payload
-        .get("decision")
-        .and_then(|d| d.as_str())
-        .unwrap_or("denied");
-    record_admin(
-        &state,
-        "approval_decision",
-        &id,
-        if decision == "approved" {
-            "allow"
-        } else {
-            "deny"
-        },
-        &format!("decision={decision}"),
-    );
-
-    let session_infos = state.registry.list_sessions();
-    let sessions: Vec<Value> = session_infos.into_iter().map(|s| {
-        json!({
-            "id": s.id, "title": if s.title.is_empty() { "New Chat".to_string() } else { s.title },
-            "branch": "main", "preset": "tabby", "model": "antigravity/gemini-3.8-flash-tiered",
-            "updatedAt": "Just now", "messages": []
-        })
-    }).collect();
-
-    let sb = load_sandbox_state(&state.purrcode_dir, &state.workspace_root);
-    (
-        StatusCode::OK,
-        Json(json!({ "status": "ok", "id": id, "sessions": sessions, "sandbox": sb })),
-    )
-}
-
-pub async fn get_audit_logs(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
-    let entries = load_audit_entries(&state.purrcode_dir, 100);
-    (StatusCode::OK, Json(json!({ "entries": entries })))
 }

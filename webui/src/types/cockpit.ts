@@ -61,6 +61,7 @@ export interface Message {
   agentTitle?: string;
   modelUsed?: string;
   thinkingDurationMs?: number;
+  reasoning?: string;
   timestamp: string;
   content: string;
   pinnedFiles?: string[];
@@ -80,22 +81,28 @@ export interface Session {
   messages: Message[];
 }
 
+export type ReasoningEffort = 'auto' | 'off' | 'low' | 'medium' | 'high';
+
 export interface SubagentRouting {
   role: AgentRole;
   responsibility: string;
   primaryModel: string;
   fallbackModel: string;
-  temperature: number;
-  maxTokens: number;
+  reasoningEffort?: ReasoningEffort;
+  temperature?: number | null;
+  maxTokens?: number;
   status: 'idle' | 'active';
 }
 
 export interface ProviderConfig {
   id: string;
+  configKey?: string;
+  source?: 'config' | 'cockpit';
   name: string;
   protocol: 'gemini' | 'anthropic' | 'openai' | 'deepseek' | 'ollama' | 'custom';
   baseUrl: string;
   apiKey?: string;
+  hasApiKey?: boolean;
   defaultModel: string;
   models: string[];
   contextWindow: number;
@@ -240,6 +247,37 @@ export interface ToastItem {
   detail?: string;
 }
 
+export interface QuickCommandConfig {
+  name: string;
+  description: string;
+  template: string;
+}
+
+export interface PresetOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface UiConfig {
+  theme: string;
+  density: 'compact' | 'comfortable' | string;
+  showReasoning: boolean;
+  reasoningCollapsed: boolean;
+  showToolArgs: boolean;
+  toolPreviewLines: number;
+  streamingMode: string;
+  showTimestamps: boolean;
+  showTokenUsage: boolean;
+  companionName: string;
+  companionPersonality: string;
+  statuslineFields: string[];
+  pinnedFiles: string[];
+  quickCommands: QuickCommandConfig[];
+  autoCompactThreshold: number;
+  customThemeTokens?: Record<string, string>;
+}
+
 export interface CockpitPreferences {
   activeThemeId: string;
   customThemeTokens: ThemeTokens;
@@ -260,4 +298,7 @@ export interface CockpitState {
   mcpServers: McpServer[];
   cronJobs: CronJob[];
   preferences: CockpitPreferences;
+  ui?: UiConfig;
+  workspaceFiles?: string[];
+  presets?: PresetOption[];
 }

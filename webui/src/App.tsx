@@ -87,6 +87,7 @@ export default function App() {
     stopStream,
   } = useChatStream({
     activeSessionId: activeSession?.id,
+    activeSessionModel: activeSession?.model,
     setState: store.setState,
     pushToast,
     onCelebrate: () => triggerReaction('celebrate'),
@@ -120,20 +121,29 @@ export default function App() {
   }, []);
 
   const availableModels = useMemo(() => {
-    if (!store.state) return ['antigravity/gemini-3.8-flash-tiered'];
-    const set = new Set<string>(['antigravity/gemini-3.8-flash-tiered']);
-    for (const p of store.state.providers) {
-      for (const m of p.models) set.add(m);
+    if (!store.state) return [];
+    const enabled = store.state.providers.filter((p) => p.enabled);
+    const multi = enabled.length > 1;
+    const set = new Set<string>();
+    for (const p of enabled) {
+      const key =
+        p.configKey?.trim() || (p.id.startsWith('prov-') ? p.id.slice(5) : p.id);
+      for (const m of [p.defaultModel, ...p.models]) {
+        if (m) set.add(multi ? `${key}:${m}` : m);
+      }
+    }
+    if (activeSession?.model) {
+      set.add(activeSession.model);
     }
     return Array.from(set);
-  }, [store.state]);
+  }, [store.state, activeSession?.model]);
 
   const contextLimit = useMemo(() => {
-    if (!store.state || !activeSession) return 128000;
-    const provider = store.state.providers.find((p) =>
-      p.models.includes(activeSession.model)
-    );
-    return provider?.contextWindow ?? 128000;
+    if (!store.state || !activeSession) return 0;
+    const provider =
+      store.state.providers.find((p) => p.models.includes(activeSession.model)) ??
+      store.state.providers.find((p) => p.enabled);
+    return provider?.contextWindow ?? 0;
   }, [store.state, activeSession]);
 
   const hasPendingApproval = useMemo(() => {
@@ -188,6 +198,8 @@ export default function App() {
         projectName={store.state.projectName}
         activeSession={activeSession}
         availableModels={availableModels}
+        providers={store.state.providers}
+        presets={store.state.presets}
         isStreaming={Boolean(streamingMessage)}
         sidebarOpen={sidebarOpen}
         inspectorOpen={inspectorOpen}
@@ -233,6 +245,9 @@ export default function App() {
                 streamingMessage={streamingMessage}
                 streamElapsedMs={streamElapsedMs}
                 streamError={streamError}
+                uiConfig={store.state.ui}
+                workspaceFiles={store.state.workspaceFiles}
+                quickCommands={store.state.ui?.quickCommands}
                 onSendPrompt={sendPrompt}
                 onStopStream={stopStream}
                 onPetCompanion={handlePetCompanion}
@@ -244,15 +259,24 @@ export default function App() {
               {activeView === 'routing' && (
                 <RoutingView
                   routing={store.state.routing}
+                  providers={store.state.providers}
                   availableModels={availableModels}
+                  activeSessionModel={activeSession.model}
                   onSaveRouting={store.saveRouting}
+                  onOpenProviders={() => setActiveView('providers')}
                 />
               )}
 
               {activeView === 'providers' && (
                 <ProvidersView
                   providers={store.state.providers}
+                  activeSessionModel={activeSession.model}
+                  onUseModel={(model) =>
+                    store.updateSessionMeta(activeSession.id, { model })
+                  }
+                  onOpenRouting={() => setActiveView('routing')}
                   onAddProvider={store.addProvider}
+                  onUpdateProvider={store.updateProvider}
                   onToggleProvider={store.toggleProvider}
                   onDeleteProvider={store.deleteProvider}
                   onTestLatency={store.testLatency}

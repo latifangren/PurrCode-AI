@@ -44,6 +44,10 @@ export function AuditLogsView({ initialAuditLog }: AuditLogsViewProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setEntries(initialAuditLog);
+  }, [initialAuditLog]);
+
   const fetchLogs = useCallback(async () => {
     setIsRefreshing(true);
     try {

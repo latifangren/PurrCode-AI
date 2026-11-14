@@ -3,6 +3,7 @@ import type { CockpitState, Message, ToastTone, ToolStatus, ToolStep } from '../
 
 interface UseChatStreamOptions {
   activeSessionId: string | undefined;
+  activeSessionModel?: string;
   setState: React.Dispatch<React.SetStateAction<CockpitState | null>>;
   pushToast: (tone: ToastTone, title: string, detail?: string) => void;
   onCelebrate: () => void;
@@ -20,6 +21,7 @@ function normalizeToolName(tool?: string): 'read' | 'grep' | 'edit' | 'bash' | '
 
 export function useChatStream({
   activeSessionId,
+  activeSessionModel,
   setState,
   pushToast,
   onCelebrate,
@@ -29,6 +31,18 @@ export function useChatStream({
   const [streamElapsedMs, setStreamElapsedMs] = useState<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamStartRef = useRef<number | null>(null);
+  const isSendingRef = useRef<boolean>(false);
+  const activeSessionIdRef = useRef<string | undefined>(activeSessionId);
+
+  useEffect(() => {
+    const prevId = activeSessionIdRef.current;
+    activeSessionIdRef.current = activeSessionId;
+    if (prevId && prevId !== activeSessionId && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setStreamingMessage(null);
+    }
+  }, [activeSessionId]);
 
   useEffect(() => {
     if (!streamingMessage) {
@@ -56,7 +70,9 @@ export function useChatStream({
 
   const sendPrompt = useCallback(
     async (prompt: string, pinnedFiles: string[]) => {
-      if (!activeSessionId) return;
+      if (!activeSessionId || isSendingRef.current) return;
+      const targetSessionId = activeSessionId;
+      isSendingRef.current = true;
       setStreamError(null);
 
       const controller = new AbortController();
@@ -82,7 +98,7 @@ export function useChatStream({
         sender: 'agent',
         agentRole: 'Meowstro',
         agentTitle: 'Orchestrator',
-        modelUsed: 'antigravity/gemini-3.8-flash-tiered',
+        modelUsed: activeSessionModel || '',
         timestamp,
         content: '',
         isStreaming: true,
@@ -97,7 +113,7 @@ export function useChatStream({
           ? {
               ...prev,
               sessions: prev.sessions.map((s) =>
-                s.id === activeSessionId
+                s.id === targetSessionId
                   ? {
                       ...s,
                       messages: [...s.messages, userMsg],
@@ -112,9 +128,10 @@ export function useChatStream({
           : prev
       );
 
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       try {
         // Subscribe to real-time session SSE event stream
-        const eventsUrl = `/api/events?session=${encodeURIComponent(activeSessionId)}`;
+        const eventsUrl = `/api/events?session=${encodeURIComponent(targetSessionId)}`;
         const eventsResponse = await fetch(eventsUrl, {
           signal: controller.signal,
           headers: { Accept: 'text/event-stream' },
@@ -146,7 +163,7 @@ export function useChatStream({
           throw new Error(errMsg);
         }
 
-        const reader = eventsResponse.body.getReader();
+        reader = eventsResponse.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
@@ -181,7 +198,18 @@ export function useChatStream({
                   return next;
                 });
               } else if (evType === 'ReasoningChunk') {
-                // thinking chunks
+                const thinking = payload.thinking ?? payload.text ?? '';
+                if (thinking) {
+                  setStreamingMessage((prev) => {
+                    if (!prev) return prev;
+                    const next = {
+                      ...prev,
+                      reasoning: (prev.reasoning ?? '') + thinking,
+                    };
+                    latestStreamingMsg = next;
+                    return next;
+                  });
+                }
               } else if (evType === 'ToolCallStarted') {
                 setStreamingMessage((prev) => {
                   if (!prev) return prev;
@@ -219,12 +247,21 @@ export function useChatStream({
                   return next;
                 });
               } else if (evType === 'ToolCallFinished') {
+                const rawResult =
+                  typeof payload.result === 'string'
+                    ? payload.result
+                    : payload.result != null
+                    ? JSON.stringify(payload.result)
+                    : '';
                 setStreamingMessage((prev) => {
                   if (!prev) return prev;
                   const steps: ToolStep[] = (prev.toolSteps ?? []).map((step) =>
                     step.id === payload.call_id
                       ? {
                           ...step,
+                          summary: rawResult
+                            ? rawResult.slice(0, 600)
+                            : step.summary,
                           status: (payload.success ? 'completed' : 'denied') as ToolStatus,
                           durationMs: payload.duration_ms ?? 120,
                         }
@@ -270,7 +307,7 @@ export function useChatStream({
                     ? {
                         ...prev,
                         sessions: prev.sessions.map((s) =>
-                          s.id === activeSessionId
+                          s.id === targetSessionId
                             ? { ...s, messages: [...s.messages, finalMsg] }
                             : s
                         ),
@@ -278,6 +315,7 @@ export function useChatStream({
                     : prev
                 );
                 onCelebrate();
+                controller.abort();
                 return;
               } else if (evType === 'Error') {
                 const errMsg =
@@ -311,7 +349,7 @@ export function useChatStream({
               ? {
                   ...prev,
                   sessions: prev.sessions.map((s) =>
-                    s.id === activeSessionId
+                    s.id === targetSessionId
                       ? { ...s, messages: [...s.messages, stoppedMsg] }
                       : s
                   ),
@@ -330,12 +368,20 @@ export function useChatStream({
           pushToast('error', 'Streaming failed', msg);
         }
       } finally {
+        if (reader) {
+          try {
+            await reader.cancel();
+          } catch {
+            // ignore cancel errors
+          }
+        }
+        isSendingRef.current = false;
         setStreamingMessage(null);
         abortControllerRef.current = null;
         streamStartRef.current = null;
       }
     },
-    [activeSessionId, onCelebrate, pushToast, setState]
+    [activeSessionId, activeSessionModel, onCelebrate, pushToast, setState]
   );
 
   return {

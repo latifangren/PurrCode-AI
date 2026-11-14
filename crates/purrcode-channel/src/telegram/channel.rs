@@ -28,9 +28,10 @@ use purrcode_api::channel::{Channel, ChannelCapabilities};
 use purrcode_api::error::Result as PurrResult;
 use purrcode_api::event::AgentEvent;
 use purrcode_api::tool::AuditSink;
-use purrcode_config::TelegramConfig;
+use purrcode_config::{TelegramConfig, TelegramUiConfig};
 use purrcode_core::ApprovalRequester;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Mutex};
@@ -51,6 +52,7 @@ pub struct InboundMessage {
     pub chat_id: i64,
     pub session_id: String,
     pub text: String,
+    pub reply_to_message_id: Option<i64>,
 }
 
 /// The daemon-level Telegram transport.
@@ -65,6 +67,8 @@ pub struct TelegramChannel {
     index: Arc<Mutex<ChatSessionIndex>>,
     approval_timeout: Duration,
     poll_timeout: u32,
+    ui: TelegramUiConfig,
+    cancel_flags: Mutex<HashMap<i64, Arc<AtomicBool>>>,
     warned_unauthorized: Mutex<HashSet<i64>>,
     last_poll_success: Mutex<Option<Instant>>,
     health_warned: Mutex<bool>,
@@ -87,10 +91,26 @@ impl TelegramChannel {
             index: Arc::new(Mutex::new(ChatSessionIndex::load(state_dir))),
             approval_timeout: Duration::from_secs(config.approval_timeout_secs()),
             poll_timeout: config.poll_timeout_secs(),
+            ui: TelegramUiConfig::default(),
+            cancel_flags: Mutex::new(HashMap::new()),
             warned_unauthorized: Mutex::new(HashSet::new()),
             last_poll_success: Mutex::new(None),
             health_warned: Mutex::new(false),
         }
+    }
+
+    /// Apply customizable Telegram UI formatting, locale, and template overrides.
+    pub fn with_ui_config(mut self, ui: TelegramUiConfig) -> Self {
+        self.ui = ui;
+        self
+    }
+
+    /// Return (or create) the per-chat cancellation flag so `/cancel` stops active turns.
+    pub async fn cancel_flag_for(&self, chat_id: i64) -> Arc<AtomicBool> {
+        let mut map = self.cancel_flags.lock().await;
+        map.entry(chat_id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
     }
 
     pub fn api(&self) -> &Arc<TelegramApiClient> {
@@ -110,7 +130,17 @@ impl TelegramChannel {
 
     /// A renderer bound to one chat (one per turn).
     pub fn renderer(&self, chat_id: i64) -> Arc<TelegramRenderer> {
-        TelegramRenderer::new(self.api.clone(), chat_id)
+        TelegramRenderer::with_config(self.api.clone(), chat_id, self.ui.clone(), None)
+    }
+
+    /// A renderer configured for an inbound message (honoring group reply anchoring).
+    pub fn renderer_for(&self, inbound: &InboundMessage) -> Arc<TelegramRenderer> {
+        TelegramRenderer::with_config(
+            self.api.clone(),
+            inbound.chat_id,
+            self.ui.clone(),
+            inbound.reply_to_message_id,
+        )
     }
 
     /// The most recently active private chat (an accepted message or
@@ -366,10 +396,16 @@ impl TelegramChannel {
             tracing::warn!("telegram: failed to record activity for chat {chat_id}: {e}");
         }
         let session_id = self.session_for(chat_id).await;
+        let reply_to_message_id = if msg.chat.kind != "private" && self.ui.reply_in_groups {
+            Some(msg.message_id)
+        } else {
+            None
+        };
         let inbound = InboundMessage {
             chat_id,
             session_id,
             text: text.to_string(),
+            reply_to_message_id,
         };
         if tx.send(inbound).await.is_err() {
             tracing::warn!("telegram: gateway receiver gone; stopping poll");
@@ -400,7 +436,22 @@ impl TelegramChannel {
     /// "Sudah kedaluwarsa." — the real API allows only one answer per
     /// query, so answering first and again on staleness would lose the
     /// toast.
+    fn is_callback_authorized(&self, cb: &CallbackQuery) -> bool {
+        is_callback_authorized_for(&self.allow_from, cb)
+    }
+
     async fn process_callback(&self, cb: &CallbackQuery) {
+        if !self.is_callback_authorized(cb) {
+            tracing::warn!(
+                "telegram: ignoring unauthorized callback query from user {}",
+                cb.from.id
+            );
+            let _ = self
+                .api
+                .answer_callback_query(&cb.id, Some("Unauthorized."))
+                .await;
+            return;
+        }
         let Some(data) = cb.data.as_deref() else {
             let _ = self.api.answer_callback_query(&cb.id, None).await;
             return;
@@ -560,28 +611,132 @@ impl TelegramChannel {
                     }
                 }
             }
+            Some("/cancel") => {
+                let flag = self.cancel_flag_for(chat_id).await;
+                flag.store(true, Ordering::Relaxed);
+                let msg = self
+                    .ui
+                    .templates
+                    .get("cancelled")
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if self.ui.locale == "id" {
+                            "🛑 Permintaan pembatalan dikirim ke turn yang sedang berjalan."
+                                .to_string()
+                        } else {
+                            "🛑 Cancellation signal sent to the active turn.".to_string()
+                        }
+                    });
+                self.reply_text(chat_id, &msg).await;
+            }
+            Some("/status") => {
+                let index = self.index.lock().await;
+                let current = index
+                    .current_session(chat_id)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "(none)".to_string());
+                let total_sessions = index.sessions_for_chat(chat_id).len();
+                drop(index);
+                let msg = if self.ui.locale == "id" {
+                    format!(
+                        "🐾 **Status Telegram**\n• Chat ID: `{chat_id}`\n• Sesi aktif: `{current}`\n• Jumlah sesi: {total_sessions}\n• Mode format: `{}` | Tool verbosity: `{}`",
+                        self.ui.parse_mode, self.ui.tool_verbosity
+                    )
+                } else {
+                    format!(
+                        "🐾 **Telegram Status**\n• Chat ID: `{chat_id}`\n• Active session: `{current}`\n• Stored sessions: {total_sessions}\n• Parse mode: `{}` | Tool verbosity: `{}`",
+                        self.ui.parse_mode, self.ui.tool_verbosity
+                    )
+                };
+                self.reply_text(chat_id, &msg).await;
+            }
+            Some("/compact") => {
+                let focus = msg
+                    .text()
+                    .unwrap_or("")
+                    .split_once(' ')
+                    .map(|(_, rest)| rest.trim())
+                    .filter(|s| !s.is_empty());
+                let session_id = self.session_for(chat_id).await;
+                let home = std::env::var("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let store = purrcode_core::SessionStore::new(home.join(".purrcode"));
+                match store.load_messages(&session_id) {
+                    Ok(msgs) if msgs.len() <= 6 => {
+                        let text = if self.ui.locale == "id" {
+                            format!("ℹ️ Sesi `{session_id}` baru berisi {} pesan — belum perlu dikompaksi.", msgs.len())
+                        } else {
+                            format!("ℹ️ Session `{session_id}` has only {} messages — nothing to compact yet.", msgs.len())
+                        };
+                        self.reply_text(chat_id, &text).await;
+                    }
+                    Ok(msgs) => {
+                        let before = msgs.len();
+                        let compacted =
+                            purrcode_core::SessionStore::compact_messages(&msgs, focus, 6);
+                        let after = compacted.len();
+                        let _ = store.replace_messages(&session_id, &compacted);
+                        let text = self
+                            .ui
+                            .templates
+                            .get("compacted")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                if self.ui.locale == "id" {
+                                    format!("🧹 Sesi `{session_id}` dikompaksi: {before} → {after} pesan.")
+                                } else {
+                                    format!("🧹 Compacted session `{session_id}`: {before} → {after} messages.")
+                                }
+                            });
+                        self.reply_text(chat_id, &text).await;
+                    }
+                    Err(e) => {
+                        self.reply_text(chat_id, &format!("Failed to compact session: {e}"))
+                            .await;
+                    }
+                }
+            }
             Some("/help") => {
-                self.reply_text(
-                    chat_id,
-                    "🐾 PurrCode AI via Telegram\n\nPerintah:\n/new — mulai sesi baru (sesi lama diarsipkan)\n/resume — daftar sesi chat ini\n/resume <id> — kembali ke sesi lama\n/stop — hentikan sesi saat ini\n/help — pesan ini\n\nKirim apa saja sebagai prompt. Aksi yang butuh persetujuan muncul sebagai kartu Ya / Tidak / Selalu.",
-                )
-                .await;
+                let text = self.ui.templates.get("help").cloned().unwrap_or_else(|| {
+                    if self.ui.locale == "id" {
+                        "🐾 **PurrCode AI via Telegram**\n\nPerintah:\n/new — mulai sesi baru (sesi lama diarsipkan)\n/resume — daftar sesi chat ini\n/resume <id> — kembali ke sesi lama\n/compact [fokus] — ringkas riwayat sesi aktif\n/status — info sesi & konfigurasi aktif\n/cancel — batalkan turn yang sedang berjalan\n/stop — hentikan sesi saat ini\n/help — pesan ini\n\nKirim teks atau caption media sebagai prompt.".to_string()
+                    } else {
+                        "🐾 **PurrCode AI via Telegram**\n\nCommands:\n/new — start a new session (archives the current one)\n/resume — list sessions in this chat\n/resume <id> — switch back to a prior session\n/compact [focus] — compact active session context\n/status — show active session & UI settings\n/cancel — interrupt the running turn\n/stop — end and archive the current session\n/help — show this help\n\nSend text or media captions as prompts. Approval requests appear as inline buttons.".to_string()
+                    }
+                });
+                self.reply_text(chat_id, &text).await;
             }
             Some(other) => {
-                self.reply_text(
-                    chat_id,
-                    &format!("Perintah {other} tidak dikenal. /help untuk daftar perintah."),
-                )
-                .await;
+                let text = if self.ui.locale == "id" {
+                    format!(
+                        "Perintah `{other}` tidak dikenal. Gunakan /help untuk daftar perintah."
+                    )
+                } else {
+                    format!("Unknown command `{other}`. Use /help for available commands.")
+                };
+                self.reply_text(chat_id, &text).await;
             }
             None => {}
         }
     }
 
-    /// Send a plain-text reply in a chat (chunked at 4096 characters).
+    /// Send a formatted reply in a chat (HTML when configured, falling back to plain text).
     async fn reply_text(&self, chat_id: i64, text: &str) {
-        for chunk in split_message(text) {
-            if self.api.send_message(chat_id, &chunk, None).await.is_err() {
+        let html_mode = self.ui.parse_mode.eq_ignore_ascii_case("html");
+        let chunks = if html_mode {
+            crate::telegram::format::split_markdown_as_html(text)
+        } else {
+            split_message(text)
+        };
+        let pm = if html_mode { Some("HTML") } else { None };
+        for chunk in chunks {
+            if self
+                .api
+                .send_message_formatted(chat_id, &chunk, pm, None, None)
+                .await
+                .is_err()
+            {
                 tracing::warn!("telegram: failed to send reply to chat {chat_id}");
                 return;
             }
@@ -662,5 +817,86 @@ impl Channel for TelegramChatChannel {
             .approval
             .request_approval(call_id, tool, description, preview)
             .await)
+    }
+}
+
+pub(crate) fn is_callback_authorized_for(
+    allow_from: &std::collections::HashSet<i64>,
+    cb: &CallbackQuery,
+) -> bool {
+    if let Some(msg) = &cb.message {
+        if !allow_from.contains(&msg.chat.id) {
+            return false;
+        }
+        if msg.chat.kind == "private" && cb.from.id != msg.chat.id {
+            return false;
+        }
+        true
+    } else {
+        allow_from.contains(&cb.from.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telegram::types::{Chat, Message, User};
+
+    fn make_cb(from_id: i64, chat: Option<(i64, &str)>) -> CallbackQuery {
+        CallbackQuery {
+            id: "cb-1".to_string(),
+            from: User {
+                id: from_id,
+                is_bot: false,
+                username: None,
+                first_name: None,
+            },
+            message: chat.map(|(cid, kind)| Message {
+                message_id: 10,
+                chat: Chat {
+                    id: cid,
+                    kind: kind.to_string(),
+                    title: None,
+                    username: None,
+                },
+                from: None,
+                text: None,
+                caption: None,
+                entities: None,
+                caption_entities: None,
+            }),
+            data: Some("ap:abc:y".to_string()),
+        }
+    }
+
+    #[test]
+    fn callback_authorization_enforces_allow_from_and_private_sender() {
+        let mut allow = std::collections::HashSet::new();
+        allow.insert(100);
+        allow.insert(-200);
+
+        // Authorized private chat tap from the chat owner.
+        assert!(is_callback_authorized_for(
+            &allow,
+            &make_cb(100, Some((100, "private")))
+        ));
+        // Spoofed private chat tap where sender != chat id.
+        assert!(!is_callback_authorized_for(
+            &allow,
+            &make_cb(999, Some((100, "private")))
+        ));
+        // Unauthorized chat id.
+        assert!(!is_callback_authorized_for(
+            &allow,
+            &make_cb(999, Some((999, "private")))
+        ));
+        // Authorized group chat tap.
+        assert!(is_callback_authorized_for(
+            &allow,
+            &make_cb(555, Some((-200, "group")))
+        ));
+        // Missing message falls back to sender allowlist.
+        assert!(is_callback_authorized_for(&allow, &make_cb(100, None)));
+        assert!(!is_callback_authorized_for(&allow, &make_cb(999, None)));
     }
 }

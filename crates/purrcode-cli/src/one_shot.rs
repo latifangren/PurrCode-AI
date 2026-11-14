@@ -245,7 +245,7 @@ pub(crate) async fn run_one_shot(
     let mem_context = memory.load_context(Some(workspace_root)).await;
 
     let mut system_prompt = if use_orchestrator {
-        MeowstroOrchestrator::system_prompt(&skills_index)
+        MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(workspace_root))
     } else {
         let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
         if !skills_index.is_empty() {

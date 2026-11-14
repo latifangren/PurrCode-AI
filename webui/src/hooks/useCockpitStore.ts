@@ -63,7 +63,12 @@ export function useCockpitStore({
 
   const updatePreferences = useCallback(
     async (next: CockpitPreferences) => {
-      setState((prev) => (prev ? { ...prev, preferences: next } : prev));
+      let prevPrefs: CockpitPreferences | undefined;
+      setState((prev) => {
+        if (!prev) return prev;
+        prevPrefs = prev.preferences;
+        return { ...prev, preferences: next };
+      });
       const res = await runMutation(
         () =>
           requestJson<{ preferences: CockpitPreferences }>('/api/preferences', {
@@ -74,6 +79,9 @@ export function useCockpitStore({
       );
       if (res) {
         pushToast('success', 'Appearance updated', `${next.companion.name} & theme synced.`);
+      } else if (prevPrefs) {
+        const rollback = prevPrefs;
+        setState((prev) => (prev ? { ...prev, preferences: rollback } : prev));
       }
     },
     [pushToast, runMutation]
@@ -106,8 +114,13 @@ export function useCockpitStore({
 
   const selectSession = useCallback(
     async (id: string) => {
-      setState((prev) => (prev ? { ...prev, activeSessionId: id } : prev));
-      await runMutation(
+      let prevActiveId: string | undefined;
+      setState((prev) => {
+        if (!prev) return prev;
+        prevActiveId = prev.activeSessionId;
+        return { ...prev, activeSessionId: id };
+      });
+      const res = await runMutation(
         () =>
           requestJson(`/api/sessions/${id}`, {
             method: 'PATCH',
@@ -115,6 +128,10 @@ export function useCockpitStore({
           }),
         'Failed to switch session'
       );
+      if (!res && prevActiveId) {
+        const rollback = prevActiveId;
+        setState((prev) => (prev ? { ...prev, activeSessionId: rollback } : prev));
+      }
     },
     [runMutation]
   );
@@ -147,17 +164,18 @@ export function useCockpitStore({
 
   const updateSessionMeta = useCallback(
     async (sessionId: string, patch: { preset?: PresetMode; model?: string }) => {
-      setState((prev) =>
-        prev
-          ? {
-              ...prev,
-              sessions: prev.sessions.map((s) =>
-                s.id === sessionId ? { ...s, ...patch } : s
-              ),
-            }
-          : prev
-      );
-      await runMutation(
+      let prevSessions: Session[] | undefined;
+      setState((prev) => {
+        if (!prev) return prev;
+        prevSessions = prev.sessions;
+        return {
+          ...prev,
+          sessions: prev.sessions.map((s) =>
+            s.id === sessionId ? { ...s, ...patch } : s
+          ),
+        };
+      });
+      const res = await runMutation(
         () =>
           requestJson(`/api/sessions/${sessionId}`, {
             method: 'PATCH',
@@ -165,6 +183,10 @@ export function useCockpitStore({
           }),
         'Failed to update session settings'
       );
+      if (!res && prevSessions) {
+        const rollback = prevSessions;
+        setState((prev) => (prev ? { ...prev, sessions: rollback } : prev));
+      }
     },
     [runMutation]
   );
@@ -174,15 +196,22 @@ export function useCockpitStore({
       approvalId: string,
       decision: 'approved' | 'denied' | 'expired'
     ) => {
+      const targetSessionId = state?.activeSessionId;
       const data = await runMutation(
         () =>
-          requestJson<{ sessions: Session[]; sandbox: SandboxState }>(
-            `/api/approvals/${approvalId}`,
-            {
-              method: 'POST',
-              body: JSON.stringify({ decision }),
-            }
-          ),
+          requestJson<{
+            status: string;
+            id: string;
+            decision: string;
+            resolved: boolean;
+            auditLog?: AuditEntry[];
+          }>(`/api/approvals/${approvalId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              decision,
+              ...(targetSessionId ? { session_id: targetSessionId } : {}),
+            }),
+          }),
         'Failed to submit approval decision'
       );
       if (data) {
@@ -190,20 +219,39 @@ export function useCockpitStore({
           prev
             ? {
                 ...prev,
-                sessions: data.sessions,
-                sandbox: data.sandbox,
+                sessions: prev.sessions.map((s) => ({
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.approval?.id === approvalId
+                      ? { ...m, approval: { ...m.approval, status: decision } }
+                      : m
+                  ),
+                })),
+                sandbox: data.auditLog
+                  ? { ...prev.sandbox, auditLog: data.auditLog }
+                  : prev.sandbox,
               }
             : prev
         );
-        if (decision === 'approved') {
+        if (!data.resolved && decision !== 'expired') {
+          pushToast(
+            'warning',
+            'Approval no longer pending',
+            'The live execution gate did not have this request pending.'
+          );
+        } else if (decision === 'approved') {
           onCelebrate();
           pushToast('success', 'Patch approved', 'Execution finalized cleanly.');
         } else {
-          pushToast('warning', decision === 'expired' ? 'Approval expired' : 'Patch denied', 'Fail-closed guard blocked apply.');
+          pushToast(
+            'warning',
+            decision === 'expired' ? 'Approval expired' : 'Patch denied',
+            'Fail-closed guard blocked apply.'
+          );
         }
       }
     },
-    [onCelebrate, pushToast, runMutation]
+    [onCelebrate, pushToast, runMutation, state?.activeSessionId]
   );
 
   const saveRouting = useCallback(
@@ -242,6 +290,7 @@ export function useCockpitStore({
       baseUrl: string;
       defaultModel: string;
       contextWindow: number;
+      apiKey?: string;
     }) => {
       const data = await runMutation(
         () =>
@@ -270,21 +319,45 @@ export function useCockpitStore({
     [pushToast, runMutation]
   );
 
-  const toggleProvider = useCallback(
-    async (id: string, enabled: boolean) => {
+  const updateProvider = useCallback(
+    async (
+      id: string,
+      patch: {
+        enabled?: boolean;
+        name?: string;
+        protocol?: ProviderConfig['protocol'];
+        baseUrl?: string;
+        defaultModel?: string;
+        models?: string[];
+        contextWindow?: number;
+        apiKey?: string;
+        clearApiKey?: boolean;
+      },
+      toastLabel?: string
+    ) => {
       const data = await runMutation(
         () =>
           requestJson<{ providers: ProviderConfig[] }>(`/api/providers/${id}`, {
             method: 'PATCH',
-            body: JSON.stringify({ enabled }),
+            body: JSON.stringify(patch),
           }),
-        'Failed to toggle provider'
+        'Failed to update provider'
       );
       if (data) {
         setState((prev) => (prev ? { ...prev, providers: data.providers } : prev));
+        if (toastLabel) {
+          pushToast('success', toastLabel);
+        }
       }
     },
-    [runMutation]
+    [pushToast, runMutation]
+  );
+
+  const toggleProvider = useCallback(
+    async (id: string, enabled: boolean) => {
+      await updateProvider(id, { enabled });
+    },
+    [updateProvider]
   );
 
   const deleteProvider = useCallback(
@@ -605,6 +678,7 @@ export function useCockpitStore({
     resolveApproval,
     saveRouting,
     addProvider,
+    updateProvider,
     toggleProvider,
     deleteProvider,
     testLatency,

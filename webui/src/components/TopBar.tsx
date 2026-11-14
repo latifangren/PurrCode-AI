@@ -5,7 +5,14 @@ import {
   PanelRight,
   Plus,
 } from 'lucide-react';
-import type { CompanionConfig, CompanionMood, PresetMode, Session } from '../types/cockpit';
+import type {
+  CompanionConfig,
+  CompanionMood,
+  PresetMode,
+  PresetOption,
+  ProviderConfig,
+  Session,
+} from '../types/cockpit';
 import { BrandMark } from './BrandMark';
 import { CatCompanionSvg } from './CatCompanionSvg';
 
@@ -13,6 +20,8 @@ interface TopBarProps {
   projectName: string;
   activeSession: Session;
   availableModels: string[];
+  providers?: ProviderConfig[];
+  presets?: PresetOption[];
   isStreaming: boolean;
   sidebarOpen: boolean;
   inspectorOpen: boolean;
@@ -31,6 +40,8 @@ export function TopBar({
   projectName,
   activeSession,
   availableModels,
+  providers = [],
+  presets = [],
   isStreaming,
   sidebarOpen,
   inspectorOpen,
@@ -87,9 +98,18 @@ export function TopBar({
             onChange={(e) => onChangePreset(e.target.value as PresetMode)}
             className="h-8 rounded-md border border-hairline bg-canvas px-2.5 text-xs font-medium text-ink focus:outline-none focus:border-primary"
           >
-            <option value="tabby">tabby (supervised)</option>
-            <option value="carrier">carrier (balanced)</option>
-            <option value="oyen">oyen (autonomous)</option>
+            {(presets.length > 0
+              ? presets
+              : [
+                  { id: 'tabby', label: 'tabby (supervised)' },
+                  { id: 'carrier', label: 'carrier (balanced)' },
+                  { id: 'oyen', label: 'oyen (autonomous)' },
+                ]
+            ).map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -99,13 +119,41 @@ export function TopBar({
             aria-label="Active session model"
             value={activeSession.model}
             onChange={(e) => onChangeModel(e.target.value)}
-            className="h-8 rounded-md border border-hairline bg-canvas px-2.5 font-mono text-xs text-ink focus:outline-none focus:border-primary max-w-[180px]"
+            className="h-8 rounded-md border border-hairline bg-canvas px-2.5 font-mono text-xs text-ink focus:outline-none focus:border-primary max-w-[210px]"
           >
-            {availableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
+            {activeSession.model && !availableModels.includes(activeSession.model) && (
+              <option value={activeSession.model}>{activeSession.model}</option>
+            )}
+            {providers.filter((p) => p.enabled).length > 0
+              ? (() => {
+                  const enabled = providers.filter((p) => p.enabled);
+                  const multi = enabled.length > 1;
+                  return enabled.map((prov) => {
+                    const key =
+                      prov.configKey?.trim() ||
+                      (prov.id.startsWith('prov-') ? prov.id.slice(5) : prov.id);
+                    const models = Array.from(
+                      new Set([prov.defaultModel, ...prov.models].filter(Boolean))
+                    );
+                    return (
+                      <optgroup key={prov.id} label={prov.name}>
+                        {models.map((m) => {
+                          const val = multi ? `${key}:${m}` : m;
+                          return (
+                            <option key={`${prov.id}:${m}`} value={val}>
+                              {m}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    );
+                  });
+                })()
+              : availableModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
           </select>
         </label>
 

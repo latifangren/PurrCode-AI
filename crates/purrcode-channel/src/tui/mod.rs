@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod app;
+pub mod markdown;
 pub mod render;
+pub mod theme;
 
 pub use app::{
     ApprovalRequest, AskOptionItem, AskPromptRequest, MessageItem, ToolStatus, TuiApp, TuiEvent,
@@ -240,20 +242,46 @@ fn run_loop<B: ratatui::backend::Backend>(
                     }
                 }
 
+                if app.is_generating {
+                    app.spinner_tick = app.spinner_tick.wrapping_add(1);
+                }
+
                 // Normal editing keys
                 match key.code {
+                    KeyCode::Enter
+                        if key.modifiers.contains(KeyModifiers::SHIFT)
+                            || key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        app.insert_char('\n');
+                    }
+                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.insert_char('\n');
+                    }
+                    KeyCode::Tab => {
+                        let _ = app.apply_slash_completion();
+                    }
                     KeyCode::Char(c) => app.insert_char(c),
                     KeyCode::Backspace => app.backspace(),
                     KeyCode::Delete => app.delete(),
                     KeyCode::Left => app.move_cursor_left(),
                     KeyCode::Right => app.move_cursor_right(),
+                    KeyCode::PageUp => {
+                        app.scroll_offset = app.scroll_offset.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        app.scroll_offset = app.scroll_offset.saturating_add(5);
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.scroll_offset = app.scroll_offset.saturating_add(1);
+                    }
                     KeyCode::Up => {
-                        if app.scroll_offset > 0 {
-                            app.scroll_offset -= 1;
-                        }
+                        app.history_prev();
                     }
                     KeyCode::Down => {
-                        app.scroll_offset += 1;
+                        app.history_next();
                     }
                     KeyCode::Enter => {
                         if let Some(cmd) = app.submit_input() {
@@ -341,9 +369,11 @@ fn handle_slash_command(
         "/new" => {
             app.items.clear();
             app.scroll_offset = 0;
+            app.token_usage = 0;
+            app.tool_call_count = 0;
             app.session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
             if let Some(tx) = prompt_tx {
-                let _ = tx.send("/__internal_reset".to_string());
+                let _ = tx.send(format!("/__internal_reset:{}", app.session_id));
             }
             app.items.push(MessageItem::Assistant {
                 text: format!("Started new session: {}", app.session_id),
@@ -353,7 +383,82 @@ fn handle_slash_command(
         }
         "/help" | "/?" => {
             app.items.push(MessageItem::Assistant {
-                text: "Slash commands: /help /new /resume <id> /fork /compact [focus] /clear /memory /export [jsonl|html] /stats /model <provider:model> /preset [name] /model-preset [name] /skill <name> /plugin list /status /quit".to_string(),
+                text: "Slash commands: /help /new /resume [id] /fork /compact [focus] /clear /memory /export [jsonl|md] /theme [name] /reasoning /stats /model <provider:model> /preset [name] /model-preset [name] /status /quit\nKeys: Enter=send | Shift+Enter/Ctrl+J=newline | Tab=complete /cmd | Up/Down=history | PgUp/PgDn=scroll | Esc=stop".to_string(),
+                reasoning: None,
+            });
+            true
+        }
+        "/resume" => {
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send(format!("/__internal_resume:{}", rest));
+            } else {
+                app.items.push(MessageItem::Assistant {
+                    text: "Session store is unavailable in standalone TUI mode.".to_string(),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        "/fork" => {
+            let new_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send(format!("/__internal_fork:{}", new_id));
+                app.session_id = new_id.clone();
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Forked session into '{}'.", new_id),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        "/compact" => {
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send(format!("/__internal_compact:{}", rest));
+            }
+            true
+        }
+        "/memory" => {
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send("/__internal_memory".to_string());
+            }
+            true
+        }
+        "/export" => {
+            let fmt = if rest.is_empty() { "md" } else { rest.as_str() };
+            if let Some(tx) = prompt_tx {
+                let _ = tx.send(format!("/__internal_export:{}", fmt));
+            }
+            true
+        }
+        "/theme" => {
+            if rest.is_empty() {
+                app.items.push(MessageItem::Assistant {
+                    text: format!(
+                        "Active theme: {} (available: warm-paper, catppuccin-mocha, rose-pine, tokyo-night, midnight-slate)",
+                        app.ui_config.theme
+                    ),
+                    reasoning: None,
+                });
+            } else {
+                app.ui_config.theme = rest.clone();
+                app.items.push(MessageItem::Assistant {
+                    text: format!("Switched TUI theme to '{}'.", rest),
+                    reasoning: None,
+                });
+            }
+            true
+        }
+        "/reasoning" => {
+            app.show_reasoning = !app.show_reasoning;
+            app.items.push(MessageItem::Assistant {
+                text: format!(
+                    "Reasoning display {}.",
+                    if app.show_reasoning {
+                        "enabled"
+                    } else {
+                        "hidden"
+                    }
+                ),
                 reasoning: None,
             });
             true
@@ -376,6 +481,9 @@ fn handle_slash_command(
         "/preset" => {
             if !rest.is_empty() {
                 app.preset_name = rest.clone();
+                if let Some(tx) = prompt_tx {
+                    let _ = tx.send(format!("/__internal_preset:{}", rest));
+                }
                 app.items.push(MessageItem::Assistant {
                     text: format!("Switched session mode preset to '{}'.", rest),
                     reasoning: None,
@@ -394,6 +502,9 @@ fn handle_slash_command(
         "/model-preset" => {
             if !rest.is_empty() {
                 app.model_preset_name = rest.clone();
+                if let Some(tx) = prompt_tx {
+                    let _ = tx.send(format!("/__internal_model_preset:{}", rest));
+                }
                 app.items.push(MessageItem::Assistant {
                     text: format!("Switched session model preset to '{}'.", rest),
                     reasoning: None,
@@ -412,6 +523,9 @@ fn handle_slash_command(
         "/model" => {
             if !rest.is_empty() {
                 app.model_name = rest.clone();
+                if let Some(tx) = prompt_tx {
+                    let _ = tx.send(format!("/__internal_model:{}", rest));
+                }
                 app.items.push(MessageItem::Assistant {
                     text: format!("Active model updated to '{}'.", rest),
                     reasoning: None,

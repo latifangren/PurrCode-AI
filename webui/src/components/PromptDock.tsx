@@ -1,31 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Paperclip, Send, Square, X } from 'lucide-react';
 import { matchSlashCommands } from '../lib/cockpitLogic';
+import type { QuickCommandConfig } from '../types/cockpit';
 
 interface PromptDockProps {
   disabled: boolean;
   isStreaming?: boolean;
+  workspaceFiles?: string[];
+  quickCommands?: QuickCommandConfig[];
   onSend: (prompt: string, pinnedFiles: string[]) => void;
   onStop?: () => void;
 }
 
-const PINNABLE_FILES = [
-  'crates/purrcode-channel/src/web/routes.rs',
-  'src/web/server/routes.rs',
-  'src/lib/cockpitLogic.ts',
-  'MEMORY.md',
-  'SOUL.md',
-];
-
 export function PromptDock({
   disabled,
   isStreaming = false,
+  workspaceFiles = [],
+  quickCommands = [],
   onSend,
   onStop,
 }: PromptDockProps) {
   const [input, setInput] = useState('');
   const [pinnedFiles, setPinnedFiles] = useState<string[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
+  const [customFileInput, setCustomFileInput] = useState('');
 
   useEffect(() => {
     if (!isStreaming || !onStop) return;
@@ -38,7 +36,22 @@ export function PromptDock({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isStreaming, onStop]);
 
-  const slashSuggestions = matchSlashCommands(input);
+  const slashSuggestions = useMemo(() => {
+    const base = matchSlashCommands(input);
+    const trimmed = input.trim().toLowerCase();
+    const customMatches = quickCommands
+      .filter((cmd) => `/${cmd.name.toLowerCase()}`.startsWith(trimmed))
+      .map((cmd) => ({
+        command: `/${cmd.name}`,
+        usage: `/${cmd.name}`,
+        description: cmd.description || cmd.template,
+        template: cmd.template,
+      }));
+    return [
+      ...base.map((b) => ({ ...b, template: undefined as string | undefined })),
+      ...customMatches,
+    ];
+  }, [input, quickCommands]);
   const showSlashMenu = input.startsWith('/') && !input.includes(' ') && slashSuggestions.length > 0;
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -69,7 +82,15 @@ export function PromptDock({
               <button
                 key={item.command}
                 type="button"
-                onClick={() => setInput(item.command === '/clear' ? '/clear' : `${item.command} `)}
+                onClick={() =>
+                  setInput(
+                    item.template
+                      ? item.template
+                      : item.command === '/clear'
+                      ? '/clear'
+                      : `${item.command} `
+                  )
+                }
                 className="w-full px-3.5 py-2 flex items-center justify-between gap-3 text-left hover:bg-surface-card transition-colors cursor-pointer"
               >
                 <span className="font-mono text-xs font-medium text-primary">
@@ -96,23 +117,60 @@ export function PromptDock({
               </button>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {PINNABLE_FILES.map((file) => {
-                const selected = pinnedFiles.includes(file);
-                return (
-                  <button
-                    key={file}
-                    type="button"
-                    onClick={() => togglePin(file)}
-                    className={`px-2.5 py-1 rounded-md font-mono text-xs border transition-colors cursor-pointer ${
-                      selected
-                        ? 'border-primary bg-primary text-on-primary'
-                        : 'border-hairline bg-canvas text-body hover:bg-surface-card'
-                    }`}
-                  >
-                    {file}
-                  </button>
-                );
-              })}
+              {workspaceFiles.length === 0 ? (
+                <span className="text-xs text-muted">No indexed files returned by workspace.</span>
+              ) : (
+                workspaceFiles.map((file) => {
+                  const selected = pinnedFiles.includes(file);
+                  return (
+                    <button
+                      key={file}
+                      type="button"
+                      onClick={() => togglePin(file)}
+                      className={`px-2.5 py-1 rounded-md font-mono text-xs border transition-colors cursor-pointer ${
+                        selected
+                          ? 'border-primary bg-primary text-on-primary'
+                          : 'border-hairline bg-canvas text-body hover:bg-surface-card'
+                      }`}
+                    >
+                      {file}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                value={customFileInput}
+                onChange={(e) => setCustomFileInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const trimmed = customFileInput.trim();
+                    if (trimmed && !pinnedFiles.includes(trimmed)) {
+                      setPinnedFiles((prev) => [...prev, trimmed]);
+                    }
+                    setCustomFileInput('');
+                  }
+                }}
+                placeholder="Or enter a relative workspace path..."
+                aria-label="Custom workspace file path"
+                className="flex-1 h-7 rounded-md border border-hairline bg-canvas px-2.5 font-mono text-xs text-ink focus:outline-none focus:border-primary"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const trimmed = customFileInput.trim();
+                  if (trimmed && !pinnedFiles.includes(trimmed)) {
+                    setPinnedFiles((prev) => [...prev, trimmed]);
+                  }
+                  setCustomFileInput('');
+                }}
+                className="h-7 px-2.5 rounded-md border border-hairline bg-canvas hover:bg-surface-card text-xs text-ink cursor-pointer"
+              >
+                Add
+              </button>
             </div>
           </div>
         )}
@@ -181,6 +239,17 @@ export function PromptDock({
               >
                 /preset
               </button>
+              {quickCommands.map((cmd) => (
+                <button
+                  key={cmd.name}
+                  type="button"
+                  title={cmd.description || cmd.template}
+                  onClick={() => setInput(cmd.template)}
+                  className="h-8 px-2.5 rounded-md font-mono text-xs text-primary bg-surface-soft hover:bg-surface-card border border-hairline transition-colors cursor-pointer"
+                >
+                  /{cmd.name}
+                </button>
+              ))}
             </div>
 
             {isStreaming && onStop ? (

@@ -4,6 +4,8 @@ import type { ToolStep } from '../types/cockpit';
 
 interface ToolChainProps {
   steps: ToolStep[];
+  showToolArgs?: boolean;
+  previewLines?: number;
 }
 
 function ToolIcon({ tool }: { tool: ToolStep['tool'] }) {
@@ -19,7 +21,11 @@ function ToolIcon({ tool }: { tool: ToolStep['tool'] }) {
   }
 }
 
-export function ToolChain({ steps }: ToolChainProps) {
+export function ToolChain({
+  steps,
+  showToolArgs = true,
+  previewLines = 4,
+}: ToolChainProps) {
   const [expanded, setExpanded] = useState(false);
 
   if (steps.length === 0) return null;
@@ -77,9 +83,22 @@ export function ToolChain({ steps }: ToolChainProps) {
                 <div className="min-w-0 space-y-0.5">
                   <div className="font-mono text-code-text truncate">
                     <span className="text-code-muted mr-1.5">{step.tool}</span>
-                    {step.target}
+                    {showToolArgs ? step.target : '(args hidden by ui.show_tool_args)'}
                   </div>
-                  <div className="text-code-muted text-[12px]">{step.summary}</div>
+                  {(() => {
+                    const lines = step.summary.split('\n');
+                    const limit = Math.max(1, previewLines);
+                    const clipped = lines.slice(0, limit).join('\n');
+                    const extra = lines.length - limit;
+                    return (
+                      <div className="text-code-muted text-[12px] whitespace-pre-wrap break-words">
+                        {clipped}
+                        {extra > 0 && (
+                          <span className="ml-1.5 text-muted-soft">(+{extra} more lines)</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
               <div className="flex items-center gap-2.5 shrink-0 font-mono text-[11px] tabular-nums">

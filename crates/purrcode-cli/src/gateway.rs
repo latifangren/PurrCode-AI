@@ -136,7 +136,8 @@ pub async fn run_gateway(
 
     let memory = MarkdownMemory::new(&purrcode_dir);
     let mem_context = memory.load_context(Some(workspace_root)).await;
-    let mut system_prompt = MeowstroOrchestrator::system_prompt(&skills_index);
+    let mut system_prompt =
+        MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(workspace_root));
     if !mem_context.is_empty() {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&mem_context);
@@ -166,7 +167,10 @@ pub async fn run_gateway(
     println!("   Listening for Telegram messages (Ctrl-C to stop)...");
     let _ = provider; // the provider Arc lives in `registry` from here on
 
-    let channel = Arc::new(TelegramChannel::new(api, &tg, &telegram_state_dir()));
+    let channel = Arc::new(
+        TelegramChannel::new(api, &tg, &telegram_state_dir())
+            .with_ui_config(config.ui.telegram.clone()),
+    );
     channel.set_bot_info(&bot_info).await;
 
     let state = Arc::new(GatewayState {
@@ -411,7 +415,9 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         detail: format!("chat={}", inbound.chat_id),
     });
 
-    let renderer = state.channel.renderer(inbound.chat_id);
+    let renderer = state.channel.renderer_for(&inbound);
+    let cancel_flag = state.channel.cancel_flag_for(inbound.chat_id).await;
+    cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
     let listener = purrcode_channel::telegram::render::TelegramEventListener::new(renderer.clone());
     let approval = state.channel.approval_requester(
         inbound.chat_id,
@@ -452,7 +458,7 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         Some(state.config.clone()),
         Some(state.registry.clone()),
         None,
-        None,
+        Some(cancel_flag),
         false,
         Some(state.workspace_root.clone()),
         None,

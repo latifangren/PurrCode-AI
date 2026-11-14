@@ -62,6 +62,9 @@ pub struct AgentLoop {
     /// call, approval request and turn boundary is also published here
     /// (the WebUI subscribes through it; D5 `--json` will too).
     event_bus: Option<Arc<EventBus>>,
+    /// When `true`, emit reasoning/text deltas live as they arrive on the
+    /// first attempt instead of buffering until the step finishes.
+    live_streaming: bool,
 }
 
 impl AgentLoop {
@@ -75,7 +78,7 @@ impl AgentLoop {
             model: model.into(),
             tool_registry,
             max_steps: 25,
-            temperature: Some(0.2),
+            temperature: None,
             reasoning_effort: None,
             approval_requester: None,
             policy_gate: None,
@@ -85,7 +88,13 @@ impl AgentLoop {
             cancel_flag: None,
             steering_queue: None,
             event_bus: None,
+            live_streaming: false,
         }
+    }
+
+    pub fn with_live_streaming(mut self, enabled: bool) -> Self {
+        self.live_streaming = enabled;
+        self
     }
 
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
@@ -290,17 +299,33 @@ impl AgentLoop {
                         break;
                     }
 
+                    let stream_live_now = self.live_streaming && attempt == 0;
+
                     if let Some(reasoning) = chunk.reasoning_delta {
-                        // Held, not published: a truncated attempt is
-                        // discarded whole, so its deltas must never
-                        // reach the live stream (flushed below, on a
-                        // clean step completion).
+                        if stream_live_now && !reasoning.is_empty() {
+                            if let Some(ref bus) = self.event_bus {
+                                let _ = bus.publish(AgentEvent::ReasoningChunk {
+                                    thinking: reasoning.clone(),
+                                });
+                            }
+                            if let Some(l) = listener {
+                                l.on_text_chunk(&reasoning, true);
+                            }
+                        }
                         step_reasoning.push_str(&reasoning);
                     }
 
                     if !chunk.delta.is_empty() {
-                        // Held, not published: see the reasoning
-                        // buffer above.
+                        if stream_live_now {
+                            if let Some(ref bus) = self.event_bus {
+                                let _ = bus.publish(AgentEvent::TextChunk {
+                                    text: chunk.delta.clone(),
+                                });
+                            }
+                            if let Some(l) = listener {
+                                l.on_text_chunk(&chunk.delta, false);
+                            }
+                        }
                         step_text.push_str(&chunk.delta);
                     }
 
@@ -331,18 +356,8 @@ impl AgentLoop {
                 }
 
                 if !truncated {
-                    // The step completed cleanly: only now may its
-                    // text reach the live stream. A truncated attempt
-                    // never published anything, so a retry's text does
-                    // not duplicate a stale fragment in the one-shot
-                    // output, the TUI, or the WebUI SSE stream
-                    // (re-checker P2-1, v0.3 polish fix pass). The
-                    // trade-off is deliberate: the live stream now
-                    // shows each step's text in one batch instead of
-                    // word-by-word — the turn result, history, and
-                    // audit are unchanged, and reasoning/text stay on
-                    // their separate channels.
-                    if !step_reasoning.is_empty() {
+                    let already_streamed = self.live_streaming && attempt == 0;
+                    if !already_streamed && !step_reasoning.is_empty() {
                         if let Some(ref bus) = self.event_bus {
                             let _ = bus.publish(AgentEvent::ReasoningChunk {
                                 thinking: step_reasoning.clone(),
@@ -352,7 +367,7 @@ impl AgentLoop {
                             l.on_text_chunk(&step_reasoning, true);
                         }
                     }
-                    if !step_text.is_empty() {
+                    if !already_streamed && !step_text.is_empty() {
                         if let Some(ref bus) = self.event_bus {
                             let _ = bus.publish(AgentEvent::TextChunk {
                                 text: step_text.clone(),

@@ -43,10 +43,12 @@ async fn test_server_state_endpoint_schema() {
     assert!(!sessions.is_empty(), "sessions should not be empty");
     assert_eq!(sessions[0]["id"], "purr_web");
 
-    // Providers array
+    // Providers array: empty by default when purrcode.jsonc has no providers configured
     let providers = state["providers"].as_array().expect("providers is array");
-    assert!(!providers.is_empty(), "providers should not be empty");
-    assert!(providers.iter().any(|p| p["id"] == "prov-magpie"));
+    assert!(
+        providers.is_empty(),
+        "providers should not fabricate synthetic defaults"
+    );
 
     // Subagent routing
     let routing = state["routing"].as_array().expect("routing is array");
@@ -63,13 +65,21 @@ async fn test_server_state_endpoint_schema() {
     assert_eq!(memory_files[1]["name"], "USER.md");
     assert_eq!(memory_files[2]["name"], "SOUL.md");
 
-    // Sandbox
-    assert_eq!(state["sandbox"]["enforced"], true);
+    // Sandbox: honest enforcement reporting (Landlock on Linux, false for network)
+    assert_eq!(state["sandbox"]["enforced"], cfg!(target_os = "linux"));
+    assert_eq!(state["sandbox"]["networkEnforced"], false);
     assert!(state["sandbox"]["paths"].is_array());
 
     // Skills
     let skills = state["skills"].as_array().expect("skills is array");
     assert!(!skills.is_empty(), "bundled skills should be listed");
+
+    // UI config, workspaceFiles, and presets
+    assert!(state["ui"].is_object(), "ui config should be present");
+    assert_eq!(state["ui"]["theme"], "warm-paper");
+    assert!(state["workspaceFiles"].is_array());
+    let presets = state["presets"].as_array().expect("presets is array");
+    assert!(!presets.is_empty(), "presets should not be empty");
 
     let _ = cancel_tx.send(true);
     handle.abort();
@@ -243,6 +253,123 @@ async fn test_cockpit_sessions_mutations_and_audit_logs() {
     let pref_body = r#"{"theme":"catppuccin-mocha","density":"comfortable"}"#;
     let pref_resp = req_raw(port, "PUT", "/api/preferences", pref_body);
     assert!(pref_resp.starts_with("HTTP/1.1 200 OK"));
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cockpit_security_and_session_regression_guards() {
+    let dir = test_dir("cockpit-security");
+    let (port, registry, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+
+    // 1. Disallowed memory filename must return 400 and never write outside allowlist.
+    let bad_mem_body = serde_json::json!({
+        "name": "../evil.md",
+        "content": "pwned"
+    })
+    .to_string();
+    let resp = req_raw(port, "PUT", "/api/memory/files", &bad_mem_body);
+    assert!(resp.starts_with("HTTP/1.1 400"), "resp: {resp}");
+    assert!(!dir.parent().unwrap().join("evil.md").exists());
+
+    // Valid memory file persists cleanly.
+    let ok_mem_body = serde_json::json!({
+        "name": "MEMORY.md",
+        "content": "# Notes\nHello"
+    })
+    .to_string();
+    let resp = req_raw(port, "PUT", "/api/memory/files", &ok_mem_body);
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("MEMORY.md")).unwrap(),
+        "# Notes\nHello"
+    );
+
+    // 2. Sandbox path validation rejects relative/nonexistent paths and invalid modes.
+    let bad_sb = serde_json::json!({ "path": "relative/path", "mode": "rw" }).to_string();
+    let resp = req_raw(port, "POST", "/api/sandbox/paths", &bad_sb);
+    assert!(resp.starts_with("HTTP/1.1 400"), "resp: {resp}");
+
+    let bad_mode = serde_json::json!({
+        "path": dir.to_string_lossy(),
+        "mode": "exec"
+    })
+    .to_string();
+    let resp = req_raw(port, "POST", "/api/sandbox/paths", &bad_mode);
+    assert!(resp.starts_with("HTTP/1.1 400"), "resp: {resp}");
+
+    let ok_sb = serde_json::json!({
+        "path": dir.to_string_lossy(),
+        "mode": "ro"
+    })
+    .to_string();
+    let resp = req_raw(port, "POST", "/api/sandbox/paths", &ok_sb);
+    assert!(resp.starts_with("HTTP/1.1 201"), "resp: {resp}");
+
+    // 3. PATCH invalid id returns 400, unknown valid-format session returns 404; known session persists preset/model/title into state.
+    let resp = req_raw(
+        port,
+        "PATCH",
+        "/api/sessions/does-not-exist",
+        r#"{"title":"Nope"}"#,
+    );
+    assert!(resp.starts_with("HTTP/1.1 400"), "resp: {resp}");
+
+    let resp = req_raw(
+        port,
+        "PATCH",
+        "/api/sessions/purr_web_000000000000",
+        r#"{"title":"Nope"}"#,
+    );
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    let resp = req_raw(port, "POST", "/api/sessions", "{}");
+    assert!(resp.starts_with("HTTP/1.1 201"), "resp: {resp}");
+    let created: serde_json::Value = serde_json::from_str(body_of(&resp)).unwrap();
+    let sid = created["session"]["id"].as_str().unwrap().to_string();
+
+    let patch_body = serde_json::json!({
+        "title": "Custom Audit Chat",
+        "preset": "catwalk",
+        "model": "openai/gpt-4o"
+    })
+    .to_string();
+    let resp = req_raw(port, "PATCH", &format!("/api/sessions/{sid}"), &patch_body);
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+
+    let state_resp = get(port, "/api/state");
+    assert!(state_resp.starts_with("HTTP/1.1 200 OK"));
+    let state_json: serde_json::Value = serde_json::from_str(body_of(&state_resp)).unwrap();
+    let sessions = state_json["sessions"].as_array().unwrap();
+    let patched = sessions.iter().find(|s| s["id"] == sid).unwrap();
+    assert_eq!(patched["title"], "Custom Audit Chat");
+    assert_eq!(patched["preset"], "catwalk");
+    assert_eq!(patched["model"], "openai/gpt-4o");
+
+    // 4. Live approval resolution routes through WebChannel and does not return fake sessions.
+    let session = registry.ensure_session_if_exists(&sid).unwrap();
+    let chan = session.channel.clone();
+    let req_task = tokio::spawn(async move {
+        use purrcode_api::channel::Channel;
+        chan.request_approval("call-1", "bash", "echo hi", None)
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let ap_body = serde_json::json!({
+        "session_id": sid,
+        "decision": "approved"
+    })
+    .to_string();
+    let ap_resp = req_raw(port, "POST", "/api/approvals/call-1", &ap_body);
+    assert!(ap_resp.starts_with("HTTP/1.1 200 OK"), "resp: {ap_resp}");
+    let ap_json: serde_json::Value = serde_json::from_str(body_of(&ap_resp)).unwrap();
+    assert_eq!(ap_json["resolved"], true);
+    assert!(ap_json.get("sessions").is_none());
+    assert!(req_task.await.unwrap());
 
     let _ = cancel_tx.send(true);
     handle.abort();

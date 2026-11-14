@@ -4,22 +4,15 @@
 //!
 //! One [`TelegramRenderer`] per chat turn. Text chunks accumulate into a
 //! draft that is sent as a message once it is long enough, then edited
-//! in place as it grows (throttled to ~1 edit/second, only when the
-//! content changed — Telegram rejects identical edits). Tool calls get
-//! their own short lines (`🔧 read src/auth.rs — ok`) as separate
-//! messages, so they never corrupt the answer draft. Long answers are
-//! chunked at 4096 characters ([`super::chunk::split_message`]).
-//!
-//! The loop's [`AgentEventListener`] callbacks are synchronous, so the
-//! renderer is an actor: callbacks push [`RenderOp`]s into an unbounded
-//! channel and a background task performs the API calls in order. The
-//! gateway awaits [`TelegramRenderer::flush`] at the end of a turn so
-//! the answer is delivered before the turn is considered done.
+//! in place as it grows (throttled via `ui.stream_edit_ms`), and finalized
+//! with Telegram HTML formatting when `ui.parse_mode == "html"`.
 
 use crate::telegram::chunk::split_message;
 use crate::telegram::client::TelegramApiClient;
+use crate::telegram::format::{escape_html, markdown_to_telegram_html};
 use purrcode_api::error::Result;
 use purrcode_api::event::AgentEvent;
+use purrcode_config::TelegramUiConfig;
 use purrcode_core::AgentEventListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,15 +21,14 @@ use tokio::sync::{mpsc, oneshot};
 /// Minimum draft length before the first message is sent. Short
 /// answers are sent whole at flush time instead of as a placeholder.
 const DRAFT_SEND_THRESHOLD: usize = 200;
-/// Minimum time between two edits of the same message (Telegram
-/// rate-limits edits to roughly one per second).
-const EDIT_THROTTLE: Duration = Duration::from_millis(1000);
 
 /// One unit of rendering work, in order.
 enum RenderOp {
     Text(String),
+    Reasoning(String),
     ToolStarted {
         name: String,
+        args: String,
     },
     ToolFinished {
         name: String,
@@ -46,26 +38,36 @@ enum RenderOp {
     Flush(oneshot::Sender<()>),
 }
 
-/// Renders one chat turn into Telegram messages.
 pub struct TelegramRenderer {
     api: Arc<TelegramApiClient>,
     chat_id: i64,
+    ui: TelegramUiConfig,
+    reply_to_message_id: Option<i64>,
     tx: mpsc::UnboundedSender<RenderOp>,
 }
 
 impl TelegramRenderer {
-    /// Create a renderer and spawn its worker task. The worker stops
-    /// when the last `TelegramRenderer` clone is dropped (the channel
-    /// closes) — the gateway should `flush().await` first.
+    /// Create a renderer with default formatting settings.
     pub fn new(api: Arc<TelegramApiClient>, chat_id: i64) -> Arc<Self> {
+        Self::with_config(api, chat_id, TelegramUiConfig::default(), None)
+    }
+
+    /// Create a renderer configured with [`TelegramUiConfig`] and optional reply anchor.
+    pub fn with_config(
+        api: Arc<TelegramApiClient>,
+        chat_id: i64,
+        ui: TelegramUiConfig,
+        reply_to_message_id: Option<i64>,
+    ) -> Arc<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
         let renderer = Arc::new(Self {
             api: api.clone(),
             chat_id,
+            ui: ui.clone(),
+            reply_to_message_id,
             tx,
         });
-        let worker_api = api;
-        tokio::spawn(render_worker(worker_api, chat_id, rx));
+        tokio::spawn(render_worker(api, chat_id, ui, reply_to_message_id, rx));
         renderer
     }
 
@@ -75,10 +77,23 @@ impl TelegramRenderer {
         let _ = self.tx.send(RenderOp::Text(chunk.to_string()));
     }
 
+    /// Append a reasoning chunk when `ui.show_reasoning` is enabled.
+    pub fn push_reasoning(&self, chunk: &str) {
+        if self.ui.show_reasoning && !chunk.is_empty() {
+            let _ = self.tx.send(RenderOp::Reasoning(chunk.to_string()));
+        }
+    }
+
     /// Record a tool call starting (synchronous).
     pub fn tool_started(&self, name: &str) {
+        self.tool_started_with_args(name, "");
+    }
+
+    /// Record a tool call starting with its arguments preview.
+    pub fn tool_started_with_args(&self, name: &str, args: &str) {
         let _ = self.tx.send(RenderOp::ToolStarted {
             name: name.to_string(),
+            args: args.to_string(),
         });
     }
 
@@ -100,21 +115,29 @@ impl TelegramRenderer {
         let _ = ack_rx.await;
     }
 
-    /// Send one standalone message in this chat (plain text, chunked).
-    /// Used for command replies and status lines outside a turn.
+    /// Send one standalone message in this chat.
     pub async fn send_standalone(&self, text: &str) {
         let _ = self.send_standalone_reported(text).await;
     }
 
-    /// Like `send_standalone`, but reports whether every chunk reached
-    /// the Bot API (false = at least one chunk failed; the partial send
-    /// is already logged). The cron drain uses this so a lost delivery
-    /// is visible in the audit log instead of vanishing silently.
+    /// Like `send_standalone`, formatting as Telegram HTML when configured.
     pub async fn send_standalone_reported(&self, text: &str) -> bool {
-        for chunk in split_message(text) {
+        let html_mode = self.ui.parse_mode.eq_ignore_ascii_case("html");
+        let chunks = if html_mode {
+            crate::telegram::format::split_markdown_as_html(text)
+        } else {
+            split_message(text)
+        };
+        let pm = if html_mode { Some("HTML") } else { None };
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let reply_id = if idx == 0 {
+                self.reply_to_message_id
+            } else {
+                None
+            };
             if self
                 .api
-                .send_message(self.chat_id, &chunk, None)
+                .send_message_formatted(self.chat_id, chunk, pm, reply_id, None)
                 .await
                 .is_err()
             {
@@ -130,35 +153,76 @@ impl TelegramRenderer {
 async fn render_worker(
     api: Arc<TelegramApiClient>,
     chat_id: i64,
+    ui: TelegramUiConfig,
+    reply_to_message_id: Option<i64>,
     mut rx: mpsc::UnboundedReceiver<RenderOp>,
 ) {
+    let edit_throttle = Duration::from_millis(ui.stream_edit_ms.max(400));
     let mut draft = String::new();
+    let mut reasoning_buf = String::new();
     let mut draft_message_id: Option<i64> = None;
-    let mut last_edit = Instant::now() - EDIT_THROTTLE;
+    let mut last_edit = Instant::now() - edit_throttle;
     let mut last_sent_len = 0usize;
-    // Head chunks already sent mid-stream (finalized when the draft
-    // outgrew one message). They gain their `(k/n)` marker at flush,
-    // once the total is knowable.
     let mut sent_heads: Vec<(i64, String)> = Vec::new();
+    let mut used_reply_anchor = false;
+    let html_mode = ui.parse_mode.eq_ignore_ascii_case("html");
+    let verbosity = ui.tool_verbosity.to_ascii_lowercase();
 
     while let Some(op) = rx.recv().await {
         match op {
+            RenderOp::Reasoning(chunk) => {
+                reasoning_buf.push_str(&chunk);
+            }
             RenderOp::Text(chunk) => {
+                if ui.show_reasoning && !reasoning_buf.trim().is_empty() {
+                    let thought = std::mem::take(&mut reasoning_buf);
+                    let formatted = if html_mode {
+                        format!(
+                            "💭 <blockquote expandable>{}</blockquote>",
+                            escape_html(thought.trim())
+                        )
+                    } else {
+                        format!("💭 {}", thought.trim())
+                    };
+                    let reply_id = if !used_reply_anchor {
+                        used_reply_anchor = true;
+                        reply_to_message_id
+                    } else {
+                        None
+                    };
+                    let _ = api
+                        .send_message_formatted(
+                            chat_id,
+                            &formatted,
+                            if html_mode { Some("HTML") } else { None },
+                            reply_id,
+                            None,
+                        )
+                        .await;
+                }
                 draft.push_str(&chunk);
-                maybe_send_or_edit(
+                let reply_id = if !used_reply_anchor && draft_message_id.is_none() {
+                    reply_to_message_id
+                } else {
+                    None
+                };
+                if maybe_send_or_edit(
                     &api,
                     chat_id,
                     &mut draft,
                     &mut draft_message_id,
                     &mut last_edit,
+                    edit_throttle,
                     &mut last_sent_len,
                     &mut sent_heads,
+                    reply_id,
                 )
-                .await;
+                .await
+                {
+                    used_reply_anchor = true;
+                }
             }
-            RenderOp::ToolStarted { name } => {
-                // Flush the current draft first so the tool line lands
-                // AFTER the text written so far.
+            RenderOp::ToolStarted { name, args } => {
                 flush_draft(
                     &api,
                     chat_id,
@@ -166,20 +230,94 @@ async fn render_worker(
                     &mut draft_message_id,
                     &mut last_sent_len,
                     &mut sent_heads,
+                    html_mode,
+                    if !used_reply_anchor {
+                        used_reply_anchor = true;
+                        reply_to_message_id
+                    } else {
+                        None
+                    },
                 )
                 .await;
-                let line = format!("🔧 {name} — …");
-                if api.send_message(chat_id, &line, None).await.is_err() {
+                if verbosity == "minimal" {
+                    let _ = api.send_chat_action(chat_id, "typing").await;
+                    continue;
+                }
+                let line = if verbosity == "verbose" && !args.trim().is_empty() {
+                    let short_args: String = args.trim().chars().take(120).collect();
+                    if html_mode {
+                        format!(
+                            "🔧 <code>{}</code> <i>{}</i> — …",
+                            escape_html(&name),
+                            escape_html(&short_args)
+                        )
+                    } else {
+                        format!("🔧 {name} ({short_args}) — …")
+                    }
+                } else if html_mode {
+                    format!("🔧 <code>{}</code> — …", escape_html(&name))
+                } else {
+                    format!("🔧 {name} — …")
+                };
+                let pm = if html_mode { Some("HTML") } else { None };
+                if api
+                    .send_message_formatted(chat_id, &line, pm, None, None)
+                    .await
+                    .is_err()
+                {
                     tracing::warn!("telegram: failed to send tool line for '{name}'");
                 }
             }
             RenderOp::ToolFinished { name, success } => {
-                let line = format!("🔧 {name} — {}", if success { "ok" } else { "failed" });
-                if api.send_message(chat_id, &line, None).await.is_err() {
+                if verbosity == "minimal" {
+                    continue;
+                }
+                let status = if success { "ok" } else { "failed" };
+                let line = if html_mode {
+                    format!(
+                        "{} <code>{}</code> — {status}",
+                        if success { "✅" } else { "❌" },
+                        escape_html(&name)
+                    )
+                } else {
+                    format!("🔧 {name} — {status}")
+                };
+                let pm = if html_mode { Some("HTML") } else { None };
+                if api
+                    .send_message_formatted(chat_id, &line, pm, None, None)
+                    .await
+                    .is_err()
+                {
                     tracing::warn!("telegram: failed to send tool result line for '{name}'");
                 }
             }
             RenderOp::Flush(ack) => {
+                if ui.show_reasoning && !reasoning_buf.trim().is_empty() {
+                    let thought = std::mem::take(&mut reasoning_buf);
+                    let formatted = if html_mode {
+                        format!(
+                            "💭 <blockquote expandable>{}</blockquote>",
+                            escape_html(thought.trim())
+                        )
+                    } else {
+                        format!("💭 {}", thought.trim())
+                    };
+                    let reply_id = if !used_reply_anchor {
+                        used_reply_anchor = true;
+                        reply_to_message_id
+                    } else {
+                        None
+                    };
+                    let _ = api
+                        .send_message_formatted(
+                            chat_id,
+                            &formatted,
+                            if html_mode { Some("HTML") } else { None },
+                            reply_id,
+                            None,
+                        )
+                        .await;
+                }
                 flush_draft(
                     &api,
                     chat_id,
@@ -187,6 +325,13 @@ async fn render_worker(
                     &mut draft_message_id,
                     &mut last_sent_len,
                     &mut sent_heads,
+                    html_mode,
+                    if !used_reply_anchor {
+                        used_reply_anchor = true;
+                        reply_to_message_id
+                    } else {
+                        None
+                    },
                 )
                 .await;
                 let _ = ack.send(());
@@ -195,33 +340,41 @@ async fn render_worker(
     }
 }
 
-/// Send the draft as a first message once it is long enough, or edit
-/// the existing draft message when it grew (throttled, only on change).
-/// When the draft exceeds one message, the first chunk is finalized and
-/// the remainder starts a new draft.
+#[allow(clippy::too_many_arguments)]
 async fn maybe_send_or_edit(
     api: &Arc<TelegramApiClient>,
     chat_id: i64,
     draft: &mut String,
     draft_message_id: &mut Option<i64>,
     last_edit: &mut Instant,
+    edit_throttle: Duration,
     last_sent_len: &mut usize,
     sent_heads: &mut Vec<(i64, String)>,
-) {
+    reply_to_message_id: Option<i64>,
+) -> bool {
+    let mut sent_new = false;
     if draft_message_id.is_none() {
         if draft.chars().count() >= DRAFT_SEND_THRESHOLD {
-            send_draft_head(api, chat_id, draft, draft_message_id, last_sent_len).await;
+            sent_new = send_draft_head(
+                api,
+                chat_id,
+                draft,
+                draft_message_id,
+                last_sent_len,
+                reply_to_message_id,
+            )
+            .await;
         }
-        return;
+        return sent_new;
     }
-    if last_edit.elapsed() < EDIT_THROTTLE {
-        return;
+    if last_edit.elapsed() < edit_throttle {
+        return false;
     }
     if draft.chars().count() == *last_sent_len {
-        return; // nothing new to show
+        return false;
     }
     let Some(mid) = *draft_message_id else {
-        return; // guarded above by the is_none() check
+        return false;
     };
     let head = draft_head_text(draft);
     if api
@@ -233,9 +386,6 @@ async fn maybe_send_or_edit(
         *last_sent_len = head.chars().count();
     }
     if draft.chars().count() > crate::telegram::chunk::MAX_MESSAGE_CHARS {
-        // The draft outgrew one message: finalize this chunk and start a
-        // fresh draft with the remainder. The finalized head is recorded
-        // so flush can give it its `(k/n)` marker once the total is known.
         if let Some(mid) = *draft_message_id {
             sent_heads.push((mid, draft_head_text(draft)));
         }
@@ -244,36 +394,35 @@ async fn maybe_send_or_edit(
         *draft_message_id = None;
         *last_sent_len = 0;
     }
+    false
 }
 
-/// Send the draft head as a new message (used for the first send and
-/// for the remainder after a chunk boundary).
 async fn send_draft_head(
     api: &Arc<TelegramApiClient>,
     chat_id: i64,
     draft: &str,
     draft_message_id: &mut Option<i64>,
     last_sent_len: &mut usize,
-) {
+    reply_to_message_id: Option<i64>,
+) -> bool {
     let head = draft_head_text(draft);
-    match api.send_message(chat_id, &head, None).await {
+    match api
+        .send_message_formatted(chat_id, &head, None, reply_to_message_id, None)
+        .await
+    {
         Ok(msg) => {
             *draft_message_id = Some(msg.message_id);
             *last_sent_len = head.chars().count();
+            true
         }
         Err(e) => {
             tracing::warn!("telegram: failed to send draft message: {e}");
+            false
         }
     }
 }
 
-/// Flush the draft: finalize every part of the current text unit.
-/// Parts already sent mid-stream (head chunks finalized when the draft
-/// outgrew one message) are edited to gain their `(k/n)` marker — they
-/// were sent before the total was knowable. The current head is edited
-/// (or the whole draft sent) the same way, and the remainder is sent
-/// chunked with offset numbering, so the whole answer reads
-/// `(1/n)`…`(n/n)`. Leaves the renderer empty.
+#[allow(clippy::too_many_arguments)]
 async fn flush_draft(
     api: &Arc<TelegramApiClient>,
     chat_id: i64,
@@ -281,13 +430,12 @@ async fn flush_draft(
     draft_message_id: &mut Option<i64>,
     last_sent_len: &mut usize,
     sent_heads: &mut Vec<(i64, String)>,
+    html_mode: bool,
+    reply_to_message_id: Option<i64>,
 ) {
     if draft.is_empty() && sent_heads.is_empty() {
         return;
     }
-    // The current head (if a draft message exists) plus the remainder
-    // after it. With no draft message yet, the whole draft is the
-    // remainder.
     let mut current_head: Option<(i64, String)> = None;
     let mut rest = String::new();
     if !draft.is_empty() {
@@ -306,35 +454,63 @@ async fn flush_draft(
         crate::telegram::chunk::split_count(&rest)
     };
     let total = sent_heads.len() + usize::from(current_head.is_some()) + rest_count;
-    // Finalized heads gain their marker now that the total is known.
+    let pm = if html_mode { Some("HTML") } else { None };
+    let format_chunk = |raw: &str| -> String {
+        if html_mode {
+            let h = markdown_to_telegram_html(raw);
+            if h.chars().count() <= crate::telegram::chunk::MAX_MESSAGE_CHARS {
+                h
+            } else {
+                raw.to_string()
+            }
+        } else {
+            raw.to_string()
+        }
+    };
+
     for (k, (mid, text)) in sent_heads.iter().enumerate() {
-        if total > 1 {
+        let base = if total > 1 {
+            format!("{text}\n({}/{})", k + 1, total)
+        } else {
+            text.clone()
+        };
+        if total > 1 || html_mode {
+            let formatted = format_chunk(&base);
             let _ = api
-                .edit_message_text(
-                    chat_id,
-                    *mid,
-                    &format!("{text}\n({}/{})", k + 1, total),
-                    None,
-                )
+                .edit_message_text_formatted(chat_id, *mid, &formatted, pm, None)
                 .await;
         }
     }
-    // The current head: edit to the full head (+ marker when multi-part).
     if let Some((mid, head)) = &current_head {
-        if total > 1 || head.chars().count() != *last_sent_len {
+        if total > 1 || head.chars().count() != *last_sent_len || html_mode {
             let target = if total > 1 {
                 format!("{head}\n({}/{})", sent_heads.len() + 1, total)
             } else {
                 head.clone()
             };
-            let _ = api.edit_message_text(chat_id, *mid, &target, None).await;
+            let formatted = format_chunk(&target);
+            let _ = api
+                .edit_message_text_formatted(chat_id, *mid, &formatted, pm, None)
+                .await;
         }
     }
-    // The remainder, numbered after the parts already sent.
     if !rest.is_empty() {
         let start = sent_heads.len() + usize::from(current_head.is_some()) + 1;
-        for chunk in crate::telegram::chunk::split_message_numbered(&rest, start, total) {
-            if api.send_message(chat_id, &chunk, None).await.is_err() {
+        for (idx, chunk) in crate::telegram::chunk::split_message_numbered(&rest, start, total)
+            .into_iter()
+            .enumerate()
+        {
+            let reply_id = if idx == 0 && sent_heads.is_empty() && current_head.is_none() {
+                reply_to_message_id
+            } else {
+                None
+            };
+            let formatted = format_chunk(&chunk);
+            if api
+                .send_message_formatted(chat_id, &formatted, pm, reply_id, None)
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -345,10 +521,7 @@ async fn flush_draft(
     sent_heads.clear();
 }
 
-/// The first chunk's worth of the draft, as plain text (v0.2 sends
-/// without `parse_mode`, so no fence/marker decoration is needed on a
-/// live draft — those exist only on final sends via `split_message`).
-/// Slicing uses the chunk's content length, so no character is lost.
+/// The first chunk's worth of the draft.
 fn draft_head_text(draft: &str) -> String {
     let len = crate::telegram::chunk::first_chunk_content_len(draft);
     draft.chars().take(len).collect()
@@ -359,8 +532,7 @@ fn draft_head_byte_len(draft: &str) -> usize {
     draft_head_text(draft).len()
 }
 
-/// The loop-facing listener: forwards the three callbacks into a
-/// [`TelegramRenderer`].
+/// The loop-facing listener: forwards callbacks into a [`TelegramRenderer`].
 pub struct TelegramEventListener {
     renderer: Arc<TelegramRenderer>,
 }
@@ -376,15 +548,16 @@ impl TelegramEventListener {
 }
 
 impl AgentEventListener for TelegramEventListener {
-    fn on_text_chunk(&self, chunk: &str, _is_reasoning: bool) {
-        if _is_reasoning {
-            return; // reasoning deltas are not streamed to the chat
+    fn on_text_chunk(&self, chunk: &str, is_reasoning: bool) {
+        if is_reasoning {
+            self.renderer.push_reasoning(chunk);
+        } else {
+            self.renderer.push_text(chunk);
         }
-        self.renderer.push_text(chunk);
     }
 
-    fn on_tool_call_started(&self, name: &str, _args: &str) {
-        self.renderer.tool_started(name);
+    fn on_tool_call_started(&self, name: &str, args: &str) {
+        self.renderer.tool_started_with_args(name, args);
     }
 
     fn on_tool_call_finished(&self, name: &str, _output: &str, success: bool) {
@@ -392,17 +565,19 @@ impl AgentEventListener for TelegramEventListener {
     }
 }
 
-/// Render an [`AgentEvent`] into a chat (the `Channel::send_event`
-/// path). Text chunks go through the draft; tool events become lines;
-/// `TurnFinished` flushes. Events without a chat rendering (turn
-/// start, approvals — those have their own cards) are ignored.
+/// Render an [`AgentEvent`] into a chat.
 pub async fn render_event(renderer: &Arc<TelegramRenderer>, event: &AgentEvent) -> Result<()> {
     match event {
         AgentEvent::TextChunk { text } => {
             renderer.push_text(text);
         }
-        AgentEvent::ToolCallStarted { tool, .. } => {
-            renderer.tool_started(tool);
+        AgentEvent::ReasoningChunk { thinking } => {
+            renderer.push_reasoning(thinking);
+        }
+        AgentEvent::ToolCallStarted {
+            tool, arguments, ..
+        } => {
+            renderer.tool_started_with_args(tool, &arguments.to_string());
         }
         AgentEvent::ToolCallFinished { tool, success, .. } => {
             renderer.tool_finished(tool, *success);

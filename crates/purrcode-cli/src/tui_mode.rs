@@ -223,7 +223,7 @@ pub(crate) async fn run_tui(
             Some(plugin_dispatcher.clone()),
             model_preset.clone(),
             Some(config.clone()),
-            Some(registry_arc),
+            Some(registry_arc.clone()),
             Some(steering_queue.clone()),
             Some(cancel_flag.clone()),
             yolo,
@@ -235,13 +235,14 @@ pub(crate) async fn run_tui(
     };
 
     let direct_loop = AgentLoop::new(provider.clone(), wire_model, Arc::new(tool_registry))
-        .with_approval_requester(approval_requester)
+        .with_approval_requester(approval_requester.clone())
         .with_policy_gate(policy_gate)
-        .with_audit_sink(audit_sink)
+        .with_audit_sink(audit_sink.clone())
         .with_plugin_dispatcher(plugin_dispatcher.clone())
-        .with_steering_queue(steering_queue)
+        .with_steering_queue(steering_queue.clone())
         .with_cancel_flag(cancel_flag.clone())
-        .with_yolo(yolo);
+        .with_yolo(yolo)
+        .with_live_streaming(config.ui.streaming_mode == "live");
 
     let tool_context = ToolContext {
         session_id: session_id.clone(),
@@ -266,7 +267,7 @@ pub(crate) async fn run_tui(
     let mem_context = memory.load_context(Some(&workspace_root)).await;
 
     let mut system_prompt = if use_orchestrator {
-        MeowstroOrchestrator::system_prompt(&skills_index)
+        MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(&workspace_root))
     } else {
         let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
         if !skills_index.is_empty() {
@@ -326,20 +327,355 @@ pub(crate) async fn run_tui(
     let mut session_messages: Vec<purrcode_api::provider::ChatMessage> = Vec::new();
     let event_tx_worker = event_tx.clone();
     let store_worker = session_store.clone();
-    let sid_worker = session_id.clone();
+    let mut sid_worker = session_id.clone();
+
+    // Runtime-mutable worker state for slash commands (/new, /model, /preset, /model-preset)
+    let mut active_provider = provider.clone();
+    let mut active_provider_name = provider_name.to_string();
+    let mut active_wire_model = wire_model.to_string();
+    let mut active_mode_preset = mode_preset.clone();
+    let mut active_model_preset = model_preset.clone();
+    let mut meowstro = meowstro;
+    let mut direct_loop = direct_loop;
+    let mut tool_context = tool_context;
+    let config_worker = config.clone();
+    let registry_worker = registry_arc.clone();
+    let approval_req_worker = approval_requester.clone();
+    let ask_req_worker = ask_requester.clone();
+    let audit_sink_worker = audit_sink.clone();
+    let plugin_disp_worker = plugin_dispatcher.clone();
+    let steering_worker = steering_queue.clone();
+    let cancel_worker = cancel_flag.clone();
+    let workspace_worker = workspace_root.clone();
 
     // F20 curator deps, captured for the turn worker below (ADR-014
-    // item 7). `wire_model` is a borrowed &str (Copy), so it is still
-    // usable here even though the orchestrator/direct loop took it.
-    let curator_provider = provider.clone();
-    let curator_model = wire_model.to_string();
+    // item 7).
+    let mut curator_provider = provider.clone();
+    let mut curator_model = wire_model.to_string();
     let curator_purrcode_dir = purrcode_dir.clone();
     let curator_audit = audit_logger.clone();
 
     tokio::spawn(async move {
         while let Some(user_prompt) = prompt_rx.recv().await {
-            if user_prompt == "/__internal_reset" {
+            if user_prompt == "/__internal_reset" || user_prompt.starts_with("/__internal_reset:") {
                 session_messages.clear();
+                if let Some(new_sid) = user_prompt.strip_prefix("/__internal_reset:") {
+                    if !new_sid.trim().is_empty() {
+                        sid_worker = new_sid.trim().to_string();
+                        tool_context.session_id = sid_worker.clone();
+                    }
+                }
+                let sdir = store_worker.session_dir(&sid_worker);
+                if use_orchestrator {
+                    let gate = Arc::new(ApprovalGate::from_preset(&active_mode_preset, yolo));
+                    meowstro = Some(MeowstroOrchestrator::with_complete_options(
+                        active_provider.clone(),
+                        &active_wire_model,
+                        &sdir,
+                        Some(approval_req_worker.clone()),
+                        Some(ask_req_worker.clone()),
+                        Some(gate),
+                        Some(audit_sink_worker.clone()),
+                        Some(plugin_disp_worker.clone()),
+                        active_model_preset.clone(),
+                        Some(config_worker.clone()),
+                        Some(registry_worker.clone()),
+                        Some(steering_worker.clone()),
+                        Some(cancel_worker.clone()),
+                        yolo,
+                        Some(workspace_worker.clone()),
+                        None,
+                    ));
+                }
+                continue;
+            }
+            if let Some(focus) = user_prompt.strip_prefix("/__internal_compact:") {
+                let focus_opt = (!focus.trim().is_empty()).then_some(focus.trim());
+                let before = session_messages.len();
+                if before <= 6 {
+                    let _ =
+                        event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(format!(
+                            "Session '{}' has {} messages — nothing to compact yet.",
+                            sid_worker, before
+                        )));
+                } else {
+                    session_messages =
+                        SessionStore::compact_messages(&session_messages, focus_opt, 6);
+                    let after = session_messages.len();
+                    let _ = store_worker.replace_messages(&sid_worker, &session_messages);
+                    let _ =
+                        event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(format!(
+                            "Compacted session '{}': {} → {} messages.",
+                            sid_worker, before, after
+                        )));
+                }
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TurnFinished);
+                continue;
+            }
+            if let Some(target_id) = user_prompt.strip_prefix("/__internal_resume:") {
+                let target = target_id.trim();
+                if target.is_empty() {
+                    let list = store_worker.list_sessions();
+                    let msg = if list.is_empty() {
+                        "No saved sessions found.".to_string()
+                    } else {
+                        let shown: Vec<String> = list.into_iter().take(12).collect();
+                        format!(
+                            "Saved sessions:\n- {}\nUse /resume <id> to load one.",
+                            shown.join("\n- ")
+                        )
+                    };
+                    let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(msg));
+                } else {
+                    match store_worker.load_messages(target) {
+                        Ok(msgs) if !msgs.is_empty() => {
+                            let count = msgs.len();
+                            session_messages = msgs;
+                            sid_worker = target.to_string();
+                            tool_context.session_id = sid_worker.clone();
+                            let _ = event_tx_worker.try_send(
+                                purrcode_channel::TuiEvent::TextChunk(format!(
+                                    "Resumed session '{}' ({} messages loaded into context).",
+                                    target, count
+                                )),
+                            );
+                        }
+                        _ => {
+                            let _ =
+                                event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(
+                                    format!("Session '{}' not found or empty.", target),
+                                ));
+                        }
+                    }
+                }
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TurnFinished);
+                continue;
+            }
+            if let Some(new_id) = user_prompt.strip_prefix("/__internal_fork:") {
+                let new_id = new_id.trim().to_string();
+                let _ = store_worker.replace_messages(&new_id, &session_messages);
+                sid_worker = new_id;
+                tool_context.session_id = sid_worker.clone();
+                continue;
+            }
+            if user_prompt == "/__internal_memory" {
+                let mut out = String::from("Loaded memory files:\n");
+                for name in ["MEMORY.md", "USER.md", "SOUL.md"] {
+                    let p = curator_purrcode_dir.join(name);
+                    match std::fs::read_to_string(&p) {
+                        Ok(c) if !c.trim().is_empty() => {
+                            let preview: String = c.lines().take(6).collect::<Vec<_>>().join("\n");
+                            out.push_str(&format!("\n### {}\n{}\n", name, preview));
+                        }
+                        _ => {
+                            out.push_str(&format!("\n### {} (empty)\n", name));
+                        }
+                    }
+                }
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(out));
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TurnFinished);
+                continue;
+            }
+            if let Some(fmt) = user_prompt.strip_prefix("/__internal_export:") {
+                let fmt = fmt.trim();
+                let export_dir = curator_purrcode_dir.join("exports");
+                let _ = std::fs::create_dir_all(&export_dir);
+                let (ext, content) = if fmt.eq_ignore_ascii_case("jsonl") {
+                    let mut lines = String::new();
+                    for m in &session_messages {
+                        if let Ok(line) = serde_json::to_string(m) {
+                            lines.push_str(&line);
+                            lines.push('\n');
+                        }
+                    }
+                    ("jsonl", lines)
+                } else {
+                    let mut md = format!("# Session {}\n\n", sid_worker);
+                    for m in &session_messages {
+                        let role = format!("{:?}", m.role);
+                        md.push_str(&format!("## {}\n{}\n\n", role, m.content));
+                    }
+                    ("md", md)
+                };
+                let target = export_dir.join(format!("{}.{}", sid_worker, ext));
+                let msg = match std::fs::write(&target, content.as_bytes()) {
+                    Ok(_) => format!(
+                        "Exported {} messages to {}",
+                        session_messages.len(),
+                        target.display()
+                    ),
+                    Err(e) => format!("Failed to export session: {e}"),
+                };
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(msg));
+                let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TurnFinished);
+                continue;
+            }
+            if let Some(spec) = user_prompt.strip_prefix("/__internal_model:") {
+                let spec = spec.trim();
+                let resolved =
+                    if let Some((pname, wmodel, _, _)) = config_worker.resolve_model(spec) {
+                        registry_worker
+                            .get(pname)
+                            .map(|p| (pname.to_string(), wmodel.to_string(), p))
+                    } else if let Some((pname, wmodel)) = spec.split_once(':') {
+                        registry_worker
+                            .get(pname.trim())
+                            .map(|p| (pname.trim().to_string(), wmodel.trim().to_string(), p))
+                    } else {
+                        registry_worker
+                            .get(&active_provider_name)
+                            .map(|p| (active_provider_name.clone(), spec.to_string(), p))
+                    };
+                if let Some((pname, wmodel, p)) = resolved {
+                    active_provider_name = pname;
+                    active_wire_model = wmodel;
+                    active_provider = p;
+                    curator_provider = active_provider.clone();
+                    curator_model = active_wire_model.clone();
+                    let sdir = store_worker.session_dir(&sid_worker);
+                    let gate = Arc::new(ApprovalGate::from_preset(&active_mode_preset, yolo));
+                    let pgate: Arc<dyn PolicyGate> = gate.clone();
+                    if use_orchestrator {
+                        meowstro = Some(MeowstroOrchestrator::with_complete_options(
+                            active_provider.clone(),
+                            &active_wire_model,
+                            &sdir,
+                            Some(approval_req_worker.clone()),
+                            Some(ask_req_worker.clone()),
+                            Some(gate),
+                            Some(audit_sink_worker.clone()),
+                            Some(plugin_disp_worker.clone()),
+                            active_model_preset.clone(),
+                            Some(config_worker.clone()),
+                            Some(registry_worker.clone()),
+                            Some(steering_worker.clone()),
+                            Some(cancel_worker.clone()),
+                            yolo,
+                            Some(workspace_worker.clone()),
+                            None,
+                        ));
+                    } else {
+                        let mut treg = ToolRegistry::with_defaults_and_options(
+                            Some(ask_req_worker.clone()),
+                            Some(&workspace_worker),
+                        );
+                        if !active_mode_preset.tools.is_empty() {
+                            treg.retain(|n| {
+                                n == "read_skill" || active_mode_preset.tools.iter().any(|a| a == n)
+                            });
+                        }
+                        direct_loop = AgentLoop::new(
+                            active_provider.clone(),
+                            &active_wire_model,
+                            Arc::new(treg),
+                        )
+                        .with_approval_requester(approval_req_worker.clone())
+                        .with_policy_gate(pgate)
+                        .with_audit_sink(audit_sink_worker.clone())
+                        .with_plugin_dispatcher(plugin_disp_worker.clone())
+                        .with_steering_queue(steering_worker.clone())
+                        .with_cancel_flag(cancel_worker.clone())
+                        .with_yolo(yolo)
+                        .with_live_streaming(config_worker.ui.streaming_mode == "live");
+                    }
+                } else {
+                    let _ =
+                        event_tx_worker.try_send(purrcode_channel::TuiEvent::TextChunk(format!(
+                            "Error: Model '{}' could not be resolved from configuration.",
+                            spec
+                        )));
+                    let _ = event_tx_worker.try_send(purrcode_channel::TuiEvent::TurnFinished);
+                }
+                continue;
+            }
+            if let Some(preset_name) = user_prompt.strip_prefix("/__internal_preset:") {
+                if let Ok(preset) =
+                    ModePresetLoader::load_by_name_or_tabby(preset_name.trim(), &workspace_worker)
+                {
+                    active_mode_preset = preset;
+                    tool_context.sandbox =
+                        if active_mode_preset.sandbox == purrcode_config::SandboxMode::Os {
+                            Some(active_mode_preset.sandbox_mode)
+                        } else {
+                            None
+                        };
+                    let gate = Arc::new(ApprovalGate::from_preset(&active_mode_preset, yolo));
+                    let pgate: Arc<dyn PolicyGate> = gate.clone();
+                    let sdir = store_worker.session_dir(&sid_worker);
+                    if use_orchestrator {
+                        meowstro = Some(MeowstroOrchestrator::with_complete_options(
+                            active_provider.clone(),
+                            &active_wire_model,
+                            &sdir,
+                            Some(approval_req_worker.clone()),
+                            Some(ask_req_worker.clone()),
+                            Some(gate),
+                            Some(audit_sink_worker.clone()),
+                            Some(plugin_disp_worker.clone()),
+                            active_model_preset.clone(),
+                            Some(config_worker.clone()),
+                            Some(registry_worker.clone()),
+                            Some(steering_worker.clone()),
+                            Some(cancel_worker.clone()),
+                            yolo,
+                            Some(workspace_worker.clone()),
+                            None,
+                        ));
+                    } else {
+                        let mut treg = ToolRegistry::with_defaults_and_options(
+                            Some(ask_req_worker.clone()),
+                            Some(&workspace_worker),
+                        );
+                        if !active_mode_preset.tools.is_empty() {
+                            treg.retain(|n| {
+                                n == "read_skill" || active_mode_preset.tools.iter().any(|a| a == n)
+                            });
+                        }
+                        direct_loop = AgentLoop::new(
+                            active_provider.clone(),
+                            &active_wire_model,
+                            Arc::new(treg),
+                        )
+                        .with_approval_requester(approval_req_worker.clone())
+                        .with_policy_gate(pgate)
+                        .with_audit_sink(audit_sink_worker.clone())
+                        .with_plugin_dispatcher(plugin_disp_worker.clone())
+                        .with_steering_queue(steering_worker.clone())
+                        .with_cancel_flag(cancel_worker.clone())
+                        .with_yolo(yolo)
+                        .with_live_streaming(config_worker.ui.streaming_mode == "live");
+                    }
+                }
+                continue;
+            }
+            if let Some(mp_name) = user_prompt.strip_prefix("/__internal_model_preset:") {
+                if let Ok(mp) =
+                    ModelPresetLoader::load_by_name_or_none(mp_name.trim(), &workspace_worker)
+                {
+                    active_model_preset = mp;
+                    if use_orchestrator {
+                        let gate = Arc::new(ApprovalGate::from_preset(&active_mode_preset, yolo));
+                        let sdir = store_worker.session_dir(&sid_worker);
+                        meowstro = Some(MeowstroOrchestrator::with_complete_options(
+                            active_provider.clone(),
+                            &active_wire_model,
+                            &sdir,
+                            Some(approval_req_worker.clone()),
+                            Some(ask_req_worker.clone()),
+                            Some(gate),
+                            Some(audit_sink_worker.clone()),
+                            Some(plugin_disp_worker.clone()),
+                            active_model_preset.clone(),
+                            Some(config_worker.clone()),
+                            Some(registry_worker.clone()),
+                            Some(steering_worker.clone()),
+                            Some(cancel_worker.clone()),
+                            yolo,
+                            Some(workspace_worker.clone()),
+                            None,
+                        ));
+                    }
+                }
                 continue;
             }
             let runner = if let Some(ref m) = meowstro {
@@ -471,7 +807,8 @@ pub(crate) async fn run_tui(
 
     let mut app =
         purrcode_channel::TuiApp::new(target_model, config.preset.clone(), session_id.clone())
-            .with_model_preset(model_preset_name);
+            .with_model_preset(model_preset_name)
+            .with_ui_config(config.ui.clone());
     // Pending deliveries at open (v0.3 F22, ADR-014 item 10): the
     // delivery queue is the second endpoint of the shared delivery
     // path (the gateway is the first). Showing a delivery here IS its

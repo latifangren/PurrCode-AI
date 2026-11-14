@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Brain, ChevronDown, ChevronRight, X } from 'lucide-react';
 import {
   computeTaskProgress,
   pickCompanionReactionQuip,
@@ -8,7 +8,9 @@ import type {
   CompanionConfig,
   CompanionReaction,
   Message,
+  QuickCommandConfig,
   Session,
+  UiConfig,
   UnifiedDiff,
 } from '../types/cockpit';
 import { ApprovalCard } from './ApprovalCard';
@@ -26,10 +28,51 @@ interface ChatTimelineProps {
   streamingMessage: Message | null;
   streamElapsedMs?: number;
   streamError: string | null;
+  uiConfig?: UiConfig;
+  workspaceFiles?: string[];
+  quickCommands?: QuickCommandConfig[];
   onSendPrompt: (prompt: string, pinnedFiles: string[]) => void;
   onStopStream?: () => void;
   onPetCompanion?: () => void;
   onResolveApproval: (approvalId: string, decision: 'approved' | 'denied' | 'expired') => void;
+}
+
+function ReasoningBlock({
+  reasoning,
+  defaultCollapsed,
+}: {
+  reasoning: string;
+  defaultCollapsed: boolean;
+}) {
+  const [expanded, setExpanded] = useState(!defaultCollapsed);
+  return (
+    <div className="rounded-lg border border-hairline bg-surface-soft overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left text-xs text-muted hover:bg-surface-card transition-colors cursor-pointer"
+      >
+        <span className="inline-flex items-center gap-1.5 font-medium text-ink">
+          <Brain className="w-3.5 h-3.5 text-primary" />
+          <span>Reasoning</span>
+        </span>
+        <span className="inline-flex items-center gap-1 font-mono text-[11px]">
+          <span>{reasoning.length} chars</span>
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5" />
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-3.5 py-2.5 border-t border-hairline text-xs text-muted whitespace-pre-wrap break-words font-mono leading-relaxed max-h-64 overflow-y-auto">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ChatTimeline({
@@ -39,11 +82,20 @@ export function ChatTimeline({
   streamingMessage,
   streamElapsedMs = 0,
   streamError,
+  uiConfig,
+  workspaceFiles,
+  quickCommands,
   onSendPrompt,
   onStopStream,
   onPetCompanion,
   onResolveApproval,
 }: ChatTimelineProps) {
+  const isCompact = uiConfig?.density === 'compact';
+  const showReasoning = uiConfig?.showReasoning ?? true;
+  const reasoningCollapsed = uiConfig?.reasoningCollapsed ?? true;
+  const showToolArgs = uiConfig?.showToolArgs ?? true;
+  const toolPreviewLines = uiConfig?.toolPreviewLines ?? 4;
+  const showTimestamps = uiConfig?.showTimestamps ?? true;
   const [inspectingDiff, setInspectingDiff] = useState<UnifiedDiff | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const prevCountRef = useRef<number>(session.messages.length);
@@ -136,19 +188,23 @@ export function ChatTimeline({
               </p>
             </div>
           ) : (
-            <div className="space-y-5">
+            <div className={isCompact ? 'space-y-3' : 'space-y-5'}>
               {allMessages.map((msg) => {
                 if (msg.sender === 'user') {
                   return (
                     <article
                       key={msg.id}
-                      className="rounded-lg bg-surface-card px-5 py-4 space-y-2"
+                      className={`rounded-lg bg-surface-card ${
+                        isCompact ? 'px-4 py-3 space-y-1.5' : 'px-5 py-4 space-y-2'
+                      }`}
                     >
                       <div className="flex items-center justify-between text-xs text-muted">
                         <span className="font-medium text-ink">Operator</span>
-                        <span className="font-mono tabular-nums">{msg.timestamp}</span>
+                        {showTimestamps && (
+                          <span className="font-mono tabular-nums">{msg.timestamp}</span>
+                        )}
                       </div>
-                      <ProseContent content={msg.content} />
+                      <ProseContent content={msg.content} compact={isCompact} />
                       {msg.pinnedFiles && msg.pinnedFiles.length > 0 && (
                         <div className="pt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted">
                           {msg.pinnedFiles.map((file) => (
@@ -163,7 +219,9 @@ export function ChatTimeline({
                 return (
                   <article
                     key={msg.id}
-                    className="rounded-lg border border-hairline bg-canvas px-5 py-4 space-y-3.5"
+                    className={`rounded-lg border border-hairline bg-canvas ${
+                      isCompact ? 'px-4 py-3 space-y-2.5' : 'px-5 py-4 space-y-3.5'
+                    }`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex items-center gap-2">
@@ -201,16 +259,28 @@ export function ChatTimeline({
                           </span>
                         )}
                         {msg.thinkingDurationMs && <span>{msg.thinkingDurationMs}ms</span>}
-                        <span>{msg.timestamp}</span>
+                        {showTimestamps && <span>{msg.timestamp}</span>}
                       </div>
                     </div>
 
+                    {showReasoning && msg.reasoning && (
+                      <ReasoningBlock
+                        reasoning={msg.reasoning}
+                        defaultCollapsed={reasoningCollapsed}
+                      />
+                    )}
+
                     {msg.toolSteps && msg.toolSteps.length > 0 && (
-                      <ToolChain steps={msg.toolSteps} />
+                      <ToolChain
+                        steps={msg.toolSteps}
+                        showToolArgs={showToolArgs}
+                        previewLines={toolPreviewLines}
+                      />
                     )}
 
                     <ProseContent
                       content={msg.content || (msg.isStreaming ? 'Synthesizing response...' : '')}
+                      compact={isCompact}
                     />
 
                     {msg.diff && (
@@ -241,6 +311,8 @@ export function ChatTimeline({
       <PromptDock
         disabled={Boolean(streamingMessage)}
         isStreaming={Boolean(streamingMessage)}
+        workspaceFiles={workspaceFiles}
+        quickCommands={quickCommands}
         onSend={onSendPrompt}
         onStop={onStopStream}
       />

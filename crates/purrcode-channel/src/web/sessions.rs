@@ -158,6 +158,17 @@ pub fn new_web_session_id() -> String {
     )
 }
 
+/// Persisted metadata overrides for a web session (preset, model, title).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct WebSessionMeta {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// Runtime registry for web sessions. The map holds live entries
 /// only; the durable list is read from the store on every call so a
 /// restart (or a session written by another process) is visible
@@ -359,7 +370,39 @@ impl WebSessionRegistry {
         if let Ok(mut order) = self.order.lock() {
             order.retain(|c| c != id);
         }
+        let meta_path = self.session_meta_path(id);
+        if meta_path.exists() {
+            let _ = std::fs::remove_file(&meta_path);
+        }
         self.store.delete_session(id)
+    }
+
+    pub fn session_meta_path(&self, id: &str) -> PathBuf {
+        self.store.sessions_dir().join(format!("{id}.meta.json"))
+    }
+
+    pub fn load_session_meta(&self, id: &str) -> WebSessionMeta {
+        if !is_valid_web_session_id(id) {
+            return WebSessionMeta::default();
+        }
+        let path = self.session_meta_path(id);
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_session_meta(&self, id: &str, meta: &WebSessionMeta) -> Result<()> {
+        if !is_valid_web_session_id(id) {
+            return Err(PurrError::Session(format!("invalid web session id '{id}'")));
+        }
+        let path = self.session_meta_path(id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(PurrError::Io)?;
+        }
+        let json = serde_json::to_string_pretty(meta)
+            .map_err(|e| PurrError::Internal(format!("serialize session meta: {e}")))?;
+        std::fs::write(&path, json).map_err(PurrError::Io)
     }
 
     /// All web sessions on disk (valid ids only), most recently

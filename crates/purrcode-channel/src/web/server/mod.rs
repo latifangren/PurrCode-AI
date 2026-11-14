@@ -56,6 +56,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 mod auth;
 mod routes;
 mod routes_cockpit;
+mod routes_cockpit_ops;
 mod routes_cron;
 mod routes_memory;
 mod routes_overview;
@@ -293,7 +294,7 @@ impl WebServer {
             .route("/api/providers", post(routes_cockpit::add_provider))
             .route(
                 "/api/providers/{id}",
-                patch(routes_cockpit::toggle_provider).delete(routes_cockpit::delete_provider),
+                patch(routes_cockpit::update_provider).delete(routes_cockpit::delete_provider),
             )
             .route(
                 "/api/providers/{id}/test",
@@ -309,24 +310,31 @@ impl WebServer {
                 patch(routes_cockpit::toggle_sandbox_network),
             )
             .route("/api/memory/files", put(routes_cockpit::save_memory_files))
-            .route("/api/skills/manage", post(routes_cockpit::manage_skills))
-            .route("/api/mcp/servers", post(routes_cockpit::add_mcp_server))
+            .route(
+                "/api/skills/manage",
+                post(routes_cockpit_ops::manage_skills),
+            )
+            .route("/api/mcp/servers", post(routes_cockpit_ops::add_mcp_server))
             .route(
                 "/api/mcp/servers/{id}/ping",
-                post(routes_cockpit::ping_mcp_server),
+                post(routes_cockpit_ops::ping_mcp_server),
             )
             .route(
                 "/api/mcp/servers/{id}",
-                delete(routes_cockpit::delete_mcp_server),
+                delete(routes_cockpit_ops::delete_mcp_server),
             )
-            .route("/api/cron/jobs", post(routes_cockpit::add_cron_job))
+            .route("/api/cron/jobs", post(routes_cockpit_ops::add_cron_job))
             .route(
                 "/api/cron/jobs/{id}",
-                patch(routes_cockpit::toggle_cron_job).delete(routes_cockpit::delete_cron_job),
+                patch(routes_cockpit_ops::toggle_cron_job)
+                    .delete(routes_cockpit_ops::delete_cron_job),
             )
-            .route("/api/approvals/{id}", post(routes_cockpit::handle_approval))
-            .route("/api/logs", get(routes_cockpit::get_audit_logs))
-            .route("/api/audit", get(routes_cockpit::get_audit_logs))
+            .route(
+                "/api/approvals/{id}",
+                post(routes_cockpit_ops::handle_approval),
+            )
+            .route("/api/logs", get(routes_cockpit_ops::get_audit_logs))
+            .route("/api/audit", get(routes_cockpit_ops::get_audit_logs))
             .route("/api/cron", get(routes::cron))
             .route("/api/overview", get(routes_overview::overview))
             .route(
@@ -455,7 +463,7 @@ impl WebServer {
 /// with no live entry has nothing pending, so the caller answers
 /// `resolved: false` instead of resolving against another session's
 /// approvals.
-fn approval_session(
+pub(crate) fn approval_session(
     registry: &Arc<WebSessionRegistry>,
     val: &serde_json::Value,
 ) -> Option<Arc<WebSession>> {

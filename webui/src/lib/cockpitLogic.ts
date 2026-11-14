@@ -93,10 +93,44 @@ export interface CronParseResult {
 }
 
 function formatNextRun(minutesFromNow: number): string {
-  const d = new Date(Date.now() + minutesFromNow * 60_000);
+  const now = new Date();
+  const d = new Date(now.getTime() + minutesFromNow * 60_000);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  return `Today at ${hh}:${mm}`;
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return `${sameDay ? 'Today' : 'Tomorrow'} at ${hh}:${mm}`;
+}
+
+function isValidCronField(field: string, min: number, max: number): boolean {
+  if (!field) return false;
+  for (const part of field.split(',')) {
+    const stepSplit = part.split('/');
+    if (stepSplit.length > 2) return false;
+    const [base, stepStr] = stepSplit;
+    if (stepStr !== undefined) {
+      const step = Number(stepStr);
+      if (!/^\d+$/.test(stepStr) || step < 1 || step > max) return false;
+    }
+    if (base === '*') continue;
+    const rangeSplit = base.split('-');
+    if (rangeSplit.length === 1) {
+      if (!/^\d+$/.test(base)) return false;
+      const val = Number(base);
+      if (val < min || val > max) return false;
+    } else if (rangeSplit.length === 2) {
+      const [aStr, bStr] = rangeSplit;
+      if (!/^\d+$/.test(aStr) || !/^\d+$/.test(bStr)) return false;
+      const a = Number(aStr);
+      const b = Number(bStr);
+      if (a < min || b > max || a > b) return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function parseNaturalLanguageCron(input: string): CronParseResult {
@@ -111,15 +145,32 @@ export function parseNaturalLanguageCron(input: string): CronParseResult {
     };
   }
 
-  // Standard 5-field cron check
+  // Standard 5-field cron check (minute, hour, day-of-month, month, day-of-week)
   const parts = raw.split(/\s+/);
-  if (parts.length === 5 && /^[\d*,/-]+$/.test(parts[0]) && /^[\d*,/-]+$/.test(parts[1])) {
-    return {
-      valid: true,
-      expression: raw,
-      summary: `Custom cron expression (${raw})`,
-      nextRun: formatNextRun(15),
-    };
+  if (parts.length === 5) {
+    const valid =
+      isValidCronField(parts[0], 0, 59) &&
+      isValidCronField(parts[1], 0, 23) &&
+      isValidCronField(parts[2], 1, 31) &&
+      isValidCronField(parts[3], 1, 12) &&
+      isValidCronField(parts[4], 0, 7);
+    if (valid) {
+      return {
+        valid: true,
+        expression: raw,
+        summary: `Custom cron expression (${raw})`,
+        nextRun: formatNextRun(15),
+      };
+    }
+    if (/^[\d*,/-]+$/.test(parts[0]) && /^[\d*,/-]+$/.test(parts[1])) {
+      return {
+        valid: false,
+        expression: '',
+        summary: '',
+        nextRun: '',
+        error: 'Invalid 5-field cron range or field syntax.',
+      };
+    }
   }
 
   const lower = raw.toLowerCase();

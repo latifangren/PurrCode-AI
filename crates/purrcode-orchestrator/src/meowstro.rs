@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -115,10 +115,12 @@ impl MeowstroOrchestrator {
         let ws_root = workspace_root
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        // Meowstro toolset: strictly read, grep, glob, find, todo, ask, task (+ read_skill).
-        // NEVER write, edit, or bash!
+        // Meowstro toolset: full orchestrator suite with execution and delegation tools
         let mut tool_reg = ToolRegistry::new();
         let _ = tool_reg.register(Arc::new(purrcode_tools::fs::ReadTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::fs::WriteTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::fs::EditTool));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::BashTool));
         let _ = tool_reg.register(Arc::new(purrcode_tools::search::GrepTool));
         let _ = tool_reg.register(Arc::new(purrcode_tools::search::GlobTool));
         let _ = tool_reg.register(Arc::new(purrcode_tools::search::FindTool));
@@ -131,9 +133,20 @@ impl MeowstroOrchestrator {
 
         let mut skill_mgr = purrcode_tools::skill::SkillManager::new();
         skill_mgr.discover_all(&ws_root);
+        let shared_skill_mgr = Arc::new(Mutex::new(skill_mgr));
         let _ = tool_reg.register(Arc::new(purrcode_tools::skill::ReadSkillTool::new(
-            Arc::new(Mutex::new(skill_mgr)),
+            Arc::clone(&shared_skill_mgr),
         )));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::skill::ManageSkillTool::new(
+            shared_skill_mgr,
+        )));
+
+        let meowstro_spec = model_preset.as_ref().and_then(|p| {
+            p.agents
+                .get("Meowstro")
+                .or_else(|| p.agents.get("meowstro"))
+                .cloned()
+        });
 
         let mut task_tool = TaskTool::with_full_options(
             registry.clone(),
@@ -148,6 +161,10 @@ impl MeowstroOrchestrator {
         )
         .with_model_preset(model_preset);
 
+        let live_streaming = config
+            .as_ref()
+            .map(|c| c.ui.streaming_mode == "live")
+            .unwrap_or(true);
         if let Some(ref pd) = plugin_dispatcher {
             task_tool = task_tool.with_plugin_dispatcher(pd.clone());
         }
@@ -161,8 +178,14 @@ impl MeowstroOrchestrator {
         let _ = tool_reg.register(Arc::new(task_tool));
         tool_reg.freeze();
 
-        let mut agent_loop =
-            AgentLoop::new(provider, model_str, Arc::new(tool_reg)).with_yolo(yolo);
+        let mut agent_loop = AgentLoop::new(provider, model_str, Arc::new(tool_reg))
+            .with_yolo(yolo)
+            .with_live_streaming(live_streaming);
+        if let Some(spec) = meowstro_spec {
+            agent_loop = agent_loop
+                .with_temperature(spec.temperature)
+                .with_reasoning_effort(spec.variant);
+        }
         if let Some(req) = approval_requester {
             agent_loop = agent_loop.with_approval_requester(req);
         }
@@ -194,23 +217,64 @@ impl MeowstroOrchestrator {
     pub fn agent_loop(&self) -> &AgentLoop {
         &self.agent_loop
     }
+}
 
+const MEOWSTRO_MD: &str = include_str!("../../../agents/meowstro.md");
+
+fn detect_git_branch_name(workspace_root: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(workspace_root.join(".git").join("HEAD")).ok()?;
+    let trimmed = head.trim();
+    if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
+        Some(branch.to_string())
+    } else if !trimmed.is_empty() {
+        Some(trimmed.chars().take(12).collect())
+    } else {
+        None
+    }
+}
+
+impl MeowstroOrchestrator {
     pub fn system_prompt(skills_index: &str) -> String {
-        let mut prompt = String::from(
-            r#"You are Meowstro, the lead orchestrator and user's representative in PurrCode AI.
-You understand architecture, analyze user requests, devise execution plans, and delegate tasks to your specialized subagent team (The Clowder):
-- 'tinker': The fixer/implementer who has full write and bash tools to write code, edit files, and run tests.
-- 'whisker': The explorer who searches and scouts the codebase and documentation.
-- 'sphinx': The oracle advisor for complex architectural questions and hard debugging.
-- 'calico': The UI/TUI designer who reads, writes, and edits UI code.
-- 'tuxeshadow': The shadow critic and auditor who reviews plans and risky actions before execution.
-- 'clowder': The multi-seat council for ambiguous or high-risk architectural decisions.
+        Self::system_prompt_with_workspace(skills_index, None)
+    }
 
-RULE OF HARNESS: You NEVER write or edit code directly, and you NEVER execute bash commands directly.
-When code needs to be created, modified, or tested, you MUST delegate the work to Tinker using the 'task' tool.
-When inspecting files, you may use 'read', 'grep', 'glob', and 'find'.
-Your main context holds plans, summaries, and architectural decisions."#,
-        );
+    /// Builds Meowstro's system prompt from the embedded `agents/meowstro.md` spec
+    /// (or `.purrcode/agents/meowstro.md` override), plus structured `<environment>`
+    /// context and the discovered skills index.
+    pub fn system_prompt_with_workspace(
+        skills_index: &str,
+        workspace_root: Option<&Path>,
+    ) -> String {
+        let override_body = workspace_root.and_then(|ws| {
+            let path = ws.join(".purrcode").join("agents").join("meowstro.md");
+            std::fs::read_to_string(path).ok().and_then(|raw| {
+                let body = crate::task::prompts::strip_yaml_frontmatter(&raw)
+                    .trim()
+                    .to_string();
+                if body.is_empty() {
+                    None
+                } else {
+                    Some(body)
+                }
+            })
+        });
+
+        let mut prompt = override_body.unwrap_or_else(|| {
+            crate::task::prompts::strip_yaml_frontmatter(MEOWSTRO_MD)
+                .trim()
+                .to_string()
+        });
+
+        if let Some(ws) = workspace_root {
+            let branch = detect_git_branch_name(ws).unwrap_or_else(|| "unknown".to_string());
+            prompt.push_str(&format!(
+                "\n\n<environment>\nworkspace_root: {}\nos: {}\narch: {}\ngit_branch: {}\n</environment>",
+                ws.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                branch,
+            ));
+        }
 
         if !skills_index.is_empty() {
             prompt.push_str("\n\n");

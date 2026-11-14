@@ -154,6 +154,10 @@ impl SecurityState {
     pub fn check_prompt(&self, peer: &str) -> bool {
         let mut buckets = self.prompt_calls.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
+        if buckets.len() > 64 {
+            let window = self.prompt_window;
+            buckets.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) <= window));
+        }
         let bucket = buckets.entry(peer.to_string()).or_default();
         while bucket
             .front()

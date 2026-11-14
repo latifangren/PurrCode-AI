@@ -39,6 +39,10 @@ pub struct Config {
     /// `purrcode-cli/src/heartbeat/`).
     #[serde(default)]
     pub heartbeat: Option<HeartbeatConfig>,
+
+    /// Customizable UI, chat presentation, and Telegram formatting settings.
+    #[serde(default)]
+    pub ui: crate::ui::UiConfig,
 }
 
 /// Cron daemon settings (PRD F19, ADR-014).
@@ -152,6 +156,7 @@ impl Default for Config {
             telegram: None,
             cron: None,
             heartbeat: None,
+            ui: crate::ui::UiConfig::default(),
         }
     }
 }

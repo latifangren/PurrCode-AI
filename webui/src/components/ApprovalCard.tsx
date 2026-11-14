@@ -15,6 +15,11 @@ export function ApprovalCard({ approval, onResolve, onInspectDiff }: ApprovalCar
   const isPending = approval.status === 'pending';
 
   useEffect(() => {
+    setSecondsLeft(approval.timeoutSeconds);
+    setSubmitting(false);
+  }, [approval.id, approval.timeoutSeconds]);
+
+  useEffect(() => {
     if (!isPending) return;
     const interval = setInterval(() => {
       setSecondsLeft((prev) => {

@@ -236,6 +236,7 @@ pub async fn run_interactive_onboard() -> Result<()> {
         telegram: None,
         cron: None,
         heartbeat: None,
+        ui: Default::default(),
     };
 
     let target_path = purrcode_dir.join("purrcode.jsonc");
@@ -394,6 +395,7 @@ mod tests {
             telegram: None,
             cron: None,
             heartbeat: None,
+            ui: Default::default(),
         };
 
         let json_str = serde_json::to_string_pretty(&config).unwrap();

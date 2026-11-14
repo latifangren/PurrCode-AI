@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Activity, Plus, Trash2 } from 'lucide-react';
 import type { McpServer } from '../types/cockpit';
 
@@ -25,12 +25,21 @@ export function McpView({
   const [selectedServerId, setSelectedServerId] = useState<string>(servers[0]?.id ?? '');
   const [pingingId, setPingingId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (servers.length > 0 && !servers.some((s) => s.id === selectedServerId)) {
+      setSelectedServerId(servers[0].id);
+    }
+  }, [servers, selectedServerId]);
+
   const activeServer = servers.find((s) => s.id === selectedServerId) ?? servers[0];
 
   const handlePing = async (id: string) => {
     setPingingId(id);
-    await onPingServer(id);
-    setPingingId(null);
+    try {
+      await onPingServer(id);
+    } finally {
+      setPingingId(null);
+    }
   };
 
   const handleAdd = async (e: React.FormEvent) => {
