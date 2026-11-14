@@ -71,33 +71,90 @@ pub struct ConfigLoader;
 
 impl ConfigLoader {
     pub fn find_config_path() -> Option<PathBuf> {
-        let local_sub = Path::new(".purrcode/purrcode.jsonc");
-        if local_sub.exists() {
-            return Some(local_sub.to_path_buf());
+        let local_sub_candidates = [
+            ".purrcode/purrcode.yaml",
+            ".purrcode/purrcode.yml",
+            ".purrcode/purrcode.jsonc",
+            ".purrcode/purrcode.json",
+        ];
+        for rel in &local_sub_candidates {
+            let p = Path::new(rel);
+            if p.exists() {
+                return Some(p.to_path_buf());
+            }
         }
 
-        let local_root = Path::new("purrcode.jsonc");
-        if local_root.exists() {
-            return Some(local_root.to_path_buf());
+        let local_root_candidates = [
+            "purrcode.yaml",
+            "purrcode.yml",
+            "purrcode.jsonc",
+            "purrcode.json",
+        ];
+        for rel in &local_root_candidates {
+            let p = Path::new(rel);
+            if p.exists() {
+                return Some(p.to_path_buf());
+            }
         }
 
         if let Some(home) = dirs_home() {
-            let global = home.join(".purrcode").join("purrcode.jsonc");
-            if global.exists() {
-                return Some(global);
+            let global_candidates = [
+                home.join(".purrcode").join("purrcode.yaml"),
+                home.join(".purrcode").join("purrcode.yml"),
+                home.join(".purrcode").join("purrcode.jsonc"),
+                home.join(".purrcode").join("purrcode.json"),
+            ];
+            for p in &global_candidates {
+                if p.exists() {
+                    return Some(p.clone());
+                }
             }
         }
 
         None
     }
 
-    pub fn load_from_str(content: &str) -> Result<Config> {
-        let cleaned = clean_jsonc(content);
-        let expanded = expand_env_vars(&cleaned);
-        let cfg: Config = serde_json::from_str(&expanded)
-            .map_err(|e| PurrError::Config(format!("Failed to parse config JSONC: {e}")))?;
+    pub fn load_from_yaml_str(content: &str) -> Result<Config> {
+        let expanded = expand_env_vars(content);
+        let cfg: Config = serde_yaml::from_str(&expanded)
+            .map_err(|e| PurrError::Config(format!("Failed to parse config YAML: {e}")))?;
         validate_config(&cfg)?;
         Ok(cfg)
+    }
+
+    pub fn load_from_str(content: &str) -> Result<Config> {
+        let trimmed = content.trim();
+        // If content clearly looks like JSON (starts with '{'), prioritize JSONC parser.
+        let cleaned = clean_jsonc(content);
+        let expanded = expand_env_vars(&cleaned);
+
+        if trimmed.starts_with('{') {
+            let cfg: Config = serde_json::from_str(&expanded)
+                .map_err(|e| PurrError::Config(format!("Failed to parse config JSONC: {e}")))?;
+            validate_config(&cfg)?;
+            return Ok(cfg);
+        }
+
+        // Otherwise try YAML first with environment variable interpolation
+        let expanded_yaml = expand_env_vars(content);
+        match serde_yaml::from_str::<Config>(&expanded_yaml) {
+            Ok(cfg) => {
+                validate_config(&cfg)?;
+                Ok(cfg)
+            }
+            Err(yaml_err) => {
+                // If YAML failed, fallback to JSONC parser
+                match serde_json::from_str::<Config>(&expanded) {
+                    Ok(cfg) => {
+                        validate_config(&cfg)?;
+                        Ok(cfg)
+                    }
+                    Err(json_err) => Err(PurrError::Config(format!(
+                        "Failed to parse config (JSONC: {json_err}; YAML: {yaml_err})"
+                    ))),
+                }
+            }
+        }
     }
 
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Config> {
@@ -105,30 +162,59 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path).map_err(|e| {
             PurrError::Config(format!("Cannot read config file '{}': {e}", path.display()))
         })?;
-        Self::load_from_str(&content)
+        let is_yaml = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+            .unwrap_or(false);
+
+        if is_yaml {
+            Self::load_from_yaml_str(&content)
+        } else {
+            Self::load_from_str(&content)
+        }
     }
 
     /// Loads and hierarchically merges configuration layers:
-    /// system -> global (`~/.purrcode/purrcode.jsonc`) -> project (`purrcode.jsonc` / `.purrcode/purrcode.jsonc`)
+    /// system -> global (`~/.purrcode/purrcode.yaml` / `.jsonc`) -> project (`purrcode.yaml` / `.jsonc` / `.purrcode/`)
     /// plus standalone `mcp.json` files (`~/.purrcode/mcp.json` and `.purrcode/mcp.json`).
     pub fn load_effective() -> Result<Config> {
         let mut effective = Config::default();
 
-        // 1. System layer (Linux/macOS `/etc/purrcode/purrcode.jsonc`)
+        let find_first = |candidates: &[PathBuf]| -> Option<PathBuf> {
+            for p in candidates {
+                if p.exists() {
+                    return Some(p.clone());
+                }
+            }
+            None
+        };
+
+        // 1. System layer (Linux/macOS `/etc/purrcode/purrcode.yaml` or `.jsonc`)
         #[cfg(not(windows))]
         {
-            let sys_path = Path::new("/etc/purrcode/purrcode.jsonc");
-            if sys_path.exists() {
-                if let Ok(sys_cfg) = Self::load_from_file(sys_path) {
+            let sys_candidates = [
+                PathBuf::from("/etc/purrcode/purrcode.yaml"),
+                PathBuf::from("/etc/purrcode/purrcode.yml"),
+                PathBuf::from("/etc/purrcode/purrcode.jsonc"),
+                PathBuf::from("/etc/purrcode/purrcode.json"),
+            ];
+            if let Some(sys_path) = find_first(&sys_candidates) {
+                if let Ok(sys_cfg) = Self::load_from_file(&sys_path) {
                     Self::merge_into(&mut effective, sys_cfg);
                 }
             }
         }
 
-        // 2. Global user layer (`~/.purrcode/purrcode.jsonc` + `~/.purrcode/mcp.json`)
+        // 2. Global user layer (`~/.purrcode/purrcode.yaml` / `.jsonc` + `~/.purrcode/mcp.json`)
         if let Some(home) = dirs_home() {
-            let global_path = home.join(".purrcode").join("purrcode.jsonc");
-            if global_path.exists() {
+            let global_candidates = [
+                home.join(".purrcode").join("purrcode.yaml"),
+                home.join(".purrcode").join("purrcode.yml"),
+                home.join(".purrcode").join("purrcode.jsonc"),
+                home.join(".purrcode").join("purrcode.json"),
+            ];
+            if let Some(global_path) = find_first(&global_candidates) {
                 let global_cfg = Self::load_from_file(&global_path)?;
                 Self::merge_into(&mut effective, global_cfg);
             }
@@ -136,17 +222,27 @@ impl ConfigLoader {
             Self::merge_mcp_file(&mut effective, &global_mcp);
         }
 
-        // 3. Project root `purrcode.jsonc`
-        let root_path = Path::new("purrcode.jsonc");
-        if root_path.exists() {
-            let root_cfg = Self::load_from_file(root_path)?;
+        // 3. Project root `purrcode.yaml` / `purrcode.yml` / `purrcode.jsonc` / `purrcode.json`
+        let root_candidates = [
+            PathBuf::from("purrcode.yaml"),
+            PathBuf::from("purrcode.yml"),
+            PathBuf::from("purrcode.jsonc"),
+            PathBuf::from("purrcode.json"),
+        ];
+        if let Some(root_path) = find_first(&root_candidates) {
+            let root_cfg = Self::load_from_file(&root_path)?;
             Self::merge_into(&mut effective, root_cfg);
         }
 
-        // 4. Project `.purrcode/purrcode.jsonc` + `.purrcode/mcp.json` (highest precedence)
-        let proj_path = Path::new(".purrcode/purrcode.jsonc");
-        if proj_path.exists() {
-            let proj_cfg = Self::load_from_file(proj_path)?;
+        // 4. Project `.purrcode/` (highest precedence)
+        let proj_candidates = [
+            PathBuf::from(".purrcode/purrcode.yaml"),
+            PathBuf::from(".purrcode/purrcode.yml"),
+            PathBuf::from(".purrcode/purrcode.jsonc"),
+            PathBuf::from(".purrcode/purrcode.json"),
+        ];
+        if let Some(proj_path) = find_first(&proj_candidates) {
+            let proj_cfg = Self::load_from_file(&proj_path)?;
             Self::merge_into(&mut effective, proj_cfg);
         }
         Self::merge_mcp_file(&mut effective, Path::new(".purrcode/mcp.json"));
@@ -383,5 +479,46 @@ mod tests {
             interval_mins: Some(2),
         };
         assert_eq!(cfg.interval_mins(), 5);
+    }
+
+    #[test]
+    fn test_yaml_config_parsing_and_env_interpolation() {
+        let mut map = HashMap::new();
+        map.insert(
+            "TEST_PROVIDER_KEY".to_string(),
+            "secret_api_key_123".to_string(),
+        );
+        let yaml_raw = r#"
+preset: tabby
+model: "magpie:antigravity/gemini-3.8-flash-tiered"
+providers:
+  magpie:
+    base_url: "https://magpie.raevtar.dev/v1"
+    api_key: "${TEST_PROVIDER_KEY}"
+"#;
+        let expanded = expand_env_vars_with_map(yaml_raw, &map);
+        let cfg = ConfigLoader::load_from_yaml_str(&expanded).expect("YAML must parse cleanly");
+        assert_eq!(cfg.preset, "tabby");
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some("magpie:antigravity/gemini-3.8-flash-tiered")
+        );
+        let magpie = cfg
+            .providers
+            .get("magpie")
+            .expect("provider magpie must exist");
+        assert_eq!(magpie.api_key.as_deref(), Some("secret_api_key_123"));
+        assert_eq!(
+            magpie.base_url.as_deref(),
+            Some("https://magpie.raevtar.dev/v1")
+        );
+
+        // Also test load_from_str with YAML content
+        let cfg2 = ConfigLoader::load_from_str(yaml_raw).expect("load_from_str handles YAML");
+        assert_eq!(cfg2.preset, "tabby");
+        assert_eq!(
+            cfg2.model.as_deref(),
+            Some("magpie:antigravity/gemini-3.8-flash-tiered")
+        );
     }
 }

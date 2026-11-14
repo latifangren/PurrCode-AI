@@ -6,7 +6,8 @@ export type CockpitView =
   | 'memory'
   | 'mcp'
   | 'cron'
-  | 'appearance';
+  | 'appearance'
+  | 'logs';
 
 export type PresetMode = 'tabby' | 'carrier' | 'oyen';
 
@@ -110,7 +111,7 @@ export interface SandboxPathRule {
   addedAt: string;
 }
 
-export type AuditOutcome = 'Allowed' | 'Denied' | 'Violation';
+export type AuditOutcome = 'Allowed' | 'Blocked' | 'Denied' | 'Violation';
 
 export interface AuditEntry {
   id: string;

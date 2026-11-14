@@ -348,6 +348,20 @@ impl WebSessionRegistry {
         self.ensure_session(&id)
     }
 
+    /// Delete a web session from the in-memory registry and disk.
+    pub fn delete_session(&self, id: &str) -> Result<()> {
+        if !is_valid_web_session_id(id) {
+            return Err(PurrError::Session(format!("invalid web session id '{id}'")));
+        }
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(id);
+        }
+        if let Ok(mut order) = self.order.lock() {
+            order.retain(|c| c != id);
+        }
+        self.store.delete_session(id)
+    }
+
     /// All web sessions on disk (valid ids only), most recently
     /// written first. A session written by an older daemon version
     /// (`purr_web`) and sessions minted here both appear.

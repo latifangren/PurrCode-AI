@@ -64,4 +64,31 @@ mod tests {
         };
         assert!(validate_config(&cfg).is_err());
     }
+
+    #[test]
+    fn test_empty_models_allowed() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "minimal-provider".to_string(),
+            ProviderConfig {
+                api: "openai-completions".to_string(),
+                base_url: Some("https://example.com/v1".to_string()),
+                api_key: None,
+                headers: HashMap::new(),
+                user_agent: None,
+                models: HashMap::new(), // explicitly empty
+            },
+        );
+        let cfg = Config {
+            preset: "tabby".to_string(),
+            model_preset: None,
+            model: Some("minimal-provider:my-model".to_string()),
+            providers,
+            mcp_servers: HashMap::new(),
+            telegram: None,
+            cron: None,
+            heartbeat: None,
+        };
+        assert!(validate_config(&cfg).is_ok());
+    }
 }

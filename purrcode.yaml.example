@@ -1,0 +1,13 @@
+# PurrCode AI - Configuration Example (YAML format)
+# Dual Config: purrcode.yaml takes precedence over purrcode.jsonc.
+# Zero mandatory manual model declaration: models are discovered or defaulted automatically.
+# Zero mandatory subagent model_preset: all 6 subagents inherit the session model automatically.
+
+preset: tabby
+model: "magpie:antigravity/gemini-3.8-flash-tiered"
+
+providers:
+  magpie:
+    api: openai-completions
+    base_url: "https://magpie.raevtar.dev/v1"
+    api_key: "${MAGPIE_API_KEY}"

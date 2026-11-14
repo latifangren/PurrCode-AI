@@ -13,6 +13,8 @@ Cargo.lock.bak
 # Runtime & cache
 .purrcode/
 purrcode.jsonc
+purrcode.yaml
+purrcode.yml
 audit*.jsonl*
 *.log
 .purrcode-state*.json

@@ -38,7 +38,7 @@ use crate::web::sessions::{
 };
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use purrcode_api::cron::CronRegistry;
@@ -55,9 +55,11 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 mod auth;
 mod routes;
+mod routes_cockpit;
 mod routes_cron;
 mod routes_memory;
 mod routes_overview;
+mod routes_providers;
 mod routes_skills;
 mod routes_state;
 mod security;
@@ -281,9 +283,56 @@ impl WebServer {
             .route("/api/state", get(routes_state::state_handler))
             .route("/api/events", get(sse::events))
             .route("/api/sessions", get(sessions::list).post(sessions::create))
+            .route(
+                "/api/sessions/{id}",
+                delete(sessions::delete).patch(sessions::patch),
+            )
             .route("/api/sessions/{id}/transcript", get(sessions::transcript))
+            .route("/api/preferences", put(routes_cockpit::save_preferences))
+            .route("/api/routing", put(routes_cockpit::update_routing))
+            .route("/api/providers", post(routes_cockpit::add_provider))
+            .route(
+                "/api/providers/{id}",
+                patch(routes_cockpit::toggle_provider).delete(routes_cockpit::delete_provider),
+            )
+            .route(
+                "/api/providers/{id}/test",
+                post(routes_cockpit::test_provider),
+            )
+            .route("/api/sandbox/paths", post(routes_cockpit::add_sandbox_path))
+            .route(
+                "/api/sandbox/paths/{id}",
+                delete(routes_cockpit::remove_sandbox_path),
+            )
+            .route(
+                "/api/sandbox/network",
+                patch(routes_cockpit::toggle_sandbox_network),
+            )
+            .route("/api/memory/files", put(routes_cockpit::save_memory_files))
+            .route("/api/skills/manage", post(routes_cockpit::manage_skills))
+            .route("/api/mcp/servers", post(routes_cockpit::add_mcp_server))
+            .route(
+                "/api/mcp/servers/{id}/ping",
+                post(routes_cockpit::ping_mcp_server),
+            )
+            .route(
+                "/api/mcp/servers/{id}",
+                delete(routes_cockpit::delete_mcp_server),
+            )
+            .route("/api/cron/jobs", post(routes_cockpit::add_cron_job))
+            .route(
+                "/api/cron/jobs/{id}",
+                patch(routes_cockpit::toggle_cron_job).delete(routes_cockpit::delete_cron_job),
+            )
+            .route("/api/approvals/{id}", post(routes_cockpit::handle_approval))
+            .route("/api/logs", get(routes_cockpit::get_audit_logs))
+            .route("/api/audit", get(routes_cockpit::get_audit_logs))
             .route("/api/cron", get(routes::cron))
             .route("/api/overview", get(routes_overview::overview))
+            .route(
+                "/api/providers/{id}/fetch-models",
+                post(routes_providers::fetch_models_handler),
+            )
             .route("/api/cron/parse", post(routes_cron::cron_parse))
             .route("/api/cron/add", post(routes_cron::cron_add))
             .route("/api/cron/enable", post(routes_cron::cron_enable))

@@ -230,11 +230,19 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
 }
 
+static DEFAULT_MODEL: ModelConfig = ModelConfig {
+    name: None,
+    context_window: 131_072,
+    max_tokens: None,
+    reasoning: false,
+    reasoning_effort: None,
+};
+
 impl Config {
     /// Find provider and model details for a given model string (format: "provider:model" or "provider/model")
     pub fn resolve_model<'a>(
         &'a self,
-        target_model: &str,
+        target_model: &'a str,
     ) -> Option<(&'a str, &'a str, &'a ProviderConfig, &'a ModelConfig)> {
         // 1. Try matching provider:model prefix
         if let Some(colon_idx) = target_model.find(':') {
@@ -244,6 +252,7 @@ impl Config {
                 if let Some((m_key, model)) = provider.models.get_key_value(suffix_model) {
                     return Some((p_name.as_str(), m_key.as_str(), provider, model));
                 }
+                return Some((p_name.as_str(), suffix_model, provider, &DEFAULT_MODEL));
             }
         }
 
@@ -255,6 +264,7 @@ impl Config {
                 if let Some((m_key, model)) = provider.models.get_key_value(suffix_model) {
                     return Some((p_name.as_str(), m_key.as_str(), provider, model));
                 }
+                return Some((p_name.as_str(), suffix_model, provider, &DEFAULT_MODEL));
             }
         }
 
@@ -268,6 +278,12 @@ impl Config {
             if let Some((m_key, model)) = provider.models.get_key_value(target_model) {
                 return Some((provider_name.as_str(), m_key.as_str(), provider, model));
             }
+        }
+
+        // 4. If single provider configured, fallback for bare model name
+        if self.providers.len() == 1 {
+            let (p_name, provider) = self.providers.iter().next().unwrap();
+            return Some((p_name.as_str(), target_model, provider, &DEFAULT_MODEL));
         }
 
         None
@@ -362,5 +378,43 @@ mod tests {
         let cron = cfg.cron.expect("cron present");
         assert!(cron.enabled);
         assert_eq!(cron.tick_secs(), 60);
+    }
+
+    #[test]
+    fn test_resolve_model_fallback_to_default_model_when_undeclared() {
+        let mut cfg = Config::default();
+        let provider = ProviderConfig {
+            api: "openai-completions".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key: None,
+            headers: HashMap::new(),
+            user_agent: None,
+            models: HashMap::new(), // Empty models!
+        };
+        cfg.providers.insert("magpie".to_string(), provider);
+
+        // provider:model syntax with undeclared model
+        let (p_name, m_name, _, m_cfg) = cfg
+            .resolve_model("magpie:antigravity/gemini-3.8-flash-tiered")
+            .expect("should resolve with fallback");
+        assert_eq!(p_name, "magpie");
+        assert_eq!(m_name, "antigravity/gemini-3.8-flash-tiered");
+        assert_eq!(m_cfg.context_window, 131_072);
+
+        // provider/model syntax with undeclared model
+        let (p_name, m_name, _, m_cfg) = cfg
+            .resolve_model("magpie/custom-model")
+            .expect("should resolve with fallback");
+        assert_eq!(p_name, "magpie");
+        assert_eq!(m_name, "custom-model");
+        assert_eq!(m_cfg.context_window, 131_072);
+
+        // bare model syntax with single provider
+        let (p_name, m_name, _, m_cfg) = cfg
+            .resolve_model("bare-model")
+            .expect("single provider should resolve bare model");
+        assert_eq!(p_name, "magpie");
+        assert_eq!(m_name, "bare-model");
+        assert_eq!(m_cfg.context_window, 131_072);
     }
 }

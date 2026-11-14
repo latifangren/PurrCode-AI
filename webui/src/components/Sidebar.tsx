@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Palette,
   Plug,
+  ScrollText,
   Shield,
   Trash2,
   X,
@@ -34,6 +35,7 @@ const NAV_ITEMS: { id: CockpitView; label: string; icon: React.ComponentType<{ c
   { id: 'mcp', label: 'MCP Server Hub', icon: Plug },
   { id: 'cron', label: 'Cron Scheduler', icon: Clock },
   { id: 'appearance', label: 'Themes & Companion', icon: Palette },
+  { id: 'logs', label: 'Audit Logs', icon: ScrollText },
 ];
 
 export function Sidebar({

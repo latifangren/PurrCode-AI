@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Activity, Plus, Trash2 } from 'lucide-react';
+import { Activity, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type { ProviderConfig } from '../types/cockpit';
+import { fetchProviderModels, type FetchedModel } from '../lib/apiClient';
 
 interface ProvidersViewProps {
   providers: ProviderConfig[];
@@ -29,6 +30,10 @@ export function ProvidersView({
   const [defaultModel, setDefaultModel] = useState('');
   const [contextWindow, setContextWindow] = useState('64000');
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [fetchedModels, setFetchedModels] = useState<Record<string, FetchedModel[]>>({});
+  const [selectedModelByProvider, setSelectedModelByProvider] = useState<Record<string, string>>({});
+  const [fetchError, setFetchError] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -54,6 +59,30 @@ export function ProvidersView({
     setTestingId(id);
     await onTestLatency(id);
     setTestingId(null);
+  };
+
+  const handleFetchModels = async (provId: string) => {
+    setFetchingId(provId);
+    setFetchError((prev) => {
+      const copy = { ...prev };
+      delete copy[provId];
+      return copy;
+    });
+    try {
+      const models = await fetchProviderModels(provId);
+      setFetchedModels((prev) => ({ ...prev, [provId]: models }));
+      if (models.length > 0) {
+        setSelectedModelByProvider((prev) => ({
+          ...prev,
+          [provId]: prev[provId] || models[0].id,
+        }));
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to fetch models';
+      setFetchError((prev) => ({ ...prev, [provId]: msg }));
+    } finally {
+      setFetchingId(null);
+    }
   };
 
   return (
@@ -115,6 +144,17 @@ export function ProvidersView({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    disabled={fetchingId === prov.id}
+                    onClick={() => handleFetchModels(prov.id)}
+                    aria-label={`Fetch models for ${prov.name}`}
+                    className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas hover:bg-surface-strong text-xs font-medium text-ink transition-colors whitespace-nowrap cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-primary ${fetchingId === prov.id ? 'animate-spin' : ''}`} />
+                    <span>{fetchingId === prov.id ? 'Fetching...' : 'Fetch Models'}</span>
+                  </button>
+
+                  <button
+                    type="button"
                     disabled={testingId === prov.id}
                     onClick={() => handlePing(prov.id)}
                     className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md border border-hairline bg-canvas hover:bg-surface-strong text-xs font-medium text-ink transition-colors whitespace-nowrap cursor-pointer"
@@ -135,6 +175,48 @@ export function ProvidersView({
                   )}
                 </div>
               </div>
+
+              {fetchedModels[prov.id] && fetchedModels[prov.id].length > 0 && (
+                <div className="pt-3 border-t border-hairline space-y-2">
+                  <div className="flex items-center justify-between text-xs text-muted">
+                    <span>Discovered Models ({fetchedModels[prov.id].length}):</span>
+                    {selectedModelByProvider[prov.id] && (
+                      <span className="font-mono text-[11px] text-body">
+                        {(() => {
+                          const found = fetchedModels[prov.id].find(
+                            (m) => m.id === selectedModelByProvider[prov.id]
+                          );
+                          return found
+                            ? `${(found.context_window / 1000).toFixed(0)}k ctx`
+                            : '';
+                        })()}
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    value={selectedModelByProvider[prov.id] || prov.defaultModel}
+                    onChange={(e) =>
+                      setSelectedModelByProvider((prev) => ({
+                        ...prev,
+                        [prov.id]: e.target.value,
+                      }))
+                    }
+                    className="w-full h-8 px-2.5 rounded-md border border-hairline bg-canvas text-xs font-mono text-ink focus:outline-none focus:border-primary"
+                  >
+                    {fetchedModels[prov.id].map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} {m.name && m.name !== m.id ? `(${m.name})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {fetchError[prov.id] && (
+                <div className="pt-2 text-xs text-error font-medium">
+                  {fetchError[prov.id]}
+                </div>
+              )}
             </div>
           ))}
         </div>

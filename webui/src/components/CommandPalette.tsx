@@ -135,6 +135,16 @@ export function CommandPalette({
         onClose();
       },
     },
+    {
+      id: 'cmd-view-logs',
+      group: 'Navigation',
+      label: 'Go to Audit Logs',
+      detail: 'Real-time security logs, tool audits, and execution trail',
+      action: () => {
+        onSelectView('logs');
+        onClose();
+      },
+    },
     ...THEME_PRESETS.map((t) => ({
       id: `cmd-theme-${t.id}`,
       group: 'Themes',

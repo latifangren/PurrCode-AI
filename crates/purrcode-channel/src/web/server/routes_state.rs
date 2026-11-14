@@ -85,20 +85,42 @@ async fn read_memory_file(
     })
 }
 
-/// Reads configuration from `purrcode.jsonc` in workspace root or purrcode dir.
+/// Reads configuration from `purrcode.yaml` / `purrcode.yml` or `purrcode.jsonc` / `purrcode.json`
+/// in workspace root or purrcode dir (YAML prioritized).
 async fn load_config_json(workspace_root: &Path, purrcode_dir: &Path) -> Option<Value> {
     let candidates = [
+        workspace_root.join(".purrcode").join("purrcode.yaml"),
+        workspace_root.join(".purrcode").join("purrcode.yml"),
         workspace_root.join(".purrcode").join("purrcode.jsonc"),
+        workspace_root.join(".purrcode").join("purrcode.json"),
+        workspace_root.join("purrcode.yaml"),
+        workspace_root.join("purrcode.yml"),
         workspace_root.join("purrcode.jsonc"),
+        workspace_root.join("purrcode.json"),
+        purrcode_dir.join("purrcode.yaml"),
+        purrcode_dir.join("purrcode.yml"),
         purrcode_dir.join("purrcode.jsonc"),
+        purrcode_dir.join("purrcode.json"),
     ];
 
     for path in &candidates {
         if path.is_file() {
             if let Ok(raw) = tokio::fs::read_to_string(path).await {
-                let cleaned = clean_jsonc(&raw);
-                if let Ok(val) = serde_json::from_str::<Value>(&cleaned) {
-                    return Some(val);
+                let is_yaml = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+                    .unwrap_or(false);
+
+                if is_yaml {
+                    if let Ok(val) = serde_yaml::from_str::<Value>(&raw) {
+                        return Some(val);
+                    }
+                } else {
+                    let cleaned = clean_jsonc(&raw);
+                    if let Ok(val) = serde_json::from_str::<Value>(&cleaned) {
+                        return Some(val);
+                    }
                 }
             }
         }
@@ -546,6 +568,10 @@ pub async fn state_handler(State(state): State<Arc<WebState>>) -> Json<Value> {
     let skills = load_skills(&state.purrcode_dir).await;
     let mcp_servers = extract_mcp_servers(config.as_ref());
 
+    // Load audit logs and preferences
+    let audit_entries = super::routes_cockpit::load_audit_entries(&state.purrcode_dir, 50);
+    let preferences = super::routes_cockpit::load_preferences(&state.purrcode_dir);
+
     // Sandbox state
     let sandbox = json!({
         "landlockAbi": "v3",
@@ -573,7 +599,7 @@ pub async fn state_handler(State(state): State<Arc<WebState>>) -> Json<Value> {
                 "reason": "System binaries and toolchains"
             }
         ],
-        "auditLog": []
+        "auditLog": audit_entries
     });
 
     Json(json!({
@@ -589,5 +615,6 @@ pub async fn state_handler(State(state): State<Arc<WebState>>) -> Json<Value> {
         "skills": skills,
         "mcpServers": mcp_servers,
         "cronJobs": cron_jobs,
+        "preferences": preferences,
     }))
 }

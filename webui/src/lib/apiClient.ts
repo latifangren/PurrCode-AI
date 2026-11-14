@@ -47,3 +47,23 @@ export async function requestJson<T>(
 
   return parsed as T;
 }
+
+export interface FetchedModel {
+  id: string;
+  name: string;
+  context_window: number;
+}
+
+export async function fetchProviderModels(
+  providerId: string
+): Promise<FetchedModel[]> {
+  const cleanId = providerId.startsWith('prov-')
+    ? providerId.slice(5)
+    : providerId;
+  return requestJson<FetchedModel[]>(
+    `/api/providers/${encodeURIComponent(cleanId)}/fetch-models`,
+    {
+      method: 'POST',
+    }
+  );
+}

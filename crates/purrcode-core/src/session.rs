@@ -47,6 +47,18 @@ impl SessionStore {
         self.sessions_dir().join(session_id)
     }
 
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let jsonl_path = self.session_jsonl_path(session_id);
+        if jsonl_path.exists() {
+            std::fs::remove_file(&jsonl_path).map_err(PurrError::Io)?;
+        }
+        let dir_path = self.session_dir(session_id);
+        if dir_path.exists() && dir_path.is_dir() {
+            std::fs::remove_dir_all(&dir_path).map_err(PurrError::Io)?;
+        }
+        Ok(())
+    }
+
     pub fn session_jsonl_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir().join(format!("{}.jsonl", session_id))
     }
@@ -271,6 +283,10 @@ mod tests {
         let compacted = SessionStore::compact_messages(&loaded, Some("keep auth"), 1);
         assert_eq!(compacted.len(), 2);
         assert!(compacted[0].content.contains("Compacted Session Summary"));
+
+        assert!(store.session_exists("purr_test1"));
+        store.delete_session("purr_test1").unwrap();
+        assert!(!store.session_exists("purr_test1"));
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

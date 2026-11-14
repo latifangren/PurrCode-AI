@@ -39,6 +39,9 @@ const CronView = lazy(() =>
 const AppearanceView = lazy(() =>
   import('./components/AppearanceView').then((m) => ({ default: m.AppearanceView }))
 );
+const AuditLogsView = lazy(() =>
+  import('./components/AuditLogsView').then((m) => ({ default: m.AuditLogsView }))
+);
 
 export default function App() {
   const [activeView, setActiveView] = useState<CockpitView>('chat');
@@ -117,8 +120,8 @@ export default function App() {
   }, []);
 
   const availableModels = useMemo(() => {
-    if (!store.state) return ['gemini-4-hydrogen'];
-    const set = new Set<string>(['gemini-4-hydrogen', 'gemini-3.1-flash-lite']);
+    if (!store.state) return ['antigravity/gemini-3.8-flash-tiered'];
+    const set = new Set<string>(['antigravity/gemini-3.8-flash-tiered']);
     for (const p of store.state.providers) {
       for (const m of p.models) set.add(m);
     }
@@ -297,6 +300,10 @@ export default function App() {
                   preferences={preferences}
                   onUpdatePreferences={store.updatePreferences}
                 />
+              )}
+
+              {activeView === 'logs' && (
+                <AuditLogsView initialAuditLog={store.state.sandbox.auditLog} />
               )}
             </Suspense>
           </ErrorBoundary>

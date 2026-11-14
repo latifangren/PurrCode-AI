@@ -12,6 +12,16 @@ fn body_of(resp: &str) -> &str {
     resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(resp)
 }
 
+fn req_raw(port: u16, method: &str, path: &str, body: &str) -> String {
+    http_raw(
+        port,
+        &format!(
+            "{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_state_endpoint_schema() {
     let dir = test_dir("state-endpoint");
@@ -170,6 +180,69 @@ async fn test_server_serves_webui_dist_static_and_spa_fallback() {
         resp_api_missing.starts_with("HTTP/1.1 404"),
         "resp: {resp_api_missing}"
     );
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cockpit_sessions_mutations_and_audit_logs() {
+    let dir = test_dir("cockpit-mutations");
+    let port = free_port();
+    let registry = Arc::new(WebSessionRegistry::new(dir.clone()));
+    let s1 = registry.create_session().unwrap();
+
+    let server = WebServer::new(
+        "127.0.0.1",
+        port,
+        None,
+        registry.clone(),
+        dir.clone(),
+        dir.clone(),
+    );
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(async move {
+        let _ = server.run(cancel_rx).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // PATCH session
+    let patch_body = r#"{"activate":true}"#;
+    let patch_resp = req_raw(
+        port,
+        "PATCH",
+        &format!("/api/sessions/{}", s1.id),
+        patch_body,
+    );
+    assert!(
+        patch_resp.starts_with("HTTP/1.1 200 OK"),
+        "patch failed: {patch_resp}"
+    );
+
+    // DELETE session
+    let del_resp = req_raw(port, "DELETE", &format!("/api/sessions/{}", s1.id), "");
+    assert!(
+        del_resp.starts_with("HTTP/1.1 200 OK"),
+        "delete failed: {del_resp}"
+    );
+    let del_json: serde_json::Value =
+        serde_json::from_str(body_of(&del_resp)).expect("json delete body");
+    assert!(del_json["sessions"].is_array());
+    assert!(!del_json["activeSessionId"].as_str().unwrap().is_empty());
+
+    // GET /api/logs & /api/audit
+    let logs_resp = get(port, "/api/logs");
+    assert!(logs_resp.starts_with("HTTP/1.1 200 OK"));
+    let logs_json: serde_json::Value =
+        serde_json::from_str(body_of(&logs_resp)).expect("json logs body");
+    assert!(logs_json["entries"].is_array());
+
+    // PUT /api/preferences
+    let pref_body = r#"{"theme":"catppuccin-mocha","density":"comfortable"}"#;
+    let pref_resp = req_raw(port, "PUT", "/api/preferences", pref_body);
+    assert!(pref_resp.starts_with("HTTP/1.1 200 OK"));
 
     let _ = cancel_tx.send(true);
     handle.abort();
