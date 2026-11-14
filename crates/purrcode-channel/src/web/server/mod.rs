@@ -59,6 +59,7 @@ mod routes_cron;
 mod routes_memory;
 mod routes_overview;
 mod routes_skills;
+mod routes_state;
 mod security;
 mod sessions;
 mod sse;
@@ -77,6 +78,8 @@ mod tests_plugins;
 mod tests_security;
 #[cfg(test)]
 mod tests_skills;
+#[cfg(test)]
+mod tests_state;
 
 #[async_trait::async_trait]
 pub trait PromptDispatcher: Send + Sync {
@@ -272,11 +275,10 @@ impl WebServer {
         // that serves the router directly) the peer reads
         // "unknown" and the bucket still applies.
         let app = Router::new()
-            .route("/", get(routes::index))
-            .route("/index.html", get(routes::index))
             .route("/health", get(routes::status))
             .route("/api/status", get(routes::status))
             .route("/api/health", get(routes::status))
+            .route("/api/state", get(routes_state::state_handler))
             .route("/api/events", get(sse::events))
             .route("/api/sessions", get(sessions::list).post(sessions::create))
             .route("/api/sessions/{id}/transcript", get(sessions::transcript))
@@ -305,7 +307,45 @@ impl WebServer {
                 get(routes::memory).post(routes_memory::memory_save),
             )
             .route("/api/memory/info", get(routes_memory::memory_info))
-            .route("/api/approval", post(routes::approval))
+            .route("/api/approval", post(routes::approval));
+
+        let dist_dir = self.workspace_root.join("webui").join("dist");
+        let dist_index = dist_dir.join("index.html");
+
+        let app = if dist_dir.is_dir() && dist_index.is_file() {
+            let serve_dir = tower_http::services::ServeDir::new(&dist_dir)
+                .fallback(tower_http::services::ServeFile::new(&dist_index));
+            app.fallback(move |req: axum::extract::Request| {
+                let mut serve_dir = serve_dir.clone();
+                async move {
+                    if req.uri().path().starts_with("/api/") {
+                        use axum::response::IntoResponse;
+                        (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
+                    } else {
+                        use tower_service::Service;
+                        match serve_dir.call(req).await {
+                            Ok(res) => {
+                                use axum::response::IntoResponse;
+                                res.into_response()
+                            }
+                            Err(_) => {
+                                use axum::response::IntoResponse;
+                                (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    "Static file error",
+                                )
+                                    .into_response()
+                            }
+                        }
+                    }
+                }
+            })
+        } else {
+            app.route("/", get(routes::index))
+                .route("/index.html", get(routes::index))
+        };
+
+        let app = app
             .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
             .layer(middleware::from_fn_with_state(
                 security,

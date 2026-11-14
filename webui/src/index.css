@@ -1,0 +1,366 @@
+@import "tailwindcss";
+
+:root {
+  --pc-canvas: #faf9f5;
+  --pc-surface-soft: #f5f0e8;
+  --pc-surface-card: #efe9de;
+  --pc-surface-strong: #e8e0d2;
+  --pc-ink: #141413;
+  --pc-body: #3d3d3a;
+  --pc-body-strong: #252523;
+  --pc-muted: #6c6a64;
+  --pc-muted-soft: #8e8b82;
+  --pc-hairline: #e6dfd8;
+  --pc-hairline-soft: #ebe6df;
+  --pc-primary: #cc785c;
+  --pc-primary-active: #a9583e;
+  --pc-primary-disabled: #e6dfd8;
+  --pc-on-primary: #ffffff;
+  --pc-code-bg: #181715;
+  --pc-code-soft: #1f1e1b;
+  --pc-code-elevated: #252320;
+  --pc-code-border: #2d2b27;
+  --pc-code-text: #faf9f5;
+  --pc-code-muted: #a09d96;
+  --pc-accent-teal: #5db8a6;
+  --pc-accent-amber: #e8a55a;
+  --pc-success: #3d7a4a;
+  --pc-warning: #d4a017;
+  --pc-error: #c64545;
+}
+
+@theme {
+  --font-serif: "Cormorant Garamond", "Tiempos Headline", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-canvas: var(--pc-canvas);
+  --color-surface-soft: var(--pc-surface-soft);
+  --color-surface-card: var(--pc-surface-card);
+  --color-surface-strong: var(--pc-surface-strong);
+
+  --color-ink: var(--pc-ink);
+  --color-body: var(--pc-body);
+  --color-body-strong: var(--pc-body-strong);
+  --color-muted: var(--pc-muted);
+  --color-muted-soft: var(--pc-muted-soft);
+
+  --color-hairline: var(--pc-hairline);
+  --color-hairline-soft: var(--pc-hairline-soft);
+
+  --color-primary: var(--pc-primary);
+  --color-primary-active: var(--pc-primary-active);
+  --color-primary-disabled: var(--pc-primary-disabled);
+  --color-on-primary: var(--pc-on-primary);
+
+  --color-code-bg: var(--pc-code-bg);
+  --color-code-soft: var(--pc-code-soft);
+  --color-code-elevated: var(--pc-code-elevated);
+  --color-code-border: var(--pc-code-border);
+  --color-code-text: var(--pc-code-text);
+  --color-code-muted: var(--pc-code-muted);
+
+  --color-accent-teal: var(--pc-accent-teal);
+  --color-accent-amber: var(--pc-accent-amber);
+  --color-success: var(--pc-success);
+  --color-warning: var(--pc-warning);
+  --color-error: var(--pc-error);
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--pc-canvas);
+    color: var(--pc-ink);
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    transition: background-color 180ms ease, color 180ms ease;
+  }
+
+  h1,
+  h2,
+  .font-editorial {
+    font-family: "Cormorant Garamond", "Tiempos Headline", Georgia, serif;
+    font-weight: 400;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Compositor-only Cat Companion & Task Animations */
+@keyframes pc-breathe {
+  0%, 100% {
+    transform: scaleY(1) translateY(0);
+  }
+  50% {
+    transform: scaleY(1.028) translateY(-0.5px);
+  }
+}
+
+@keyframes pc-blink {
+  0%, 92%, 100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes pc-ear-twitch {
+  0%, 82%, 100% {
+    transform: rotate(0deg);
+  }
+  88% {
+    transform: rotate(-7deg);
+  }
+  94% {
+    transform: rotate(4deg);
+  }
+}
+
+@keyframes pc-tail-swish {
+  0%, 100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: rotate(10deg);
+  }
+}
+
+@keyframes pc-paw-step {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+@keyframes pc-scan-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+/* Cat-paw-walking alternating gait animation (compositor-only) */
+@keyframes cat-paw-walking-left {
+  0%, 100% {
+    transform: translate(-1px, 0px) rotate(-10deg) scale(1);
+    opacity: 1;
+  }
+  25% {
+    transform: translate(2px, -3.5px) rotate(6deg) scale(1.06);
+    opacity: 1;
+  }
+  50% {
+    transform: translate(4px, 0.5px) rotate(12deg) scale(0.96);
+    opacity: 0.72;
+  }
+  75% {
+    transform: translate(1px, 0px) rotate(-4deg) scale(0.95);
+    opacity: 0.65;
+  }
+}
+
+@keyframes cat-paw-walking-right {
+  0%, 100% {
+    transform: translate(4px, 0.5px) rotate(12deg) scale(0.96);
+    opacity: 0.72;
+  }
+  25% {
+    transform: translate(1px, 0px) rotate(-4deg) scale(0.95);
+    opacity: 0.65;
+  }
+  50% {
+    transform: translate(-1px, 0px) rotate(-10deg) scale(1);
+    opacity: 1;
+  }
+  75% {
+    transform: translate(2px, -3.5px) rotate(6deg) scale(1.06);
+    opacity: 1;
+  }
+}
+
+@keyframes cat-paw-tap {
+  0%, 70%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  82% {
+    transform: translateY(-2.5px) rotate(-6deg);
+  }
+  92% {
+    transform: translateY(0.5px) rotate(3deg);
+  }
+}
+
+@keyframes cat-paw-trail {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.04);
+  }
+}
+
+.animate-cat-breathe {
+  animation: pc-breathe 3.6s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.animate-cat-blink {
+  animation: pc-blink 4.6s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.animate-cat-ear {
+  animation: pc-ear-twitch 1.6s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.animate-cat-tail {
+  animation: pc-tail-swish 1.2s ease-in-out infinite;
+  transform-origin: 20px 64px;
+}
+
+.animate-cat-tail-slow {
+  animation: pc-tail-swish 3.4s ease-in-out infinite;
+  transform-origin: 20px 64px;
+}
+
+.animate-paw-step {
+  animation: pc-paw-step 1s ease-in-out infinite;
+}
+
+.animate-scan-bar {
+  animation: pc-scan-bar 1.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.animate-cat-paw-walking-left {
+  animation: cat-paw-walking-left 0.85s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.animate-cat-paw-walking-right {
+  animation: cat-paw-walking-right 0.85s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.animate-cat-paw-tap {
+  animation: cat-paw-tap 1.8s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.animate-cat-paw-trail {
+  animation: cat-paw-trail 1.6s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes pc-purr-bounce {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  30% {
+    transform: translateY(-5px) scale(1.04);
+  }
+  60% {
+    transform: translateY(0) scale(0.98);
+  }
+  80% {
+    transform: translateY(-2.5px) scale(1.02);
+  }
+}
+
+@keyframes pc-sparkle-pop {
+  0% {
+    transform: translateY(3px) scale(0.5);
+    opacity: 0;
+  }
+  40% {
+    transform: translateY(-2px) scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-7px) scale(0.85);
+    opacity: 0;
+  }
+}
+
+@keyframes pc-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-cat-celebrate {
+  animation: pc-purr-bounce 0.9s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform-origin: center bottom;
+}
+
+.animate-sparkle-pop {
+  animation: pc-sparkle-pop 1.15s ease-out infinite;
+  transform-origin: center;
+}
+
+.animate-skeleton-shimmer {
+  animation: pc-shimmer 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-cat-breathe,
+  .animate-cat-blink,
+  .animate-cat-ear,
+  .animate-cat-tail,
+  .animate-cat-tail-slow,
+  .animate-paw-step,
+  .animate-scan-bar,
+  .animate-cat-paw-walking-left,
+  .animate-cat-paw-walking-right,
+  .animate-cat-paw-tap,
+  .animate-cat-paw-trail,
+  .animate-cat-celebrate,
+  .animate-sparkle-pop,
+  .animate-skeleton-shimmer {
+    animation: none !important;
+  }
+}
+
+/* Minimal scrollbar adapting to theme tokens */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--pc-hairline);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--pc-muted-soft);
+}
+
+.dark-scroll::-webkit-scrollbar-thumb {
+  background: var(--pc-code-border);
+}
+
+.dark-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--pc-code-muted);
+}
