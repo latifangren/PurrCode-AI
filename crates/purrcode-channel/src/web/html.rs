@@ -10,6 +10,7 @@ use crate::web::html_css::WEB_INDEX_CSS;
 use crate::web::html_js::WEB_INDEX_JS;
 use crate::web::html_js_b5::WEB_INDEX_JS_B5;
 use crate::web::html_js_b6::WEB_INDEX_JS_B6;
+use crate::web::html_js_b7::WEB_INDEX_JS_B7;
 
 pub fn web_index_html() -> String {
     format!(
@@ -24,6 +25,7 @@ pub fn web_index_html() -> String {
   </style>
 </head>
 <body>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
   <div class="sidebar">
     <div class="logo">
       <span>🐾</span>
@@ -31,6 +33,7 @@ pub fn web_index_html() -> String {
     </div>
     <div class="nav">
       <button class="nav-btn active" onclick="switchTab('chat')">💬 Terminal & Chat</button>
+      <button class="nav-btn" onclick="switchTab('overview')">📊 Overview</button>
       <button class="nav-btn" onclick="switchTab('cron')">⏰ Cron Scheduler</button>
       <button class="nav-btn" onclick="switchTab('skills')">🛠️ Skills & Curator</button>
       <button class="nav-btn" onclick="switchTab('memory')">🧠 Memory & Identity</button>
@@ -59,6 +62,7 @@ pub fn web_index_html() -> String {
 
   <div class="main">
     <div class="header">
+      <button class="menu-btn" id="menu-btn" aria-label="Open menu">☰</button>
       <div class="header-title" id="tab-title">Terminal & Chat</div>
       <div class="header-tags">
         <div class="tag primary" id="preset-badge">Preset: tabby</div>
@@ -88,6 +92,32 @@ pub fn web_index_html() -> String {
       </div>
     </div>
 
+    <!-- Overview Tab (v0.4 B7: dashboard canvas) -->
+    <div class="content" id="tab-overview" style="display: none;">
+      <div id="overview-warnings" class="ov-warn" style="display: none;"></div>
+      <div class="ov-grid">
+        <div class="view-card ov-card">
+          <div class="ov-label">Gateway</div>
+          <div class="ov-kpi" id="ov-gateway-status">…</div>
+          <div style="color: var(--text-muted); font-size: 0.85rem;" id="ov-gateway-workspace"></div>
+        </div>
+        <div class="view-card ov-card">
+          <div class="ov-label">Sesi aktif</div>
+          <div class="ov-kpi" id="ov-sessions-count">…</div>
+          <div id="ov-sessions-list" style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;"></div>
+        </div>
+        <div class="view-card ov-card">
+          <div class="ov-label">Cron berikutnya</div>
+          <div id="ov-next-cron" style="margin-top: 8px; font-size: 0.9rem;">…</div>
+        </div>
+        <div class="view-card ov-card">
+          <div class="ov-label">Delivery terakhir</div>
+          <div id="ov-last-delivery" style="margin-top: 8px; font-size: 0.9rem;">…</div>
+        </div>
+      </div>
+      <div><button class="btn btn-secondary" id="ov-refresh-btn">Refresh</button></div>
+    </div>
+
     <!-- Cron Tab -->
     <div class="content" id="tab-cron" style="display: none;">
       <div class="view-card">
@@ -108,6 +138,7 @@ pub fn web_index_html() -> String {
           <div id="cron-parse-preview" style="color: var(--text-muted); font-size: 0.9rem;"></div>
           <div id="cron-add-status" style="font-size: 0.9rem;"></div>
         </div>
+        <div class="table-wrap">
         <table id="cron-table">
           <thead>
             <tr>
@@ -124,6 +155,7 @@ pub fn web_index_html() -> String {
             <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Loading scheduled jobs...</td></tr>
           </tbody>
         </table>
+        </div>
       </div>
     </div>
 
@@ -229,10 +261,11 @@ pub fn web_index_html() -> String {
 {}
 {}
 {}
+{}
   </script>
 </body>
 </html>"#,
-        WEB_INDEX_CSS, WEB_INDEX_JS, WEB_INDEX_JS_B5, WEB_INDEX_JS_B6
+        WEB_INDEX_CSS, WEB_INDEX_JS, WEB_INDEX_JS_B5, WEB_INDEX_JS_B6, WEB_INDEX_JS_B7
     )
 }
 
@@ -452,6 +485,89 @@ mod tests {
         assert!(
             !WEB_INDEX_JS_B6.contains("onclick=\""),
             "B6 JS must not use inline onclick handlers"
+        );
+    }
+
+    /// v0.4 B7: the overview tab (dashboard canvas) with its four
+    /// cards, the mobile drawer (hamburger + backdrop), and the
+    /// scrollable cron table wrapper. The B7 JavaScript calls
+    /// `/api/overview` and wires the drawer via `addEventListener`
+    /// — never an inline handler — and renders server values
+    /// through textContent, never innerHTML interpolation.
+    #[test]
+    fn test_webui_b7_overview_and_mobile_drawer() {
+        use crate::web::html_css::WEB_INDEX_CSS;
+        use crate::web::html_js_b7::WEB_INDEX_JS_B7;
+        let html = web_index_html();
+        assert!(html.contains("id=\"tab-overview\""), "overview tab missing");
+        assert!(
+            html.contains("id=\"ov-gateway-status\""),
+            "gateway card missing"
+        );
+        assert!(
+            html.contains("id=\"ov-sessions-count\""),
+            "sessions card missing"
+        );
+        assert!(
+            html.contains("id=\"ov-next-cron\""),
+            "next-cron card missing"
+        );
+        assert!(
+            html.contains("id=\"ov-last-delivery\""),
+            "last-delivery card missing"
+        );
+        assert!(
+            html.contains("id=\"ov-refresh-btn\""),
+            "overview refresh button missing"
+        );
+        assert!(html.contains("id=\"menu-btn\""), "hamburger button missing");
+        assert!(
+            html.contains("id=\"sidebar-backdrop\""),
+            "drawer backdrop missing"
+        );
+        assert!(
+            html.contains("class=\"table-wrap\""),
+            "cron table must sit in a scrollable wrapper on mobile"
+        );
+        assert!(
+            html.contains("switchTab('overview')"),
+            "overview nav button missing"
+        );
+        assert!(
+            WEB_INDEX_CSS.contains(".sidebar.open"),
+            "CSS must slide the drawer in"
+        );
+        assert!(
+            WEB_INDEX_CSS.contains("@media (max-width: 900px)"),
+            "CSS must have the drawer breakpoint"
+        );
+        assert!(
+            WEB_INDEX_CSS.contains(".ov-grid"),
+            "CSS must lay the dashboard cards out in a grid"
+        );
+        assert!(
+            WEB_INDEX_JS_B7.contains("/api/overview"),
+            "JS must call the overview endpoint"
+        );
+        assert!(
+            WEB_INDEX_JS_B7.contains("loadOverview"),
+            "JS must load the overview on tab switch"
+        );
+        assert!(
+            WEB_INDEX_JS_B7.contains("toggleSidebar"),
+            "JS must toggle the drawer"
+        );
+        assert!(
+            WEB_INDEX_JS_B7.contains("dataset.sessionId"),
+            "overview session rows must carry the id in a data attribute"
+        );
+        assert!(
+            !WEB_INDEX_JS_B7.contains("onclick=\""),
+            "B7 JS must not use inline onclick handlers"
+        );
+        assert!(
+            !WEB_INDEX_JS_B7.contains("innerHTML = `<"),
+            "B7 JS must not interpolate values into innerHTML"
         );
     }
 }

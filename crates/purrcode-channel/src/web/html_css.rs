@@ -25,6 +25,7 @@ pub const WEB_INDEX_CSS: &str = r#"    :root {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       display: flex;
       height: 100vh;
+      height: 100dvh;
       overflow: hidden;
     }
     /* Sidebar */
@@ -473,6 +474,75 @@ pub const WEB_INDEX_CSS: &str = r#"    :root {
     }
     .plugin-action:disabled { opacity: 0.5; cursor: default; }
     .plugins-status { color: var(--text-muted); font-size: 0.85rem; margin-top: 8px; min-height: 1.2em; }
+    /* Mobile drawer + dashboard (v0.4 B7). */
+    .menu-btn {
+      display: none;
+      background: none;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1.2rem;
+      line-height: 1;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    .sidebar-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 100;
+    }
+    .sidebar-backdrop.show { display: block; }
+    .table-wrap { overflow-x: auto; }
+    /* Dashboard canvas: stat cards in a wrapping grid. */
+    .ov-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+    .ov-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .ov-kpi {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-top: 6px;
+    }
+    .ov-warn {
+      background-color: rgba(249, 226, 175, 0.12);
+      border: 1px solid var(--warning);
+      color: var(--warning);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 0.9rem;
+    }
+    @media (max-width: 900px) {
+      .menu-btn { display: block; }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        z-index: 101;
+        transform: translateX(-105%);
+        transition: transform 0.25s ease;
+        box-shadow: 0 0 24px rgba(0, 0, 0, 0.5);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .header { padding: 0 12px; }
+      .content { padding: 16px; }
+      #cron-table { min-width: 680px; }
+    }
+    @media (max-width: 600px) {
+      .header-tags #model-badge { display: none; }
+      .header-title { font-size: 1rem; }
+      .msg { max-width: 100%; }
+    }
     @media (max-width: 900px) {
       .inspector { display: none; }
     }"#;

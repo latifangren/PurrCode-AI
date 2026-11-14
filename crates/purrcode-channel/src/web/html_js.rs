@@ -169,6 +169,7 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
 
       const titles = {
         chat: 'Terminal & Chat',
+        overview: 'Overview',
         cron: 'Autonomous Cron Scheduler',
         skills: 'Skills & Curator Engine',
         memory: 'Identity & Memory Store',
@@ -177,6 +178,7 @@ pub const WEB_INDEX_JS: &str = r#"    let activeTab = 'chat';
       document.getElementById('tab-title').textContent = titles[tab] || 'PurrCode AI';
       activeTab = tab;
 
+      if (tab === 'overview') loadOverview();
       if (tab === 'cron') loadCronJobs();
       if (tab === 'skills') { loadCandidates(); loadAllSkills(); }
       if (tab === 'memory') { loadMemoryInfo(); loadMemoryDoc('MEMORY.md'); }

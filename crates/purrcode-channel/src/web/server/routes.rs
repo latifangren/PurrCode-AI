@@ -33,6 +33,7 @@ use axum::{
 use purrcode_api::plugin::PluginMountError;
 use purrcode_config::jsonc::clean_jsonc;
 use serde_json::{json, Value};
+use std::path::Path;
 use std::sync::Arc;
 
 /// `GET /` and `GET /index.html` — the single-page WebUI.
@@ -50,32 +51,28 @@ pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {
     }))
 }
 
-/// `GET /api/cron` — dev-muse stores jobs in `cron/jobs.jsonc` as
-/// `{"jobs": [...]}` (JSONC — comments allowed); the WebUI table
-/// wants a plain array with display fields. A missing file means
-/// no jobs yet (200 `[]`); a present-but-unparsable file is a
-/// server-side state problem (500, not a silent `[]` — fix pass
-/// B6 r1 P3-4: the old code hid a corrupt store behind an empty
-/// list while the POSTs 400'd on the same file).
-pub async fn cron(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
-    let jobs_path = state.purrcode_dir.join("cron").join("jobs.jsonc");
+/// Shared reader for the cron store: the plain job table (`GET
+/// /api/cron`, v0.4 B6) and the overview's next-job pick (v0.4 B7)
+/// project the same file, so they share one parse — the store
+/// stays the single source of truth and the two handlers cannot
+/// drift apart. A missing file means no jobs yet (`Ok([])`); a
+/// present-but-unparsable file is `Err` carrying the exact message
+/// the cron table reports as a 500 (B6 r1 P3-4: never hide a
+/// corrupt store behind an empty list). The overview degrades
+/// that `Err` to a warning instead of failing the whole response.
+pub(crate) async fn read_cron_jobs(purrcode_dir: &Path) -> Result<Vec<Value>, String> {
+    let jobs_path = purrcode_dir.join("cron").join("jobs.jsonc");
     let Ok(raw) = tokio::fs::read_to_string(&jobs_path).await else {
-        return (StatusCode::OK, Json(Value::Array(Vec::new())));
+        return Ok(Vec::new());
     };
     let cleaned = clean_jsonc(&raw);
     let Ok(val) = serde_json::from_str::<Value>(&cleaned) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "cron jobs file is invalid JSON" })),
-        );
+        return Err("cron jobs file is invalid JSON".to_string());
     };
     let Some(list) = val.get("jobs").and_then(|j| j.as_array()) else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "cron jobs file has no jobs array" })),
-        );
+        return Err("cron jobs file has no jobs array".to_string());
     };
-    let jobs: Vec<Value> = list
+    Ok(list
         .iter()
         .map(|j| {
             let schedule = j
@@ -95,8 +92,24 @@ pub async fn cron(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value
                 "enabled": j.get("enabled").cloned().unwrap_or(Value::Null),
             })
         })
-        .collect();
-    (StatusCode::OK, Json(Value::Array(jobs)))
+        .collect())
+}
+
+/// `GET /api/cron` — dev-muse stores jobs in `cron/jobs.jsonc` as
+/// `{"jobs": [...]}` (JSONC — comments allowed); the WebUI table
+/// wants a plain array with display fields. A missing file means
+/// no jobs yet (200 `[]`); a present-but-unparsable file is a
+/// server-side state problem (500, not a silent `[]` — fix pass
+/// B6 r1 P3-4: the old code hid a corrupt store behind an empty
+/// list while the POSTs 400'd on the same file).
+pub async fn cron(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
+    match read_cron_jobs(&state.purrcode_dir).await {
+        Ok(jobs) => (StatusCode::OK, Json(Value::Array(jobs))),
+        Err(msg) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": msg })),
+        ),
+    }
 }
 
 /// `GET /api/skills` and `/api/skills/candidates`.

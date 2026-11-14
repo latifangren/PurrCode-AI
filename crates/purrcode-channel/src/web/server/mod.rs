@@ -47,6 +47,7 @@ mod auth;
 mod routes;
 mod routes_cron;
 mod routes_memory;
+mod routes_overview;
 mod routes_skills;
 mod sessions;
 mod sse;
@@ -57,6 +58,8 @@ mod test_support;
 mod tests;
 #[cfg(test)]
 mod tests_cron;
+#[cfg(test)]
+mod tests_overview;
 #[cfg(test)]
 mod tests_plugins;
 #[cfg(test)]
@@ -231,6 +234,7 @@ impl WebServer {
             .route("/api/sessions", get(sessions::list).post(sessions::create))
             .route("/api/sessions/{id}/transcript", get(sessions::transcript))
             .route("/api/cron", get(routes::cron))
+            .route("/api/overview", get(routes_overview::overview))
             .route("/api/cron/parse", post(routes_cron::cron_parse))
             .route("/api/cron/add", post(routes_cron::cron_add))
             .route("/api/cron/enable", post(routes_cron::cron_enable))

@@ -85,6 +85,50 @@ fn test_patch_skill_fuzzy_matching() {
     assert!(diff.contains("+Step 1: run cargo test --workspace"));
 }
 
+/// B5 re-checker note, folded into B7: the 100K patch cap must
+/// count characters, not bytes. 60,000 emoji are 240,000 bytes
+/// but only 60,000 characters, so the patch passes; 100,001 'é'
+/// are 100,001 characters, so the patch fails — and the message
+/// must say "characters", matching what the cap counts.
+#[test]
+fn test_patch_skill_cap_counts_characters_not_bytes() {
+    let tmp = TempTestDir::new();
+    let mut mgr = SkillManager::new();
+    mgr.create_skill(
+        "cap-emoji",
+        "Cap test skill",
+        "# Cap\nBODY",
+        SkillScope::Project,
+        tmp.path(),
+    )
+    .unwrap();
+    mgr.create_skill(
+        "cap-acute",
+        "Cap test skill",
+        "# Cap\nBODY",
+        SkillScope::Project,
+        tmp.path(),
+    )
+    .unwrap();
+
+    let emoji = "😀".repeat(60_000);
+    assert_eq!(emoji.len(), 240_000, "fixture: 60k emoji are 240k bytes");
+    let (_path, _diff, new_body) = mgr
+        .patch_skill("cap-emoji", "BODY", &emoji, None, tmp.path())
+        .unwrap();
+    assert!(new_body.contains(&emoji));
+
+    let acute = "é".repeat(100_001);
+    assert_eq!(acute.chars().count(), 100_001);
+    let err = mgr
+        .patch_skill("cap-acute", "BODY", &acute, None, tmp.path())
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("100,000 characters"),
+        "error must name the unit the cap counts: {err}"
+    );
+}
+
 #[test]
 fn test_delete_custom_skill_and_embedded_protection() {
     let tmp = TempTestDir::new();
