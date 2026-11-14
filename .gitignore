@@ -12,8 +12,14 @@ Cargo.lock.bak
 
 # Runtime & cache
 .purrcode/
+purrcode.jsonc
 audit*.jsonl*
 *.log
+.purrcode-state*.json
+webui/.purrcode-state*.json
+webui/.env
+webui/node_modules/
+webui/dist/
 
 # references/ = clone read-only ~2 GB, BUKAN bagian repo. Lihat docs/00-analysis-references.md
 /references/
