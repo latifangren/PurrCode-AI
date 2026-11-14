@@ -15,9 +15,20 @@ pub struct OpenAiCompatibleProvider {
     pub base_url: String,
     pub api_key: Option<String>,
     pub headers: HashMap<String, String>,
+    /// The User-Agent actually sent (custom value from config, or the
+    /// PurrCode default). Stored for observability and unit tests.
+    pub user_agent: String,
     client: reqwest::Client,
     healthy: AtomicBool,
 }
+
+/// Honest default User-Agent identifying this product. Strict WAFs reject
+/// requests without a recognizable User-Agent (observed: the user's gateway
+/// returns 403/error 1010 for a request with no UA header at all); this
+/// default passes there. A browser UA is only needed if a gateway rejects
+/// this default specifically (set `user_agent` in the provider config).
+pub const DEFAULT_USER_AGENT: &str =
+    "PurrCode-AI/0.1 (purrcode-ai; https://github.com/latifangren/PurrCode-AI)";
 
 impl OpenAiCompatibleProvider {
     pub fn new(
@@ -25,20 +36,47 @@ impl OpenAiCompatibleProvider {
         base_url: impl Into<String>,
         api_key: Option<String>,
         headers: HashMap<String, String>,
-    ) -> Self {
+        user_agent: Option<String>,
+    ) -> Result<Self> {
+        let name: String = name.into();
         let mut url = base_url.into();
         if url.ends_with('/') {
             url.pop();
         }
         let valid_url = !url.trim().is_empty() && reqwest::Url::parse(&url).is_ok();
-        Self {
-            name: name.into(),
+        let configured = user_agent.unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
+        // An invalid header value (e.g. control characters) would make the
+        // builder fail, and the fallback client would then send NO
+        // User-Agent at all — the exact headerless request strict WAFs
+        // reject (observed: 403/error 1010). Validate first and fall back
+        // to the honest default, so the stored value is always the UA
+        // actually sent.
+        let user_agent = if reqwest::header::HeaderValue::from_str(&configured).is_ok() {
+            configured
+        } else {
+            DEFAULT_USER_AGENT.to_string()
+        };
+        // Fail loudly instead of degrading: the old fallback
+        // `.unwrap_or_else(|_| reqwest::Client::new())` would PANIC
+        // (reqwest's `Client::new()` is `build().expect(...)`) if the
+        // builder failed for a non-UA reason (e.g. TLS init). A provider
+        // whose HTTP client cannot be built is a startup error.
+        let client = reqwest::Client::builder()
+            .user_agent(user_agent.clone())
+            .build()
+            .map_err(|e| PurrError::Provider {
+                provider: name.clone(),
+                message: format!("Failed to build HTTP client: {e}"),
+            })?;
+        Ok(Self {
+            name,
             base_url: url,
             api_key,
             headers,
-            client: reqwest::Client::new(),
+            user_agent,
+            client,
             healthy: AtomicBool::new(valid_url),
-        }
+        })
     }
 
     fn endpoint_url(&self) -> String {
@@ -135,6 +173,10 @@ struct SseDelta {
 
 #[derive(Deserialize)]
 struct SseToolCallDelta {
+    // Some gateways omit `index` on tool-call deltas. Default to 0 (the
+    // single/first tool call) instead of dropping the whole chunk: a
+    // dropped chunk silently loses the tool call the model intended.
+    #[serde(default)]
     index: usize,
     id: Option<String>,
     function: Option<SseFunctionDelta>,
@@ -272,21 +314,37 @@ impl ModelProvider for OpenAiCompatibleProvider {
         tokio::spawn(async move {
             let mut byte_stream = response.bytes_stream();
             let mut buffer = String::new();
+            // Did this attempt end with a real finish signal
+            // (`finish_reason` or `data: [DONE]`)? A close-delimited
+            // SSE body can end cleanly mid-response when the transport
+            // drops (flaky proxy/upstream): reqwest then sees a clean
+            // EOF, not an error — and the partial text so far would
+            // otherwise pass as a complete answer. `saw_finish` is what
+            // distinguishes "the model said nothing" from "the stream
+            // was cut short".
+            let mut saw_finish = false;
 
             while let Some(chunk_res) = byte_stream.next().await {
                 let chunk = match chunk_res {
                     Ok(b) => b,
                     Err(e) => {
+                        // The body itself failed mid-stream: report it
+                        // as a stream error, NOT as model text. (The
+                        // old code injected a literal "[Stream read
+                        // error: ...]" delta into the answer — fake
+                        // model output that the auditor then parsed as
+                        // a verdict.)
                         let _ = tx
                             .send(StreamChunk {
-                                delta: format!("\n[Stream read error: {}]", e),
+                                delta: String::new(),
                                 reasoning_delta: None,
                                 tool_call_delta: None,
                                 is_finished: true,
                                 usage: None,
+                                stream_error: Some(format!("stream read error: {e}")),
                             })
                             .await;
-                        break;
+                        return;
                     }
                 };
 
@@ -312,6 +370,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                     tool_call_delta: None,
                                     is_finished: true,
                                     usage: None,
+                                    stream_error: None,
                                 })
                                 .await;
                             return;
@@ -356,6 +415,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                                     tool_call_delta: Some(tool_call_delta),
                                                     is_finished: false,
                                                     usage: None,
+                                                    stream_error: None,
                                                 })
                                                 .await;
                                         }
@@ -363,6 +423,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 }
                                 if choice.finish_reason.is_some() {
                                     is_finished = true;
+                                    saw_finish = true;
                                 }
                             }
 
@@ -384,6 +445,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                         tool_call_delta: None,
                                         is_finished,
                                         usage,
+                                        stream_error: None,
                                     })
                                     .await
                                     .is_err()
@@ -391,12 +453,27 @@ impl ModelProvider for OpenAiCompatibleProvider {
                                 // Receiver dropped
                                 return;
                             }
+                        } else {
+                            // Never silently drop a chunk: a malformed chunk
+                            // usually means the provider sent a shape we do
+                            // not understand, and a dropped tool-call chunk
+                            // looks exactly like a model that "says nothing".
+                            // Warn with a truncated preview so a stalled
+                            // tool call is diagnosable.
+                            tracing::warn!(
+                                "Dropping malformed SSE chunk from provider ({} bytes): {:.200}",
+                                data.len(),
+                                data
+                            );
                         }
                     }
                 }
             }
 
-            // Ensure terminal chunk sent if not already finished
+            // Ensure terminal chunk sent if not already finished.
+            // When the stream ended without any finish signal, the
+            // response was cut short — say so explicitly instead of
+            // letting the partial output pass as a complete answer.
             let _ = tx
                 .send(StreamChunk {
                     delta: String::new(),
@@ -404,6 +481,14 @@ impl ModelProvider for OpenAiCompatibleProvider {
                     tool_call_delta: None,
                     is_finished: true,
                     usage: None,
+                    stream_error: if saw_finish {
+                        None
+                    } else {
+                        Some(
+                            "stream ended without finish_reason or [DONE] (truncated response)"
+                                .to_string(),
+                        )
+                    },
                 })
                 .await;
         });
@@ -413,13 +498,22 @@ impl ModelProvider for OpenAiCompatibleProvider {
 }
 
 #[cfg(test)]
+mod stream_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_openai_provider_endpoint_url_resolution() {
-        let p1 =
-            OpenAiCompatibleProvider::new("test1", "http://localhost:11434", None, HashMap::new());
+        let p1 = OpenAiCompatibleProvider::new(
+            "test1",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             p1.endpoint_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -430,7 +524,9 @@ mod tests {
             "http://localhost:11434/v1",
             None,
             HashMap::new(),
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(
             p2.endpoint_url(),
             "http://localhost:11434/v1/chat/completions"
@@ -441,11 +537,52 @@ mod tests {
             "https://api.openai.com/v1/",
             None,
             HashMap::new(),
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(
             p3.endpoint_url(),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn test_user_agent_resolution_default_and_custom() {
+        let default_provider = OpenAiCompatibleProvider::new(
+            "default-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(default_provider.user_agent, DEFAULT_USER_AGENT);
+        assert!(default_provider.user_agent.starts_with("PurrCode-AI/"));
+
+        let custom_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+            AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+        let custom_provider = OpenAiCompatibleProvider::new(
+            "custom-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            Some(custom_ua.to_string()),
+        )
+        .unwrap();
+        assert_eq!(custom_provider.user_agent, custom_ua);
+
+        // An invalid header value (control character) must resolve to the
+        // honest default — not be stored verbatim while the client sends
+        // no User-Agent at all (the headerless request strict WAFs reject).
+        let invalid_provider = OpenAiCompatibleProvider::new(
+            "invalid-ua",
+            "http://localhost:11434",
+            None,
+            HashMap::new(),
+            Some("Bad\u{1}UA".to_string()),
+        )
+        .unwrap();
+        assert_eq!(invalid_provider.user_agent, DEFAULT_USER_AGENT);
     }
 
     #[test]
@@ -510,6 +647,37 @@ mod tests {
         assert_eq!(
             calls[0].function.as_ref().unwrap().arguments.as_deref(),
             Some("{\"path\":\"foo.rs\"}")
+        );
+    }
+
+    #[test]
+    fn test_sse_tool_call_delta_without_index_defaults_to_zero() {
+        // Some gateways omit `index` on tool-call deltas. The chunk must
+        // still parse (as the single/first tool call) instead of failing
+        // the whole chunk and silently dropping the tool call.
+        let tc_json = r#"{
+            "id": "chat-3",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        }"#;
+        let tc_chunk: SseChunk = serde_json::from_str(tc_json).unwrap();
+        let delta = tc_chunk.choices[0].delta.as_ref().unwrap();
+        let calls = delta.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, 0);
+        assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().name.as_deref(),
+            Some("read")
         );
     }
 }

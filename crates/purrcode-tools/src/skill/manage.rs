@@ -278,7 +278,9 @@ mod tests {
             session_id: "test-session".to_string(),
             workspace_root: workspace.to_path_buf(),
             is_dry_run: false,
+            is_cron: false,
             agent_role: "tinker".to_string(),
+            sandbox: None,
         }
     }
 

@@ -19,9 +19,17 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Run with Meowstro orchestrator + The Clowder subagents
+    /// Run with Meowstro orchestrator + The Clowder subagents (default; use
+    /// --direct for a single general agent with all tools instead)
     #[arg(long)]
     pub orchestrator: bool,
+
+    /// Run as a single general agent with all tools (no Meowstro orchestrator).
+    /// Default is orchestrator mode (Meowstro read-only + delegation); --direct
+    /// is the opt-out for quick single-agent runs. --orchestrator wins if both
+    /// flags are given.
+    #[arg(long)]
+    pub direct: bool,
 
     /// Automatically approve all tool actions without prompting (YOLO mode)
     #[arg(long)]
@@ -49,6 +57,67 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+/// Whether the Meowstro orchestrator runs (PRD §4.5.6). Orchestrator is the
+/// default; `--direct` opts out to a single general agent; explicit
+/// `--orchestrator` wins if both flags are given.
+pub fn use_orchestrator(orchestrator: bool, direct: bool) -> bool {
+    orchestrator || !direct
+}
+
+/// The audit label for the agent that actually ran. The generic single
+/// agent is not Meowstro and must not be recorded as one.
+pub fn agent_role_for(use_orchestrator: bool) -> &'static str {
+    if use_orchestrator {
+        "meowstro"
+    } else {
+        "agent"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_use_orchestrator_defaults_to_orchestrator() {
+        assert!(use_orchestrator(false, false));
+        assert!(use_orchestrator(true, false));
+        assert!(use_orchestrator(true, true));
+        assert!(!use_orchestrator(false, true));
+    }
+
+    #[test]
+    fn test_agent_role_for_is_honest() {
+        assert_eq!(agent_role_for(true), "meowstro");
+        assert_eq!(agent_role_for(false), "agent");
+    }
+
+    #[test]
+    fn test_is_long_lived_scopes_sigpipe_reset() {
+        // Fix pass B8 r3 P1: only the long-lived commands keep
+        // SIGPIPE ignored; every one-shot command gets SIG_DFL.
+        assert!(is_long_lived(&None));
+        assert!(is_long_lived(&Some(Commands::Gateway)));
+        assert!(is_long_lived(&Some(Commands::Web {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            token: None,
+        })));
+        assert!(!is_long_lived(&Some(Commands::Doctor)));
+        assert!(!is_long_lived(&Some(Commands::Exec { prompt: None })));
+        assert!(!is_long_lived(&Some(Commands::Cron {
+            action: "list".to_string(),
+            name: None,
+            schedule: None,
+            prompt: None,
+            allow: None,
+            preset: None,
+            yes: false,
+        })));
+        assert!(!is_long_lived(&Some(Commands::Onboard)));
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -97,4 +166,52 @@ pub enum Commands {
     },
     /// Run background gateway daemon for channel adapters (systemd/OpenRC service target)
     Gateway,
+    /// Run PurrCode local WebUI channel and REST/SSE server (v0.3 R3)
+    Web {
+        /// HTTP host to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// HTTP port to bind
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Optional authentication token for remote access
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Manage scheduled cron jobs (v0.3 F19): add/list/remove/enable/disable + delivery queue
+    Cron {
+        #[arg(default_value = "list")]
+        action: String,
+        #[arg()]
+        name: Option<String>,
+        #[arg(long)]
+        schedule: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        allow: Option<String>,
+        #[arg(long)]
+        preset: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Proactive heartbeat checks (v0.3 F22): status | run
+    Heartbeat {
+        #[arg(default_value = "status")]
+        action: String,
+    },
+}
+
+/// Long-lived commands keep Rust's default SIGPIPE disposition
+/// (ignore): for a server, a write to a socket a client just
+/// closed is a normal EPIPE error, not a reason to die. The
+/// one-shot commands get SIG_DFL instead (see main), so
+/// `purrcode-ai cron list | head -1` exits 141 like any other
+/// Unix command. `None` is the default interactive TUI, which
+/// is long-lived too.
+pub fn is_long_lived(cmd: &Option<Commands>) -> bool {
+    matches!(
+        cmd,
+        None | Some(Commands::Gateway) | Some(Commands::Web { .. })
+    )
 }

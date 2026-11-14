@@ -57,6 +57,70 @@ pub struct ToolContext {
     pub agent_role: String,
     pub workspace_root: std::path::PathBuf,
     pub is_dry_run: bool,
+    /// True when this turn runs inside an unattended cron job (v0.3 F19).
+    /// The `task` tool forces `is_cron` on every delegation and ignores
+    /// any model-supplied `shadow_override_reason` while this is set, so
+    /// a cron run can never talk its way past a Tuxeshadow objection.
+    pub is_cron: bool,
+    /// OS sandbox for the `bash` tool (v0.3 F21). `Some` only when the
+    /// active mode preset declares `sandbox: "os"`: every `bash` child
+    /// is then confined by a Landlock ruleset with this strictness.
+    /// `None` (confinement presets) leaves bash unsandboxed at the OS
+    /// level — workspace confinement still applies.
+    #[serde(default)]
+    pub sandbox: Option<SandboxStrictness>,
+}
+
+/// Strictness of the OS sandbox (`sandbox: "os"`), a ruleset inside the
+/// `os` sandbox mode — not a new preset axis (ADR-014 item 8).
+/// Serializes as kebab-case, matching the preset file spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxStrictness {
+    /// The `bash` child may read and execute anywhere, and write
+    /// nowhere except `/dev/null` (a sink). No file creation,
+    /// deletion, rename, or truncation outside the sandbox's own
+    /// allowances — including inside the workspace.
+    ReadOnly,
+    /// Like `ReadOnly`, but the workspace root itself is writable
+    /// (create / modify / delete / rename / truncate under it).
+    WorkspaceWrite,
+    /// The Landlock mechanism still runs (ruleset + `no_new_privs`),
+    /// but the ruleset grants full filesystem access everywhere.
+    /// For an operator who explicitly wants the OS sandbox engaged
+    /// without filesystem limits.
+    DangerFullAccess,
+}
+
+impl Default for SandboxStrictness {
+    /// Fail-closed: a preset that declares `sandbox: "os"` without a
+    /// `sandbox_mode` gets the strictest ruleset.
+    fn default() -> Self {
+        Self::ReadOnly
+    }
+}
+
+impl SandboxStrictness {
+    /// The preset-file spelling: `"read-only"`, `"workspace-write"`,
+    /// `"danger-full-access"`.
+    pub fn as_kebab_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
+
+    /// Parse a preset-file spelling. `None` for anything else — the
+    /// caller must fail closed on it, never guess a looser mode.
+    pub fn from_kebab(value: &str) -> Option<Self> {
+        match value {
+            "read-only" => Some(Self::ReadOnly),
+            "workspace-write" => Some(Self::WorkspaceWrite),
+            "danger-full-access" => Some(Self::DangerFullAccess),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

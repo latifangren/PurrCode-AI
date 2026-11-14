@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,13 @@ pub struct ApprovalRequest {
     pub description: String,
     pub diff_preview: Option<String>,
     pub tx: oneshot::Sender<bool>,
+    /// Shared with the requester: the TUI card loop sets this when the user
+    /// presses `A` ("approve always for this session"). The requester then
+    /// auto-approves later prompts without showing a card. The flag only
+    /// skips the *prompt* — the policy gate still enforces hard denials
+    /// (outside-workspace writes, deny rules) before the requester is ever
+    /// consulted, so "always" cannot override a hard policy rule.
+    pub always: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +301,7 @@ mod tests {
             description: "rm -rf temp".to_string(),
             diff_preview: Some("$ rm -rf temp".to_string()),
             tx,
+            always: Arc::new(AtomicBool::new(false)),
         };
 
         app.handle_event(TuiEvent::ApprovalRequested(req));

@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::AgentEvent;
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::{
     ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallDelta, ToolCallRequest,
@@ -15,10 +16,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::steering::SteeringQueue;
+use crate::EventBus;
 
 #[async_trait]
 pub trait ApprovalRequester: Send + Sync {
-    async fn request_approval(&self, tool: &str, description: &str, preview: Option<&str>) -> bool;
+    /// `call_id` is the loop's tool-call id for this request: it lets a
+    /// channel correlate the request with the `ToolCallApprovalRequested`
+    /// event the loop publishes to the EventBus just before calling here.
+    /// Requesters that render their own card (Telegram, TUI, CLI) may
+    /// ignore it; the WebUI requester uses it as the pending key so the
+    /// card the UI rendered from the bus event resolves to this wait.
+    /// Plan-level consults with no tool call (Tuxeshadow in Carrier mode)
+    /// pass a stable pseudo-id (`"shadow"`).
+    async fn request_approval(
+        &self,
+        call_id: &str,
+        tool: &str,
+        description: &str,
+        preview: Option<&str>,
+    ) -> bool;
 }
 
 pub trait AgentEventListener: Send + Sync {
@@ -41,6 +57,11 @@ pub struct AgentLoop {
     is_yolo: bool,
     cancel_flag: Option<Arc<AtomicBool>>,
     steering_queue: Option<SteeringQueue>,
+    /// Broadcast sink for turn events (R3). `None` = the loop runs
+    /// listener-only, exactly like before; `Some` = every chunk, tool
+    /// call, approval request and turn boundary is also published here
+    /// (the WebUI subscribes through it; D5 `--json` will too).
+    event_bus: Option<Arc<EventBus>>,
 }
 
 impl AgentLoop {
@@ -63,7 +84,13 @@ impl AgentLoop {
             is_yolo: false,
             cancel_flag: None,
             steering_queue: None,
+            event_bus: None,
         }
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
+        self
     }
 
     pub fn with_max_steps(mut self, max_steps: usize) -> Self {
@@ -172,6 +199,19 @@ impl AgentLoop {
             tool_call_id: None,
         });
 
+        // One turn id for the whole turn: TurnStarted and TurnFinished
+        // carry the same value so a consumer can pair them (the
+        // dev-claude reference minted a second uuid at the end; pairing
+        // by one id is strictly more useful and costs nothing).
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnStarted {
+                session_id: ctx.session_id.clone(),
+                turn_id: turn_id.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
         let mut step = 0;
         let mut final_answer = String::new();
 
@@ -195,66 +235,144 @@ impl AgentLoop {
 
             step += 1;
 
-            let request = CompletionRequest {
-                model: self.model.clone(),
-                messages: messages.clone(),
-                tools: Some(self.tool_registry.list()),
-                temperature: self.temperature,
-                max_tokens: None,
-                reasoning_effort: self.reasoning_effort.clone(),
-                stop: None,
-            };
-
-            let mut stream = self.provider.stream_completion(request).await?;
-
+            // One transparent retry per step when the provider stream
+            // ends incomplete (truncated SSE: no finish_reason /
+            // [DONE] — a flaky transport delivers a clean EOF, which
+            // looks exactly like a model that "says nothing"). The
+            // partial text/tool calls of a truncated attempt are
+            // discarded: nothing was executed yet (tool calls run only
+            // after the stream completes), and the conversation
+            // history is untouched until the step succeeds. The
+            // attempt's text is also HELD from the live stream until
+            // the step completes cleanly (see the flush below): a
+            // truncated attempt must never reach the one-shot output,
+            // the TUI, or the WebUI SSE as a stale fragment that the
+            // retry then duplicates. If the retry also truncates, the
+            // turn fails honestly instead of returning partial output
+            // as if it were complete.
             let mut step_text = String::new();
+            let mut step_reasoning = String::new();
             let mut tool_calls_in_flight: HashMap<usize, (Option<String>, String, String)> =
                 HashMap::new();
 
-            while let Some(chunk) = stream.recv().await {
-                if self.is_cancelled() {
-                    return Err(PurrError::Internal(
-                        "Turn cancelled by user interrupt".to_string(),
-                    ));
+            for attempt in 0..=1u8 {
+                step_text.clear();
+                step_reasoning.clear();
+                tool_calls_in_flight.clear();
+
+                let request = CompletionRequest {
+                    model: self.model.clone(),
+                    messages: messages.clone(),
+                    tools: Some(self.tool_registry.list()),
+                    temperature: self.temperature,
+                    max_tokens: None,
+                    reasoning_effort: self.reasoning_effort.clone(),
+                    stop: None,
+                };
+
+                let mut stream = self.provider.stream_completion(request).await?;
+
+                let mut truncated = false;
+                let mut truncation_detail = String::new();
+                while let Some(chunk) = stream.recv().await {
+                    if self.is_cancelled() {
+                        return Err(PurrError::Internal(
+                            "Turn cancelled by user interrupt".to_string(),
+                        ));
+                    }
+
+                    if let Some(err) = chunk.stream_error {
+                        // The provider stream died mid-response; the
+                        // partial output of this attempt is
+                        // untrustworthy — discard it and retry once.
+                        truncated = true;
+                        truncation_detail = err;
+                        break;
+                    }
+
+                    if let Some(reasoning) = chunk.reasoning_delta {
+                        // Held, not published: a truncated attempt is
+                        // discarded whole, so its deltas must never
+                        // reach the live stream (flushed below, on a
+                        // clean step completion).
+                        step_reasoning.push_str(&reasoning);
+                    }
+
+                    if !chunk.delta.is_empty() {
+                        // Held, not published: see the reasoning
+                        // buffer above.
+                        step_text.push_str(&chunk.delta);
+                    }
+
+                    if let Some(ToolCallDelta {
+                        index,
+                        id,
+                        name,
+                        arguments_delta,
+                    }) = chunk.tool_call_delta
+                    {
+                        let entry = tool_calls_in_flight
+                            .entry(index)
+                            .or_insert_with(|| (None, String::new(), String::new()));
+                        if let Some(new_id) = id {
+                            entry.0 = Some(new_id);
+                        }
+                        if let Some(new_name) = name {
+                            entry.1.push_str(&new_name);
+                        }
+                        if let Some(args_delta) = arguments_delta {
+                            entry.2.push_str(&args_delta);
+                        }
+                    }
+
+                    if chunk.is_finished {
+                        break;
+                    }
                 }
 
-                if let Some(reasoning) = chunk.reasoning_delta {
-                    if let Some(l) = listener {
-                        l.on_text_chunk(&reasoning, true);
+                if !truncated {
+                    // The step completed cleanly: only now may its
+                    // text reach the live stream. A truncated attempt
+                    // never published anything, so a retry's text does
+                    // not duplicate a stale fragment in the one-shot
+                    // output, the TUI, or the WebUI SSE stream
+                    // (re-checker P2-1, v0.3 polish fix pass). The
+                    // trade-off is deliberate: the live stream now
+                    // shows each step's text in one batch instead of
+                    // word-by-word — the turn result, history, and
+                    // audit are unchanged, and reasoning/text stay on
+                    // their separate channels.
+                    if !step_reasoning.is_empty() {
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::ReasoningChunk {
+                                thinking: step_reasoning.clone(),
+                            });
+                        }
+                        if let Some(l) = listener {
+                            l.on_text_chunk(&step_reasoning, true);
+                        }
                     }
-                }
-
-                if !chunk.delta.is_empty() {
-                    step_text.push_str(&chunk.delta);
-                    if let Some(l) = listener {
-                        l.on_text_chunk(&chunk.delta, false);
+                    if !step_text.is_empty() {
+                        if let Some(ref bus) = self.event_bus {
+                            let _ = bus.publish(AgentEvent::TextChunk {
+                                text: step_text.clone(),
+                            });
+                        }
+                        if let Some(l) = listener {
+                            l.on_text_chunk(&step_text, false);
+                        }
                     }
-                }
-
-                if let Some(ToolCallDelta {
-                    index,
-                    id,
-                    name,
-                    arguments_delta,
-                }) = chunk.tool_call_delta
-                {
-                    let entry = tool_calls_in_flight
-                        .entry(index)
-                        .or_insert_with(|| (None, String::new(), String::new()));
-                    if let Some(new_id) = id {
-                        entry.0 = Some(new_id);
-                    }
-                    if let Some(new_name) = name {
-                        entry.1.push_str(&new_name);
-                    }
-                    if let Some(args_delta) = arguments_delta {
-                        entry.2.push_str(&args_delta);
-                    }
-                }
-
-                if chunk.is_finished {
                     break;
                 }
+                if attempt == 1 {
+                    return Err(PurrError::Provider {
+                        provider: self.provider.provider_name().to_string(),
+                        message: format!(
+                            "provider stream ended incomplete twice in one step: {truncation_detail}"
+                        ),
+                    });
+                }
+                // Otherwise: retry the step with a fresh completion.
             }
 
             // Convert tool_calls map to sorted Vec
@@ -297,6 +415,16 @@ impl AgentLoop {
                 let call_id = tool_call.id.clone();
                 let tool_name = tool_call.name.clone();
                 let args_str = tool_call.arguments.clone();
+                let args_val: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
+
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallStarted {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        arguments: args_val.clone(),
+                    });
+                }
 
                 if let Some(l) = listener {
                     l.on_tool_call_started(&tool_name, &args_str);
@@ -305,9 +433,6 @@ impl AgentLoop {
                 let (tool_output, is_success) = if let Some(tool) =
                     self.tool_registry.get(&tool_name)
                 {
-                    let args_val: serde_json::Value =
-                        serde_json::from_str(&args_str).unwrap_or_else(|_| serde_json::json!({}));
-
                     // 1. Dispatch `pre_tool_use` plugin hook (can veto execution)
                     let plugin_allowed = if let Some(ref pd) = self.plugin_dispatcher {
                         pd.dispatch_pre_tool_use(&tool_name, &args_val).await
@@ -377,10 +502,24 @@ impl AgentLoop {
                                             Ok(dry_res) => dry_res.diff_preview,
                                             Err(_) => None,
                                         };
+                                    let desc = format!("Run tool '{}'", tool_name);
+                                    // The requester is called with the
+                                    // loop's call id so its card resolves
+                                    // to exactly this event (R3).
+                                    if let Some(ref bus) = self.event_bus {
+                                        let _ =
+                                            bus.publish(AgentEvent::ToolCallApprovalRequested {
+                                                call_id: call_id.clone(),
+                                                tool: tool_name.clone(),
+                                                description: desc.clone(),
+                                                diff_preview: preview.clone(),
+                                            });
+                                    }
                                     let user_ok = req
                                         .request_approval(
+                                            &call_id,
                                             &tool_name,
-                                            &format!("Run tool '{}'", tool_name),
+                                            &desc,
                                             preview.as_deref(),
                                         )
                                         .await;
@@ -456,6 +595,15 @@ impl AgentLoop {
                     )
                 };
 
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::ToolCallFinished {
+                        call_id: call_id.clone(),
+                        tool: tool_name.clone(),
+                        result: serde_json::json!({ "output": tool_output }),
+                        success: is_success,
+                    });
+                }
+
                 if let Some(l) = listener {
                     l.on_tool_call_finished(&tool_name, &tool_output, is_success);
                 }
@@ -481,16 +629,35 @@ impl AgentLoop {
                 stop: None,
             };
             if let Ok(mut stream) = self.provider.stream_completion(final_req).await {
+                // Same hold-until-clean rule as the retry loop above:
+                // a truncated follow-up must not leak its partial
+                // text into the live stream, nor stand as the final
+                // answer — the fallback message below is the honest
+                // outcome instead.
+                let mut followup_text = String::new();
+                let mut followup_truncated = false;
                 while let Some(chunk) = stream.recv().await {
+                    if chunk.stream_error.is_some() {
+                        followup_truncated = true;
+                        break;
+                    }
                     if !chunk.delta.is_empty() {
-                        final_answer.push_str(&chunk.delta);
-                        if let Some(l) = listener {
-                            l.on_text_chunk(&chunk.delta, false);
-                        }
+                        followup_text.push_str(&chunk.delta);
                     }
                     if chunk.is_finished {
                         break;
                     }
+                }
+                if !followup_truncated && !followup_text.is_empty() {
+                    if let Some(ref bus) = self.event_bus {
+                        let _ = bus.publish(AgentEvent::TextChunk {
+                            text: followup_text.clone(),
+                        });
+                    }
+                    if let Some(l) = listener {
+                        l.on_text_chunk(&followup_text, false);
+                    }
+                    final_answer.push_str(&followup_text);
                 }
             }
             if final_answer.is_empty() {
@@ -498,7 +665,30 @@ impl AgentLoop {
                     "[Max steps ({}) reached; summarizing completed tool steps.]",
                     self.max_steps
                 );
+                // The fallback IS the turn's answer, so it must reach
+                // the live stream like any other final text — the
+                // one-shot output, the TUI, and the WebUI SSE render
+                // only bus/listener events. Without this, a turn whose
+                // follow-up stream truncated (or was empty) returned
+                // the honest fallback while every live surface stayed
+                // silent (re-checker P2-1e, round 2).
+                if let Some(ref bus) = self.event_bus {
+                    let _ = bus.publish(AgentEvent::TextChunk {
+                        text: final_answer.clone(),
+                    });
+                }
+                if let Some(l) = listener {
+                    l.on_text_chunk(&final_answer, false);
+                }
             }
+        }
+
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(AgentEvent::TurnFinished {
+                session_id: ctx.session_id.clone(),
+                turn_id,
+                tokens_used: None,
+            });
         }
 
         Ok(final_answer)
@@ -598,268 +788,4 @@ fn is_args_outside_workspace(args: &serde_json::Value, workspace_root: &Path) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use purrcode_api::provider::StreamChunk;
-    use purrcode_api::tool::{Tool, ToolDefinition, ToolResult};
-    use std::sync::Mutex;
-
-    struct DryRunMockTool;
-
-    #[async_trait]
-    impl Tool for DryRunMockTool {
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "write_mock".to_string(),
-                description: "Mock write tool".to_string(),
-                parameters: serde_json::json!({"type": "object"}),
-                tier: ApprovalTier::Write,
-            }
-        }
-
-        async fn execute(
-            &self,
-            _arguments: serde_json::Value,
-            ctx: &ToolContext,
-        ) -> Result<ToolResult> {
-            if ctx.is_dry_run {
-                Ok(ToolResult {
-                    output: "dry-run".to_string(),
-                    diff_preview: Some("+added line".to_string()),
-                    metadata: None,
-                })
-            } else {
-                Ok(ToolResult {
-                    output: "written".to_string(),
-                    diff_preview: Some("+added line".to_string()),
-                    metadata: None,
-                })
-            }
-        }
-    }
-
-    struct CaptureApprover {
-        captured_preview: Arc<Mutex<Option<String>>>,
-    }
-
-    #[async_trait]
-    impl ApprovalRequester for CaptureApprover {
-        async fn request_approval(
-            &self,
-            _tool: &str,
-            _description: &str,
-            preview: Option<&str>,
-        ) -> bool {
-            if let Ok(mut g) = self.captured_preview.lock() {
-                *g = preview.map(|s| s.to_string());
-            }
-            true
-        }
-    }
-
-    struct CaptureAuditSink {
-        decisions: Arc<Mutex<Vec<(String, String)>>>,
-    }
-
-    impl AuditSink for CaptureAuditSink {
-        fn record_event(
-            &self,
-            _session_id: &str,
-            _agent: &str,
-            event: &str,
-            tool: Option<&str>,
-            decision: &str,
-            _detail: &str,
-        ) {
-            if let Ok(mut g) = self.decisions.lock() {
-                g.push((
-                    format!("{}:{}", event, tool.unwrap_or("")),
-                    decision.to_string(),
-                ));
-            }
-        }
-    }
-
-    struct DenyGate;
-    impl PolicyGate for DenyGate {
-        fn evaluate_tool(
-            &self,
-            _tool_name: &str,
-            _tier: ApprovalTier,
-            _is_outside_workspace: bool,
-        ) -> ApprovalDecision {
-            ApprovalDecision::Deny
-        }
-    }
-
-    struct VetoPluginDispatcher;
-    #[async_trait]
-    impl PluginHookDispatcher for VetoPluginDispatcher {
-        async fn dispatch_session_start(&self, _session_id: &str) {}
-        async fn dispatch_pre_tool_use(&self, _tool: &str, _args: &serde_json::Value) -> bool {
-            false
-        }
-        async fn dispatch_post_tool_use(&self, _tool: &str, _result: &serde_json::Value) {}
-        async fn dispatch_session_stop(&self, _session_id: &str) {}
-    }
-
-    struct SingleToolTurnProvider {
-        step: AtomicBool,
-    }
-
-    #[async_trait]
-    impl ModelProvider for SingleToolTurnProvider {
-        fn provider_name(&self) -> &str {
-            "mock"
-        }
-        fn is_healthy(&self) -> bool {
-            true
-        }
-        async fn stream_completion(
-            &self,
-            _req: CompletionRequest,
-        ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
-            let (tx, rx) = tokio::sync::mpsc::channel(4);
-            if !self.step.swap(true, Ordering::SeqCst) {
-                let _ = tx.try_send(StreamChunk {
-                    delta: String::new(),
-                    reasoning_delta: None,
-                    tool_call_delta: Some(ToolCallDelta {
-                        index: 0,
-                        id: Some("call_1".to_string()),
-                        name: Some("write_mock".to_string()),
-                        arguments_delta: Some("{}".to_string()),
-                    }),
-                    is_finished: true,
-                    usage: None,
-                });
-            } else {
-                let _ = tx.try_send(StreamChunk {
-                    delta: "Done!".to_string(),
-                    reasoning_delta: None,
-                    tool_call_delta: None,
-                    is_finished: true,
-                    usage: None,
-                });
-            }
-            Ok(rx)
-        }
-    }
-
-    #[tokio::test]
-    async fn test_dry_run_diff_preview_and_audit_sink() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DryRunMockTool)).unwrap();
-        let captured = Arc::new(Mutex::new(None));
-        let approver = Arc::new(CaptureApprover {
-            captured_preview: captured.clone(),
-        });
-        let decisions = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::new(CaptureAuditSink {
-            decisions: decisions.clone(),
-        });
-        let provider = Arc::new(SingleToolTurnProvider {
-            step: AtomicBool::new(false),
-        });
-
-        let engine = AgentLoop::new(provider, "m", Arc::new(reg))
-            .with_approval_requester(approver)
-            .with_audit_sink(sink);
-        let ctx = ToolContext {
-            session_id: "s1".to_string(),
-            agent_role: "tinker".to_string(),
-            workspace_root: std::path::PathBuf::from("."),
-            is_dry_run: false,
-        };
-
-        let out = engine
-            .run_turn("write file", None, &ctx, |_, _| {})
-            .await
-            .unwrap();
-        assert_eq!(out, "Done!");
-        assert_eq!(captured.lock().unwrap().as_deref(), Some("+added line"));
-        assert_eq!(
-            decisions.lock().unwrap()[0],
-            (
-                "tool_approval:write_mock".to_string(),
-                "approved_by_user".to_string()
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn test_policy_gate_deny_blocks_tool_and_audits() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DryRunMockTool)).unwrap();
-        let decisions = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::new(CaptureAuditSink {
-            decisions: decisions.clone(),
-        });
-        let provider = Arc::new(SingleToolTurnProvider {
-            step: AtomicBool::new(false),
-        });
-
-        let engine = AgentLoop::new(provider, "m", Arc::new(reg))
-            .with_policy_gate(Arc::new(DenyGate))
-            .with_audit_sink(sink);
-        let ctx = ToolContext {
-            session_id: "s1".to_string(),
-            agent_role: "tinker".to_string(),
-            workspace_root: std::path::PathBuf::from("."),
-            is_dry_run: false,
-        };
-
-        let mut history = Vec::new();
-        let _ = engine
-            .run_turn_with_history(&mut history, "write file", None, &ctx, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            decisions.lock().unwrap()[0],
-            ("tool_call:write_mock".to_string(), "deny".to_string())
-        );
-        assert!(history
-            .iter()
-            .any(|m| m.role == MessageRole::Tool && m.content.contains("Action denied")));
-    }
-
-    #[tokio::test]
-    async fn test_plugin_pre_tool_use_veto_blocks_execution() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(DryRunMockTool)).unwrap();
-        let decisions = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::new(CaptureAuditSink {
-            decisions: decisions.clone(),
-        });
-        let provider = Arc::new(SingleToolTurnProvider {
-            step: AtomicBool::new(false),
-        });
-
-        let engine = AgentLoop::new(provider, "m", Arc::new(reg))
-            .with_plugin_dispatcher(Arc::new(VetoPluginDispatcher))
-            .with_audit_sink(sink)
-            .with_yolo(true);
-        let ctx = ToolContext {
-            session_id: "s1".to_string(),
-            agent_role: "tinker".to_string(),
-            workspace_root: std::path::PathBuf::from("."),
-            is_dry_run: false,
-        };
-
-        let mut history = Vec::new();
-        let _ = engine
-            .run_turn_with_history(&mut history, "write file", None, &ctx, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            decisions.lock().unwrap()[0],
-            (
-                "plugin_hook:write_mock".to_string(),
-                "vetoed_by_plugin".to_string()
-            )
-        );
-        assert!(history
-            .iter()
-            .any(|m| m.role == MessageRole::Tool && m.content.contains("vetoed by pre_tool_use")));
-    }
-}
+mod tests;

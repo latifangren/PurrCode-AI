@@ -222,6 +222,7 @@ pub async fn run_interactive_onboard() -> Result<()> {
                 Some(format!("${{{}}}", env_var_name))
             },
             headers: HashMap::new(),
+            user_agent: None,
             models: models_map,
         },
     );
@@ -232,6 +233,9 @@ pub async fn run_interactive_onboard() -> Result<()> {
         model: Some(format!("{}:{}", provider_name, model_id)),
         providers: providers_map,
         mcp_servers: HashMap::new(),
+        telegram: None,
+        cron: None,
+        heartbeat: None,
     };
 
     let target_path = purrcode_dir.join("purrcode.jsonc");
@@ -325,23 +329,12 @@ pub fn read_line_trimmed() -> String {
     buf.trim().to_string()
 }
 
+/// The user's PurrCode home directory. Thin wrapper over
+/// `purrcode_service::purrcode_dir` (the home resolution moved to the
+/// service crate in the R2 extraction); kept so the CLI call sites
+/// stay untouched.
 pub fn get_purrcode_dir() -> Result<PathBuf> {
-    if let Some(home) = dirs_home() {
-        Ok(home.join(".purrcode"))
-    } else {
-        Ok(PathBuf::from(".purrcode"))
-    }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    Ok(purrcode_service::purrcode_dir())
 }
 
 #[cfg(test)]
@@ -387,6 +380,7 @@ mod tests {
                 base_url: Some("https://endpoint.invalid/v1?param=\"quoted\"\\escaped".to_string()),
                 api_key: Some("${CUSTOM_API_KEY}".to_string()),
                 headers: HashMap::new(),
+                user_agent: None,
                 models: HashMap::new(),
             },
         );
@@ -397,6 +391,9 @@ mod tests {
             model: Some("custom:model/test".to_string()),
             providers,
             mcp_servers: HashMap::new(),
+            telegram: None,
+            cron: None,
+            heartbeat: None,
         };
 
         let json_str = serde_json::to_string_pretty(&config).unwrap();

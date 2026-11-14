@@ -366,13 +366,18 @@ config: { ... }
   path git lokal di v0.1; marketplace ditunda; WebUI v0.4 memberi UI-nya).
 - **MCP:** tool eksternal via MCP client (bukan plugin runtime) — satu-satunya
   jembatan ke ekosistem TS/Claude Code.
-- **Kapabilitas plugin (deklarasi di manifest, default deny):** plugin
-  menyatakan apa yang ia butuhkan — `capabilities: { network: [host...],
-  fs: [path...], secrets: [...] }`. Tanpa deklarasi = tanpa akses. Secret
-  (token provider, kredensial) TIDAK PERNAH diteruskan ke plugin kecuali
-  kapabilitas `secrets` dideklarasikan DAN user menyetujui saat install.
-  Proses plugin berjalan dengan env yang di-scrub; pelanggaran kapabilitas
-  = plugin dimatikan + masuk audit log.
+- **Kapabilitas plugin (deklarasi di manifest, default deny HANYA untuk
+  `secrets` di v0.1):** plugin menyatakan apa yang ia butuhkan —
+  `capabilities: { network: [host...], fs: [path...], secrets: [...] }`.
+  Tanpa deklarasi `secrets` = tanpa akses ke secret itu; secret (token
+  provider, kredensial) TIDAK PERNAH diteruskan ke plugin kecuali
+  kapabilitas `secrets` dideklarasikan, dan env proses plugin di-scrub.
+  `network`/`filesystem` adalah deklarasi untuk sandbox OS v0.3 (PRD
+  F21) — di-parse dan dicatat, tapi TIDAK ditegakkan di v0.1: plugin
+  proses berjalan dengan hak penuh user. CLI mencatatnya di audit log
+  (`plugin_capability_unenforced`) dan `purrcode-ai plugin list`
+  menampilkan peringatan, supaya user tidak salah mengira plugin itu
+  ter-sandbox.
 - **Yang tidak dilakukan v0.1:** plugin WASM/Cranelift (beban ZeroClaw yang tidak
   perlu di v0.1), hot-reload plugin (restart daemon).
 

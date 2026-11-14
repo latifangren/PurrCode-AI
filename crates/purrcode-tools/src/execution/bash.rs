@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::execution::sandbox::OsSandbox;
 use crate::fs::read::resolve_confined_path;
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
@@ -57,6 +58,21 @@ impl Tool for BashTool {
             None => ctx.workspace_root.clone(),
         };
 
+        // v0.3 F21, fail-closed: on any platform without Landlock, a
+        // preset demanding the OS sandbox must error here, before the
+        // command is built or spawned — never run unsandboxed.
+        #[cfg(not(target_os = "linux"))]
+        if let Some(strictness) = ctx.sandbox {
+            return Err(PurrError::Tool {
+                tool: "bash".to_string(),
+                message: format!(
+                    "OS sandbox requested (sandbox_mode '{}') but Landlock is Linux-only; \
+                     this platform cannot enforce it. Use a confinement preset.",
+                    strictness.as_kebab_str()
+                ),
+            });
+        }
+
         let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(30_000).max(1000));
 
         #[cfg(windows)]
@@ -78,6 +94,20 @@ impl Tool for BashTool {
         let (mut cmd, shell_name) = {
             let mut c = tokio::process::Command::new("sh");
             c.args(["-c", &args.command]);
+            // v0.3 F21: the Landlock ruleset is built in the parent,
+            // BEFORE the spawn (any build failure aborts the run), and
+            // enforced in the child from pre_exec. The `take()` makes
+            // the closure FnMut, as pre_exec requires; it runs once.
+            if let Some(strictness) = ctx.sandbox {
+                let sandbox = OsSandbox::build(&ctx.workspace_root, strictness)?;
+                let mut slot = Some(sandbox);
+                unsafe {
+                    c.pre_exec(move || match slot.take() {
+                        Some(s) => s.restrict_self(),
+                        None => Ok(()),
+                    });
+                }
+            }
             (c, "sh")
         };
 
@@ -151,6 +181,20 @@ pub enum WindowsShellKind {
     PowerShell,
 }
 
+/// Join `file` onto a Windows-style path (one containing `\`) using a
+/// backslash, so the result is identical on every platform. Plain
+/// `Path::join` uses the host separator (`/` on Linux), which breaks
+/// comparisons against Windows-style candidate paths.
+fn windows_join(entry: &std::path::Path, file: &str) -> std::path::PathBuf {
+    let entry_str = entry.to_string_lossy();
+    if entry_str.contains('\\') {
+        let base = entry_str.trim_end_matches('\\');
+        std::path::PathBuf::from(format!("{base}\\{file}"))
+    } else {
+        entry.join(file)
+    }
+}
+
 pub fn resolve_windows_shell_from_candidates<F>(
     custom_candidates: &[&str],
     path_env: Option<&str>,
@@ -183,7 +227,7 @@ where
             std::env::split_paths(path_var).collect()
         };
         for entry in entries {
-            let bash_p = entry.join("bash.exe");
+            let bash_p = windows_join(&entry, "bash.exe");
             if file_exists(&bash_p) {
                 return (bash_p, vec!["-c".to_string()], WindowsShellKind::GitBash);
             }
@@ -310,6 +354,27 @@ mod tests {
             std::path::PathBuf::from(r"C:\msys64\usr\bin\bash.exe")
         );
         assert_eq!(args, vec!["-c"]);
+    }
+
+    #[test]
+    fn test_windows_join_uses_backslash_for_windows_paths() {
+        assert_eq!(
+            windows_join(std::path::Path::new(r"C:\msys64\usr\bin"), "bash.exe"),
+            std::path::PathBuf::from(r"C:\msys64\usr\bin\bash.exe")
+        );
+        // Trailing backslash on the entry must not produce a double separator.
+        assert_eq!(
+            windows_join(std::path::Path::new(r"C:\msys64\usr\bin\"), "bash.exe"),
+            std::path::PathBuf::from(r"C:\msys64\usr\bin\bash.exe")
+        );
+    }
+
+    #[test]
+    fn test_windows_join_keeps_host_separator_for_unix_paths() {
+        assert_eq!(
+            windows_join(std::path::Path::new("/usr/bin"), "bash"),
+            std::path::PathBuf::from("/usr/bin/bash")
+        );
     }
 
     #[test]

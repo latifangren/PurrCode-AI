@@ -128,6 +128,8 @@ mod tests {
             agent_role: "meowstro".to_string(),
             workspace_root: std::path::PathBuf::from("."),
             is_dry_run: false,
+            is_cron: false,
+            sandbox: None,
         };
 
         let res = tool

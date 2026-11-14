@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use purrcode_api::error::{PurrError, Result};
+use purrcode_api::event::{AgentEvent, SubagentStatus};
 use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::provider::ModelProvider;
 use purrcode_api::tool::{
@@ -9,7 +10,7 @@ use purrcode_api::tool::{
 };
 use purrcode_approval::ApprovalGate;
 use purrcode_config::{Config, GuardrailMode, ModelPreset};
-use purrcode_core::{AgentLoop, ApprovalRequester};
+use purrcode_core::{AgentLoop, ApprovalRequester, EventBus};
 use purrcode_provider::{FallbackRouter, ProviderRegistry};
 use purrcode_tools::{AskRequester, ToolRegistry, ToolRegistryExt};
 use serde::Deserialize;
@@ -20,159 +21,11 @@ use tokio::sync::Mutex;
 use crate::shadow::{should_trigger_shadow, ShadowAuditor};
 use crate::SubagentRegistry;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedRoleInference {
-    pub model: String,
-    pub fallback_candidates: Vec<String>,
-    pub temperature: Option<f32>,
-    pub reasoning_effort: Option<String>,
-}
+mod inference;
+mod result;
 
-/// Resolves the inference settings (model, fallback candidates, temperature, reasoning effort)
-/// for a subagent role according to ARCHITECTURE.md §3.5 precedence:
-/// 1. Explicit `model` in `task()` (disables fallback chain).
-/// 2. Session `ModelPreset` entry for `role`.
-/// 3. Frontmatter `model:` in `.purrcode/agents/<role>.md` or `agents/<role>.md`.
-/// 4. Session model (with `reasoning_effort = Some("high")` for `tuxeshadow` and `sphinx` per ADR-012).
-pub fn resolve_role_model_spec(
-    role: &str,
-    explicit_model: Option<&str>,
-    model_preset: Option<&ModelPreset>,
-    session_model: &str,
-    workspace_root: &Path,
-) -> ResolvedRoleInference {
-    let default_effort = if role == "tuxeshadow" || role == "sphinx" {
-        Some("high".to_string())
-    } else {
-        None
-    };
-
-    // 1. Explicit model override in task()
-    if let Some(exp) = explicit_model {
-        let trimmed = exp.trim();
-        if !trimmed.is_empty() {
-            return ResolvedRoleInference {
-                model: trimmed.to_string(),
-                fallback_candidates: vec![trimmed.to_string()],
-                temperature: Some(0.2),
-                reasoning_effort: default_effort,
-            };
-        }
-    }
-
-    // 2. Session ModelPreset entry for role
-    if let Some(preset) = model_preset {
-        if let Some(spec) = preset.agents.get(role) {
-            let mut candidates = spec.model.candidates();
-            for fb in &spec.fallback {
-                if !candidates.contains(fb) {
-                    candidates.push(fb.clone());
-                }
-            }
-            let primary = candidates
-                .first()
-                .cloned()
-                .unwrap_or_else(|| session_model.to_string());
-            return ResolvedRoleInference {
-                model: primary,
-                fallback_candidates: candidates,
-                temperature: spec.temperature.or(Some(0.2)),
-                reasoning_effort: spec.variant.clone().or(default_effort),
-            };
-        }
-    }
-
-    // 3. Agent Markdown frontmatter (`model:`)
-    if let Some(fm_model) = read_agent_frontmatter_model(role, workspace_root) {
-        return ResolvedRoleInference {
-            model: fm_model.clone(),
-            fallback_candidates: vec![fm_model],
-            temperature: Some(0.2),
-            reasoning_effort: default_effort,
-        };
-    }
-
-    // 4. Session model fallback
-    ResolvedRoleInference {
-        model: session_model.to_string(),
-        fallback_candidates: vec![session_model.to_string()],
-        temperature: Some(0.2),
-        reasoning_effort: default_effort,
-    }
-}
-
-fn read_agent_frontmatter_model(role: &str, workspace_root: &Path) -> Option<String> {
-    let candidates = [
-        workspace_root
-            .join(".purrcode")
-            .join("agents")
-            .join(format!("{}.md", role)),
-        workspace_root.join("agents").join(format!("{}.md", role)),
-    ];
-    for path in candidates {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Some(rest) = content.strip_prefix("---") {
-                if let Some(end_idx) = rest.find("---") {
-                    for line in rest[..end_idx].lines() {
-                        if let Some(m) = line.trim().strip_prefix("model:") {
-                            let val = m.trim().trim_matches('"').trim_matches('\'');
-                            if !val.is_empty() {
-                                return Some(val.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Validates and formats `result.md` according to the schema in `docs/SUBAGENTS.md` §2.2.
-/// Rejects unformed or empty subagent summaries to prevent blank handoffs.
-pub fn format_validated_result_markdown(
-    subagent_id: &str,
-    role: &str,
-    status: &str,
-    raw_summary: &str,
-) -> Result<String> {
-    let trimmed = raw_summary.trim();
-    if trimmed.is_empty() {
-        return Err(PurrError::Subagent {
-            id: subagent_id.to_string(),
-            message: "Subagent completed execution but returned an empty summary report (no deliverables or findings)".to_string(),
-        });
-    }
-
-    let has_changed = trimmed.contains("Changed Files");
-    let has_verified = trimmed.contains("Verified Evidence");
-    let has_failures = trimmed.contains("Failures") || trimmed.contains("Blockers");
-    let has_unverified = trimmed.contains("Unverified Items");
-
-    let mut out = format!(
-        "# Result Report: {}\n- **Status:** {}\n- **Role:** {}\n- **Timestamp:** {}\n",
-        subagent_id,
-        status,
-        role,
-        chrono::Utc::now().to_rfc3339()
-    );
-
-    if !has_changed {
-        out.push_str("- **Changed Files:** (see summary below)\n");
-    }
-    if !has_verified {
-        out.push_str("- **Verified Evidence:** (see summary below)\n");
-    }
-    if !has_failures {
-        out.push_str("- **Failures / Blockers:** None reported.\n");
-    }
-    if !has_unverified {
-        out.push_str("- **Unverified Items:** None reported.\n");
-    }
-
-    out.push_str(&format!("\n## Summary\n{}\n", trimmed));
-    Ok(out)
-}
+pub use inference::{resolve_role_model_spec, ResolvedRoleInference};
+pub use result::format_validated_result_markdown;
 
 pub struct TaskTool {
     registry: Arc<Mutex<SubagentRegistry>>,
@@ -187,6 +40,11 @@ pub struct TaskTool {
     model_preset: Option<ModelPreset>,
     config: Option<Config>,
     provider_registry: Option<Arc<ProviderRegistry>>,
+    /// EventBus the child loops publish to (R3): when set, every
+    /// subagent turn streams its chunks / tool calls / approvals to
+    /// the same bus the parent loop uses, so one SSE feed shows the
+    /// whole Clowder. `None` = children run listener-only (pre-R3).
+    event_bus: Option<Arc<EventBus>>,
     yolo: bool,
 }
 
@@ -247,8 +105,51 @@ impl TaskTool {
             model_preset: None,
             config: None,
             provider_registry: None,
+            event_bus: None,
             yolo,
         }
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
+        self
+    }
+
+    /// Publish a subagent lifecycle event to the session bus (v0.4
+    /// B3: the `on_subagent_event` emission point). Best-effort by
+    /// design: a failed publish must never fail the delegation
+    /// itself — the bus is a view of the turn, not the turn.
+    fn publish_subagent(&self, event: AgentEvent) {
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(event);
+        }
+    }
+
+    /// Record a delegation failure in the registry AND announce it
+    /// on the bus, so the Clowder panel shows the subagent as failed
+    /// instead of stuck on "running". `registry_status` is the
+    /// registry record status ("failed" / "blocked"); the bus event
+    /// is always `Failed` — a blocked delegation never completed.
+    async fn record_subagent_failure(&self, id: &str, registry_status: &str, reason: &str) {
+        let mut reg = self.registry.lock().await;
+        let _ = reg.record_failure(id, registry_status, reason);
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: id.to_string(),
+            status: SubagentStatus::Failed,
+            summary: Some(reason.to_string()),
+        });
+    }
+
+    /// First line of a child result, truncated — the one-line summary
+    /// the Clowder panel shows for a finished subagent.
+    fn short_summary(text: &str) -> String {
+        const MAX_CHARS: usize = 200;
+        let first = text.lines().next().unwrap_or("").trim();
+        let mut short: String = first.chars().take(MAX_CHARS).collect();
+        if first.chars().count() > MAX_CHARS {
+            short.push('\u{2026}');
+        }
+        short
     }
 
     pub fn with_plugin_dispatcher(mut self, dispatcher: Arc<dyn PluginHookDispatcher>) -> Self {
@@ -292,7 +193,18 @@ impl TaskTool {
                 return (Arc::new(router), first_wire);
             }
         }
-        (self.provider.clone(), spec.model.clone())
+        // No fallback candidate resolved to a configured provider (or no
+        // routing info at all): fall back to the SESSION provider + SESSION
+        // model — the documented dead-model fallback (preset → frontmatter →
+        // session model). The previous code returned `spec.model` here, which
+        // is the role's *preset* model id (e.g. `ollama:qwen2.5-coder:7b`)
+        // wired to the session provider: a strict provider 404s on the
+        // foreign id, and the task-result label names a model that never ran.
+        // (Checker finding F1, batch 2c verification, 2026-11-12.) An
+        // explicit `task()` model naming an unconfigured provider falls
+        // through here the same way rather than sending a foreign id to the
+        // session provider.
+        (self.provider.clone(), self.model.clone())
     }
 
     fn build_role_tools(&self, role: &str, workspace_root: Option<&Path>) -> ToolRegistry {
@@ -336,6 +248,18 @@ impl TaskTool {
                     self.ask_requester.clone(),
                     workspace_root,
                 );
+            }
+        }
+        // In a cron run the job allowlist (enforced by the gate) also
+        // narrows the toolset the model sees, so it does not waste steps
+        // attempting tools that will be denied. `read_skill` is always
+        // kept (it loads skill bodies on demand), mirroring the direct
+        // path's retain in main.rs. The shadow auditor does NOT go
+        // through here — its fixed read-only registry is intentional:
+        // an audit must be able to read the plan/diff it judges.
+        if let Some(gate) = &self.approval_gate {
+            if let Some(allow) = gate.tool_allowlist() {
+                reg.retain(|name| name == "read_skill" || allow.contains(name));
             }
         }
         reg.freeze();
@@ -469,15 +393,24 @@ impl Tool for TaskTool {
             let hist = reg.take_history(&id);
             (id, hist)
         };
+        self.publish_subagent(AgentEvent::SubagentSpawned {
+            subagent_id: subagent_id.clone(),
+            parent_id: ctx.session_id.clone(),
+            role: args.role.clone(),
+            brief: args.brief.clone(),
+        });
 
         // 2. Prepare handoff directory: sessions/<session_id>/subagents/<id>/
         let subagent_dir = self.session_dir.join("subagents").join(&subagent_id);
-        tokio::fs::create_dir_all(&subagent_dir)
-            .await
-            .map_err(|e| PurrError::Subagent {
+        if let Err(e) = tokio::fs::create_dir_all(&subagent_dir).await {
+            let reason = format!("Failed to create subagent handoff directory: {e}");
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
-                message: format!("Failed to create subagent handoff directory: {e}"),
-            })?;
+                message: reason,
+            });
+        }
 
         let brief_file = subagent_dir.join("brief.md");
         let result_file = subagent_dir.join("result.md");
@@ -509,19 +442,34 @@ impl Tool for TaskTool {
                 dprev
             ));
         }
-        tokio::fs::write(&brief_file, existing_brief.as_bytes())
-            .await
-            .map_err(|e| PurrError::Subagent {
+        if let Err(e) = tokio::fs::write(&brief_file, existing_brief.as_bytes()).await {
+            let reason = format!("Failed to write brief.md: {e}");
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
-                message: format!("Failed to write brief.md: {e}"),
-            })?;
+                message: reason,
+            });
+        }
 
-        // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan/plan_json delegations (ADR-012)
+        // 2b. Narrow Tuxeshadow Shadow Auditor trigger on risky/cron/replan/plan_json delegations (ADR-012).
+        // `is_cron` is forced from the run context, not trusted from the
+        // model's own `task()` arguments: a cron run is a cron run even
+        // if Meowstro forgets (or refuses) to set the flag. Likewise a
+        // model-supplied `shadow_override_reason` is ignored in a cron
+        // run — without it, a Tabby objection fails the job closed
+        // (shadow.rs: Tabby + object + no reason => Err).
+        let is_cron = args.is_cron.unwrap_or(false) || ctx.is_cron;
+        let override_reason = if ctx.is_cron {
+            None
+        } else {
+            args.shadow_override_reason.as_deref()
+        };
         let mut effective_brief = args.brief.clone();
         if should_trigger_shadow(
             &args.role,
             &existing_brief,
-            args.is_cron.unwrap_or(false),
+            is_cron,
             args.is_replan.unwrap_or(false),
         ) {
             let guardrail = self
@@ -545,11 +493,20 @@ impl Tool for TaskTool {
             if let Some(ref req) = self.approval_requester {
                 auditor = auditor.with_approval_requester(req.clone());
             }
+            // R3 fix (P1-1): the shadow consult happens inside
+            // TaskTool, outside the loop — without the bus, a Strict
+            // consult's card is invisible on bus-only surfaces
+            // (the WebUI). TUI/Telegram/cron pass None and are
+            // unaffected (their requesters render their own cards).
+            if let Some(ref bus) = self.event_bus {
+                auditor = auditor.with_event_bus(bus.clone());
+            }
             let verdict = match auditor.audit_raw_artifact(&existing_brief, ctx).await {
                 Ok(v) => v,
                 Err(e) => {
-                    let mut reg = self.registry.lock().await;
-                    let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                    let reason = e.to_string();
+                    self.record_subagent_failure(&subagent_id, "failed", &reason)
+                        .await;
                     return Err(e);
                 }
             };
@@ -557,7 +514,7 @@ impl Tool for TaskTool {
                 .enforce_verdict_with_preview(
                     &verdict,
                     &ctx.session_id,
-                    args.shadow_override_reason.as_deref(),
+                    override_reason,
                     args.diff_preview
                         .as_deref()
                         .or(args.plan_json.as_deref())
@@ -570,8 +527,9 @@ impl Tool for TaskTool {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    let mut reg = self.registry.lock().await;
-                    let _ = reg.record_failure(&subagent_id, "blocked", &e.to_string());
+                    let reason = e.to_string();
+                    self.record_subagent_failure(&subagent_id, "blocked", &reason)
+                        .await;
                     return Err(e);
                 }
             }
@@ -595,10 +553,20 @@ impl Tool for TaskTool {
             agent_role: args.role.clone(),
             workspace_root: ctx.workspace_root.clone(),
             is_dry_run: ctx.is_dry_run,
+            is_cron: ctx.is_cron,
+            // v0.3 F21: a child may only narrow the parent's policy —
+            // it inherits the parent's OS sandbox, never a looser one.
+            sandbox: ctx.sandbox,
         };
 
         let mut child_loop = AgentLoop::new(child_provider, &child_model, child_tools)
-            .with_max_steps(15)
+            // 25, not 15: a real implementation sub-task (scaffold + implement
+            // + test + fix) needs ~20 tool calls. Dogfooding 2026-11-12 hit the
+            // 15-step cap mid-task and the summary came back a stub, forcing a
+            // second delegation to finish the job. Same default as the parent
+            // loop (loop_engine.rs); the continuation contract still bounds
+            // runaway children (resume, never respawn).
+            .with_max_steps(25)
             .with_temperature(role_spec.temperature)
             .with_reasoning_effort(role_spec.reasoning_effort)
             .with_yolo(self.yolo);
@@ -616,6 +584,9 @@ impl Tool for TaskTool {
         if let Some(ref pd) = self.plugin_dispatcher {
             child_loop = child_loop.with_plugin_dispatcher(pd.clone());
         }
+        if let Some(ref bus) = self.event_bus {
+            child_loop = child_loop.with_event_bus(bus.clone());
+        }
 
         let system_prompt = format!(
             "You are {}, a specialized subagent of PurrCode AI.\nYour continuation ID is '{}'.\nPerform your assigned task thoroughly using your allowed tools and return a concise structured summary (changed files:line, verified evidence, blockers, unverified items).",
@@ -623,6 +594,11 @@ impl Tool for TaskTool {
         );
 
         // 5. Run child loop (Clowder runs 2 council seats and merges verdicts)
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: subagent_id.clone(),
+            status: SubagentStatus::Running,
+            summary: None,
+        });
         let child_result_res = if args.role == "clowder" {
             let mut h1 = history.clone();
             let mut h2 = history.clone();
@@ -672,8 +648,9 @@ impl Tool for TaskTool {
         let child_result = match child_result_res {
             Ok(r) => r,
             Err(e) => {
-                let mut reg = self.registry.lock().await;
-                let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                let reason = e.to_string();
+                self.record_subagent_failure(&subagent_id, "failed", &reason)
+                    .await;
                 return Err(e);
             }
         };
@@ -687,14 +664,16 @@ impl Tool for TaskTool {
         ) {
             Ok(entry) => entry,
             Err(e) => {
-                let mut reg = self.registry.lock().await;
-                let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+                let reason = e.to_string();
+                self.record_subagent_failure(&subagent_id, "failed", &reason)
+                    .await;
                 return Err(e);
             }
         };
         if let Err(e) = tokio::fs::write(&result_file, result_entry.as_bytes()).await {
-            let mut reg = self.registry.lock().await;
-            let _ = reg.record_failure(&subagent_id, "failed", &e.to_string());
+            let reason = e.to_string();
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
             return Err(PurrError::Subagent {
                 id: subagent_id.clone(),
                 message: format!("Failed to write result.md: {e}"),
@@ -702,14 +681,38 @@ impl Tool for TaskTool {
         }
 
         // 7. Save updated history & registry record to memory and disk
-        {
+        // (v0.4 B3 fix P2-1: a persistence failure here used to
+        // propagate with `?` and leave the Clowder panel stuck on
+        // "running" — the error is captured first, then announced
+        // as Failed. The registry lock is released before the
+        // announce, because record_subagent_failure locks the same
+        // registry and a held lock would deadlock it.)
+        let save_result = {
             let mut reg = self.registry.lock().await;
-            reg.save_history(&subagent_id, history)?;
-            reg.record_result(&subagent_id, &child_result)?;
+            reg.save_history(&subagent_id, history)
+                .and_then(|()| reg.record_result(&subagent_id, &child_result))
+        };
+        if let Err(e) = save_result {
+            let reason = e.to_string();
+            self.record_subagent_failure(&subagent_id, "failed", &reason)
+                .await;
+            return Err(e);
         }
+        self.publish_subagent(AgentEvent::SubagentStatusChanged {
+            subagent_id: subagent_id.clone(),
+            status: SubagentStatus::Done,
+            summary: Some(Self::short_summary(&child_result)),
+        });
 
+        // The summary below is complete and inline: the result.md path is a
+        // session-state record, not a source to re-read. (Dogfooding 2026-11-12:
+        // the old "Handoff result saved to: <path>" line made Meowstro read
+        // result.md via the `read` tool, which workspace confinement denies —
+        // the handoff file lives outside the workspace root. Pointing the
+        // orchestrator at a file it cannot open is a wart; the inline summary
+        // is the handoff.)
         let summary = format!(
-            "Subagent '{}' (role: {}, model: {}) completed its task.\nContinuation ID: {}\nHandoff result saved to: {}\n\nSummary Report:\n{}",
+            "Subagent '{}' (role: {}, model: {}) completed its task.\nContinuation ID: {}\nHandoff result saved to session state at {} (record only — the full summary follows inline below, do not re-read the file).\n\nSummary Report:\n{}",
             subagent_id,
             args.role,
             child_model,
@@ -732,286 +735,4 @@ impl Tool for TaskTool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use purrcode_api::provider::{CompletionRequest, MessageRole, StreamChunk};
-    use purrcode_config::{AgentModelSpec, ModelTarget};
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct StatefulEchoProvider {
-        calls: AtomicUsize,
-    }
-
-    #[async_trait]
-    impl ModelProvider for StatefulEchoProvider {
-        fn provider_name(&self) -> &str {
-            "mock-stateful"
-        }
-        fn is_healthy(&self) -> bool {
-            true
-        }
-        async fn stream_completion(
-            &self,
-            req: CompletionRequest,
-        ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-            let user_turns = req
-                .messages
-                .iter()
-                .filter(|m| m.role == MessageRole::User)
-                .count();
-            let (tx, rx) = tokio::sync::mpsc::channel(2);
-            let _ = tx.try_send(StreamChunk {
-                delta: format!(
-                    "call={} user_turns={} model={} effort={:?}",
-                    n, user_turns, req.model, req.reasoning_effort
-                ),
-                reasoning_delta: None,
-                tool_call_delta: None,
-                is_finished: true,
-                usage: None,
-            });
-            Ok(rx)
-        }
-    }
-
-    #[test]
-    fn test_per_role_model_preset_resolution_and_precedence() {
-        let mut agents = HashMap::new();
-        agents.insert(
-            "tuxeshadow".to_string(),
-            AgentModelSpec {
-                model: ModelTarget::Chain(vec![
-                    "oracle-primary".to_string(),
-                    "oracle-backup".to_string(),
-                ]),
-                variant: Some("high".to_string()),
-                temperature: Some(0.1),
-                options: None,
-                fallback: vec!["oracle-last".to_string()],
-            },
-        );
-        let preset = ModelPreset {
-            schema: "model-preset/v1".to_string(),
-            name: "test".to_string(),
-            description: String::new(),
-            extends: None,
-            agents,
-        };
-
-        // 1. ModelPreset resolves primary, fallback chain, temperature, and high variant
-        let spec = resolve_role_model_spec(
-            "tuxeshadow",
-            None,
-            Some(&preset),
-            "session-default",
-            Path::new("."),
-        );
-        assert_eq!(spec.model, "oracle-primary");
-        assert_eq!(spec.fallback_candidates.len(), 3);
-        assert_eq!(spec.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(spec.temperature, Some(0.1));
-
-        // 2. Explicit model in task() wins over ModelPreset and disables fallback chain
-        let exp = resolve_role_model_spec(
-            "tuxeshadow",
-            Some("override-model"),
-            Some(&preset),
-            "session-default",
-            Path::new("."),
-        );
-        assert_eq!(exp.model, "override-model");
-        assert_eq!(exp.fallback_candidates, vec!["override-model".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn test_subagent_chain_handoff_and_resume_by_id() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("purr_orch_test_{}", uuid::Uuid::new_v4()));
-        let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
-            calls: AtomicUsize::new(0),
-        });
-        let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
-        let gate = Arc::new(ApprovalGate::new("tabby"));
-        let task_tool = TaskTool::with_full_options(
-            reg.clone(),
-            provider.clone(),
-            "mock-model",
-            &temp_dir,
-            None,
-            None,
-            Some(gate),
-            None,
-            true,
-        );
-
-        let ctx = ToolContext {
-            session_id: "root_sess".to_string(),
-            agent_role: "meowstro".to_string(),
-            workspace_root: temp_dir.clone(),
-            is_dry_run: false,
-        };
-
-        // Step 1: Delegate to Whisker
-        let r1 = task_tool
-            .execute(
-                serde_json::json!({
-                    "role": "whisker",
-                    "brief": "Scout auth handler"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let whisker_id = r1.metadata.unwrap()["subagent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(whisker_id.starts_with("purr_"));
-        assert!(r1.output.contains("user_turns=1"));
-
-        // Step 2: Delegate to Sphinx (verifies high reasoning effort default)
-        let r2 = task_tool
-            .execute(
-                serde_json::json!({
-                    "role": "sphinx",
-                    "brief": "Verify root cause in auth.rs"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let sphinx_id = r2.metadata.unwrap()["subagent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert_ne!(whisker_id, sphinx_id);
-        assert!(r2.output.contains("effort=Some(\"high\")"));
-
-        // Step 3: Resume Whisker by exact continuation ID after simulated restart
-        let reg_reloaded = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
-        let task_tool_reloaded = TaskTool::with_options(
-            reg_reloaded,
-            provider,
-            "mock-model",
-            &temp_dir,
-            None,
-            None,
-            true,
-        );
-
-        let r3 = task_tool_reloaded
-            .execute(
-                serde_json::json!({
-                    "role": "whisker",
-                    "id": whisker_id,
-                    "brief": "Follow up on second auth file"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let resumed_id = r3.metadata.unwrap()["subagent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(resumed_id, whisker_id);
-        assert!(r3.output.contains("user_turns=2"));
-
-        let res_md = std::fs::read_to_string(
-            temp_dir
-                .join("subagents")
-                .join(&whisker_id)
-                .join("result.md"),
-        )
-        .unwrap();
-        assert!(res_md.contains("- **Changed Files:**"));
-        assert!(res_md.contains("- **Verified Evidence:**"));
-        assert!(res_md.contains("- **Failures / Blockers:**"));
-        assert!(res_md.contains("- **Unverified Items:**"));
-
-        assert!(temp_dir
-            .join("subagents")
-            .join(format!("{}.json", whisker_id))
-            .exists());
-        assert!(temp_dir.join("workgraph.json").exists());
-
-        let _ = std::fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn test_format_validated_result_markdown_rejects_empty_and_normalizes() {
-        // Empty summary is rejected
-        let err = format_validated_result_markdown("sub_1", "tinker", "completed", "   \n\t  ");
-        assert!(err.is_err());
-        assert!(matches!(err.unwrap_err(), PurrError::Subagent { .. }));
-
-        // Valid summary with missing sections gets normalized with standard placeholders
-        let raw = "Refactored payment gateway handler in src/payment.rs";
-        let res = format_validated_result_markdown("sub_1", "tinker", "completed", raw).unwrap();
-        assert!(res.contains("# Result Report: sub_1"));
-        assert!(res.contains("- **Status:** completed"));
-        assert!(res.contains("- **Role:** tinker"));
-        assert!(res.contains("- **Changed Files:** (see summary below)"));
-        assert!(res.contains("- **Verified Evidence:** (see summary below)"));
-        assert!(res.contains("- **Failures / Blockers:** None reported."));
-        assert!(res.contains("- **Unverified Items:** None reported."));
-        assert!(res.contains("## Summary\nRefactored payment gateway handler in src/payment.rs"));
-    }
-
-    #[tokio::test]
-    async fn test_task_tool_dry_run_returns_preview_without_side_effects() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("purr_dryrun_test_{}", uuid::Uuid::new_v4()));
-        let provider: Arc<dyn ModelProvider> = Arc::new(StatefulEchoProvider {
-            calls: AtomicUsize::new(0),
-        });
-        let reg = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(&temp_dir)));
-        let task_tool = TaskTool::with_options(
-            reg.clone(),
-            provider,
-            "mock-model",
-            &temp_dir,
-            None,
-            None,
-            false,
-        );
-
-        let dry_ctx = ToolContext {
-            session_id: "test_session".to_string(),
-            agent_role: "meowstro".to_string(),
-            workspace_root: PathBuf::from("."),
-            is_dry_run: true,
-        };
-
-        let result = task_tool
-            .execute(
-                serde_json::json!({
-                    "role": "tinker",
-                    "brief": "Implement auth middleware",
-                    "diff_preview": "--- a/auth.rs\n+++ b/auth.rs\n@@ -1 +1 @@\n+pub fn check() {}"
-                }),
-                &dry_ctx,
-            )
-            .await
-            .unwrap();
-
-        // 1. Dry-run must return a preview with role and diff/plan
-        assert!(result.diff_preview.is_some());
-        let preview = result.diff_preview.unwrap();
-        assert!(preview.contains("Delegation Plan to Subagent:"));
-        assert!(preview.contains("- **Role:** tinker"));
-        assert!(preview.contains("- **Target Model:** mock-model"));
-        assert!(preview.contains("pub fn check() {}"));
-
-        // 2. Crucial: Registry must have ZERO records and disk must not have been created
-        let reg_guard = reg.lock().await;
-        let records = reg_guard.list_records();
-        assert_eq!(records.len(), 0);
-        drop(reg_guard);
-        assert!(!temp_dir.join("subagents").exists());
-
-        let _ = std::fs::remove_dir_all(temp_dir);
-    }
-}
+mod tests;

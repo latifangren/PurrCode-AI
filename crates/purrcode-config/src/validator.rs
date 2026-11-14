@@ -48,6 +48,7 @@ mod tests {
                 base_url: None,
                 api_key: None,
                 headers: HashMap::new(),
+                user_agent: None,
                 models,
             },
         );
@@ -57,6 +58,9 @@ mod tests {
             model: Some("test-provider:tiny-model".to_string()),
             providers,
             mcp_servers: HashMap::new(),
+            telegram: None,
+            cron: None,
+            heartbeat: None,
         };
         assert!(validate_config(&cfg).is_err());
     }

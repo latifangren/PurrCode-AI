@@ -55,8 +55,15 @@ clap = { version = "4.5", features = ["derive"] }
 regex = "1.10"
 walkdir = "2.5"
 similar = "2.6"
+libc = "0.2"
+# Landlock OS sandbox for the `bash` tool (v0.3 F21, Linux-only).
+landlock = "0.4"
 ratatui = "0.28"
 crossterm = { version = "0.28", features = ["event-stream"] }
+# WebUI HTTP server (v0.4 B2: Axum routing over the tokio runtime we
+# already run; `tower-http` only for the 1 MiB request-body limit).
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
 
 [profile.release]
 opt-level = "z"

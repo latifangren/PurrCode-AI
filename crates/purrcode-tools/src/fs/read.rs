@@ -267,6 +267,8 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
+            sandbox: None,
         };
 
         let result = tool
@@ -299,6 +301,8 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
+            sandbox: None,
         };
 
         let res = tool

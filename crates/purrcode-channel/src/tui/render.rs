@@ -17,6 +17,11 @@ const BORDER_COLOR: Color = Color::Rgb(63, 63, 70);
 const SUCCESS_GREEN: Color = Color::Rgb(16, 185, 129);
 const RUNNING_YELLOW: Color = Color::Rgb(234, 179, 8);
 
+/// Lines of a tool result shown in the transcript; the rest is counted,
+/// never silently dropped (see the `… (N more lines)` marker in
+/// `render_transcript`).
+const TOOL_RESULT_PREVIEW_LINES: usize = 4;
+
 pub fn render(frame: &mut Frame, app: &TuiApp) {
     if let Some(ref approval) = app.pending_approval {
         let chunks = Layout::default()
@@ -105,6 +110,12 @@ fn render_approval_card(frame: &mut Frame, area: Rect, approval: &super::app::Ap
         Span::styled("Actions: ", Style::default().fg(TEXT_MUTED)),
         Span::styled(
             "[a]/[y] Approve & Apply  ",
+            Style::default()
+                .fg(SUCCESS_GREEN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "[A] Always (session)  ",
             Style::default()
                 .fg(SUCCESS_GREEN)
                 .add_modifier(Modifier::BOLD),
@@ -305,11 +316,33 @@ fn render_transcript(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
             MessageItem::ToolResult { output, success } => {
                 let color = if *success { TEXT_MUTED } else { Color::Red };
-                let first_line = output.lines().next().unwrap_or("");
-                lines.push(Line::from(vec![
-                    Span::styled("    └─ result: ", Style::default().fg(BORDER_COLOR)),
-                    Span::styled(first_line, Style::default().fg(color)),
-                ]));
+                let total = output.lines().count();
+                if total == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("    └─ result: ", Style::default().fg(BORDER_COLOR)),
+                        Span::styled("", Style::default().fg(color)),
+                    ]));
+                }
+                for (i, line) in output.lines().take(TOOL_RESULT_PREVIEW_LINES).enumerate() {
+                    let prefix = if i == 0 {
+                        "    └─ result: "
+                    } else {
+                        "       "
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(BORDER_COLOR)),
+                        Span::styled(line, Style::default().fg(color)),
+                    ]));
+                }
+                if total > TOOL_RESULT_PREVIEW_LINES {
+                    lines.push(Line::from(vec![
+                        Span::styled("       … ", Style::default().fg(BORDER_COLOR)),
+                        Span::styled(
+                            format!("({} more lines)", total - TOOL_RESULT_PREVIEW_LINES),
+                            Style::default().fg(TEXT_MUTED),
+                        ),
+                    ]));
+                }
                 lines.push(Line::from(""));
             }
         }
@@ -392,4 +425,61 @@ fn render_input(frame: &mut Frame, area: Rect, app: &TuiApp) {
     frame.render_widget(paragraph, area);
 
     frame.set_cursor_position((area.x + 6 + (app.cursor_pos as u16) + 1, area.y + 1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn rendered_text(app: &TuiApp) -> String {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut rows = Vec::new();
+        for y in 0..buffer.area.height {
+            let mut row = String::new();
+            for x in 0..buffer.area.width {
+                row.push_str(buffer[(x, y)].symbol());
+            }
+            rows.push(row);
+        }
+        rows.join("\n")
+    }
+
+    #[test]
+    fn test_tool_result_card_shows_first_lines_and_more_marker() {
+        let mut app = TuiApp::new("test-model", "tabby", "purr_test");
+        app.items.push(MessageItem::ToolResult {
+            output: "line1\nline2\nline3\nline4\nline5\nline6".to_string(),
+            success: true,
+        });
+        let text = rendered_text(&app);
+        assert!(text.contains("line1"), "first line visible");
+        assert!(
+            text.contains("line2"),
+            "second line visible (was first-line-only)"
+        );
+        assert!(text.contains("line4"), "fourth line visible");
+        assert!(
+            text.contains("(2 more lines)"),
+            "truncation is counted, not silent"
+        );
+        assert!(
+            !text.contains("line5"),
+            "beyond the preview is not rendered"
+        );
+
+        // A short result shows every line and no marker.
+        let mut short = TuiApp::new("test-model", "tabby", "purr_test");
+        short.items.push(MessageItem::ToolResult {
+            output: "only1\nonly2".to_string(),
+            success: true,
+        });
+        let short_text = rendered_text(&short);
+        assert!(short_text.contains("only1"));
+        assert!(short_text.contains("only2"));
+        assert!(!short_text.contains("more lines"));
+    }
 }

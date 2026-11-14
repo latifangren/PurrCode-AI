@@ -132,6 +132,14 @@ impl Tool for EditTool {
     }
 }
 
+/// End of a matched line's content, excluding its line terminator
+/// (`\n` / `\r\n`). The fuzzy range must not consume the terminator:
+/// `execute` splices the replacement verbatim, so consuming it would merge
+/// the following line onto the replacement's last line.
+fn line_content_end(line: (&str, usize, usize)) -> usize {
+    line.1 + line.0.trim_end_matches(['\r', '\n']).len()
+}
+
 pub fn find_match_range(original: &str, find: &str) -> std::result::Result<(usize, usize), String> {
     if find.is_empty() {
         return Err("The 'find' string must not be empty".to_string());
@@ -190,7 +198,7 @@ pub fn find_match_range(original: &str, find: &str) -> std::result::Result<(usiz
         }
         if matched {
             let start = orig_lines[i].1;
-            let end = orig_lines[i + find_lines.len() - 1].2;
+            let end = line_content_end(orig_lines[i + find_lines.len() - 1]);
             candidate_ranges.push((start, end));
         }
     }
@@ -219,7 +227,7 @@ pub fn find_match_range(original: &str, find: &str) -> std::result::Result<(usiz
         }
         if matched {
             let start = orig_lines[i].1;
-            let end = orig_lines[i + find_lines.len() - 1].2;
+            let end = line_content_end(orig_lines[i + find_lines.len() - 1]);
             trim_ranges.push((start, end));
         }
     }
@@ -256,6 +264,8 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
+            sandbox: None,
         };
 
         // 1. Mismatched hash must fail
@@ -312,6 +322,8 @@ mod tests {
             agent_role: "tinker".to_string(),
             workspace_root: temp_dir.clone(),
             is_dry_run: false,
+            is_cron: false,
+            sandbox: None,
         };
 
         // LLM provides 2 spaces indentation and LF endings
@@ -341,5 +353,24 @@ mod tests {
         let res = find_match_range(text, "bar\n");
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Ambiguous edit"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_range_keeps_trailing_newline() {
+        // Indentation-mismatched multi-line find (fuzzy path): the range
+        // must end before the last matched line's newline, or the following
+        // line merges onto the replacement's last line.
+        let original = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
+        let (start, end) = find_match_range(original, "  let a = 1;\n  let b = 2;").unwrap();
+        let replaced = format!("{}NEW1\nNEW2{}", &original[..start], &original[end..]);
+        assert_eq!(replaced, "fn main() {\nNEW1\nNEW2\n    let c = 3;\n}\n");
+        // Same for a CRLF file: the range ends before `\r\n`.
+        let crlf = "fn main() {\r\n    let a = 1;\r\n    let b = 2;\r\n    let c = 3;\r\n}\r\n";
+        let (start, end) = find_match_range(crlf, "  let a = 1;\r\n  let b = 2;").unwrap();
+        let replaced = format!("{}NEW1\r\nNEW2{}", &crlf[..start], &crlf[end..]);
+        assert_eq!(
+            replaced,
+            "fn main() {\r\nNEW1\r\nNEW2\r\n    let c = 3;\r\n}\r\n"
+        );
     }
 }

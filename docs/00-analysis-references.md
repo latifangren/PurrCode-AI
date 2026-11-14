@@ -28,7 +28,7 @@ sudah tidak berlaku.
 | sipeed/picoclaw | `bbf6893` (2026-08-19) | Go | MIT | 42 MB | Patokan single-binary Go ringan |
 | zeroclaw-labs/zeroclaw | `6877da5` (2026-11-10) | Rust | Apache-2.0 + MIT | 121 MB | Microkernel + supervised fail-closed + service install |
 | Muse (App + Code) | — (zip user 2026-11-11, Muse Code v1.4.14 menurut ekstraksi) | — | Proprietary / tidak tercantum * | 8,2 MB (ekstrak) | Harness perilaku (6 pilar) + MSP + skill routing |
-| Weilin0723/PurrCode | `156d832` (2026-11-12), v1.0.0 | Rust (32 crates) | Apache-2.0 | ~140 MB | OS Sandboxing (`bwrap`/`sandbox-exec`), Tree-sitter AST, egui Desktop IDE |
+| Weilin0723/PurrCode | `156d832` (2026-11-12), v1.0.0 | Rust (32 crates) | Apache-2.0 | tidak terverifikasi | OS Sandboxing (`bwrap`/`sandbox-exec`), Tree-sitter AST, egui Desktop IDE |
 
 \* **Batas lisensi — baca dulu sebelum meniru:**
 - `Weilin0723/PurrCode` berlisensi **Apache-2.0** — pola arsitektur bebas dipelajari dan diadaptasi secara clean-room ke dalam kode GPL-3.0 PurrCode AI tanpa menyalin kode secara mentah.

@@ -4,6 +4,7 @@ pub mod openai;
 pub mod router;
 
 pub use openai::OpenAiCompatibleProvider;
+use purrcode_api::error::Result;
 use purrcode_api::provider::ModelProvider;
 use purrcode_config::Config;
 pub use router::FallbackRouter;
@@ -31,7 +32,11 @@ impl ProviderRegistry {
 
     /// Builds a ProviderRegistry dynamically from loaded PurrCode configuration.
     /// Zero hardcoded URLs: every provider endpoint comes from `purrcode.jsonc`.
-    pub fn from_config(config: &Config) -> Self {
+    /// Fails loudly if a provider's HTTP client cannot be built (e.g. the
+    /// TLS stack cannot initialize) instead of silently registering a
+    /// provider that can never answer — a client that cannot be built is a
+    /// startup error, not a runtime surprise.
+    pub fn from_config(config: &Config) -> Result<Self> {
         let mut registry = Self::new();
 
         for (provider_name, provider_cfg) in &config.providers {
@@ -41,12 +46,13 @@ impl ProviderRegistry {
                     base_url.clone(),
                     provider_cfg.api_key.clone(),
                     provider_cfg.headers.clone(),
-                );
+                    provider_cfg.user_agent.clone(),
+                )?;
                 registry.register(provider_name.clone(), Arc::new(provider));
             }
         }
 
-        registry
+        Ok(registry)
     }
 }
 

@@ -51,6 +51,25 @@ impl SessionStore {
         self.sessions_dir().join(format!("{}.jsonl", session_id))
     }
 
+    /// Create an empty session file so a fresh session shows up in
+    /// `list_sessions` before its first message is appended (v0.4 B1:
+    /// the WebUI "new session" button must list the session at once).
+    /// Idempotent: an existing file is left untouched.
+    pub fn create_session(&self, session_id: &str) -> Result<()> {
+        let dir = self.sessions_dir();
+        std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;
+        let path = self.session_jsonl_path(session_id);
+        if !path.exists() {
+            std::fs::write(&path, "").map_err(PurrError::Io)?;
+        }
+        Ok(())
+    }
+
+    /// True when the session has a JSONL file on disk.
+    pub fn session_exists(&self, session_id: &str) -> bool {
+        self.session_jsonl_path(session_id).exists()
+    }
+
     pub fn append_message(&self, session_id: &str, message: &ChatMessage) -> Result<()> {
         let dir = self.sessions_dir();
         std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;

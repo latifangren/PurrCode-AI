@@ -10,7 +10,7 @@ use purrcode_api::provider::ModelProvider;
 use purrcode_api::tool::AuditSink;
 use purrcode_approval::ApprovalGate;
 use purrcode_config::{Config, ModelPreset};
-use purrcode_core::{AgentLoop, ApprovalRequester, SteeringQueue};
+use purrcode_core::{AgentLoop, ApprovalRequester, EventBus, SteeringQueue};
 use purrcode_provider::ProviderRegistry;
 use purrcode_tools::{AskRequester, ToolRegistry};
 
@@ -82,6 +82,7 @@ impl MeowstroOrchestrator {
             cancel_flag,
             yolo,
             None,
+            None,
         )
     }
 
@@ -102,6 +103,9 @@ impl MeowstroOrchestrator {
         cancel_flag: Option<Arc<AtomicBool>>,
         yolo: bool,
         workspace_root: Option<PathBuf>,
+        // EventBus the parent loop (and, via the TaskTool, every child
+        // loop) publishes to. `None` = listener-only, pre-R3 behavior.
+        event_bus: Option<Arc<EventBus>>,
     ) -> Self {
         let session_path = session_dir.into();
         let registry = Arc::new(Mutex::new(SubagentRegistry::with_session_dir(
@@ -150,6 +154,9 @@ impl MeowstroOrchestrator {
         if let (Some(cfg), Some(preg)) = (config, provider_registry) {
             task_tool = task_tool.with_provider_routing(cfg, preg);
         }
+        if let Some(ref bus) = event_bus {
+            task_tool = task_tool.with_event_bus(bus.clone());
+        }
 
         let _ = tool_reg.register(Arc::new(task_tool));
         tool_reg.freeze();
@@ -173,6 +180,9 @@ impl MeowstroOrchestrator {
         }
         if let Some(cf) = cancel_flag {
             agent_loop = agent_loop.with_cancel_flag(cf);
+        }
+        if let Some(bus) = event_bus {
+            agent_loop = agent_loop.with_event_bus(bus);
         }
 
         Self {

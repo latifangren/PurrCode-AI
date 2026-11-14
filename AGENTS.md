@@ -12,7 +12,9 @@
 ## 1. What PurrCode is
 
 PurrCode AI is a modular AI agent, written in **Rust**, licensed **GPL-3.0**,
-single static musl binary. Main agent (orchestrator) + subagents that do not
+single binary (musl static VERIFIED 2026-11-12: 4.949.152 byte,
+static-pie linked, suite 135/135 on the musl target; CI builds it on every
+push — see `docs/AUDIT_STATUS.md` item 17; GNU builds remain the dev default). Main agent (orchestrator) + subagents that do not
 lose context, persistent memory, plugins like DeepSeek Harness, terminal TUI
 like oh-my-pi, Telegram like Hermes Agent. Focus v0.1: **terminal CLI / TUI
 first**; Telegram v0.2; WebUI v0.4.
@@ -121,8 +123,14 @@ any mode. Cron jobs never run `oyen`/`yolo`.
   `[FILTERED]` filter. Never ask the user to paste a password/API key in chat
   — use the secure entry flow.
 - **Plugins:** manifest declares `capabilities` (network, fs, secrets);
-  default deny. A plugin never receives secrets unless the capability is
-  declared AND the user approved it at install.
+  default-deny is enforced ONLY for `secrets` in v0.1 (a plugin never
+  receives a secret unless the capability is declared, and the env is
+  scrubbed). `network`/`filesystem` are declarations for the v0.3 OS
+  sandbox — parsed and recorded, but NOT enforced in v0.1: a process
+  plugin runs with full user rights (see `PluginManager::
+  unenforced_capabilities`; the CLI logs an audit entry and the plugin
+  list prints a warning). (Install-time approval flow is v0.3 scope —
+  see `docs/AUDIT_STATUS.md` §4 item 8.)
 - **References:** patterns only, never copied code. GPL references: patterns
   OK. Non-commercial (Sustainable Use) / proprietary: patterns only, never
   code. Anthropic document skills (`docx`/`pdf`/`pptx`/`xlsx`) are

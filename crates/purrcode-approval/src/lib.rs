@@ -45,6 +45,80 @@ impl AuditLogger {
         &self.audit_file
     }
 
+    /// Count `tool_call` events for one session since the last curator
+    /// marker (`skill_curator_checked`) for that session (v0.3 F20,
+    /// ADR-014 item 7). The audit log is append-only, so "since the
+    /// last marker" is a stable per-turn boundary that survives
+    /// restarts; a rotated-away marker just restarts the count from
+    /// the current file. A missing or unreadable file counts as zero
+    /// (never an error — the curator is a best-effort hook, and a
+    /// broken audit file must not break the turn it follows).
+    pub fn count_tool_calls_since_curator_check(&self, session_id: &str) -> usize {
+        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+            return 0;
+        };
+        let mut count = 0usize;
+        for line in raw.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+                continue;
+            }
+            match v.get("event").and_then(|e| e.as_str()) {
+                Some("skill_curator_checked") => count = 0,
+                Some("tool_call") => count += 1,
+                _ => {}
+            }
+        }
+        count
+    }
+
+    /// Un-overridden Tuxeshadow objections recorded for one session:
+    /// `shadow_audit` entries with decision `OBJECT` (Default/tabby,
+    /// no override) or `OBJECT_BLOCKED` (Strict/carrier, user did not
+    /// approve), in file order, with the objection reason as `detail`.
+    /// Everything else is excluded on purpose: `APPROVE` /
+    /// `APPROVE_WITH_NOTES` are not objections; `shadow_override`
+    /// (`OVERRIDDEN`) and `shadow_strict_override` (`APPROVED_BY_USER`)
+    /// are objections the run was allowed to proceed past; `shadow_silent_audit`
+    /// (`OBJECT_SILENT`, God mode) never blocks. The cron runner (v0.3
+    /// F-1) uses this after a turn to tell a shadow-blocked run from a
+    /// successful one — the audit trail, not the model's final text, is
+    /// the ground truth, because a model may summarise a blocked run
+    /// without ever mentioning the block. Same best-effort contract as
+    /// `count_tool_calls_since_curator_check`: a missing, unreadable,
+    /// or corrupt file yields an empty list, never an error.
+    pub fn shadow_objections(&self, session_id: &str) -> Vec<String> {
+        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+            return Vec::new();
+        };
+        let mut objections = Vec::new();
+        for line in raw.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+                continue;
+            }
+            if v.get("event").and_then(|e| e.as_str()) != Some("shadow_audit") {
+                continue;
+            }
+            match v.get("decision").and_then(|d| d.as_str()) {
+                Some("OBJECT") | Some("OBJECT_BLOCKED") => {
+                    objections.push(
+                        v.get("detail")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        objections
+    }
+
     pub fn log_entry(&self, mut entry: AuditEntry) -> Result<()> {
         entry.detail = scrub_secrets(&entry.detail);
         if let Some(parent) = self.audit_file.parent() {
@@ -127,6 +201,13 @@ pub struct ApprovalGate {
     deny_rules: HashSet<String>,
     ask_rules: HashSet<String>,
     allow_rules: HashSet<String>,
+    /// Optional hard tool allowlist (v0.3 F19 cron). When set, any tool
+    /// NOT in the set is denied outright, before every other rule. The
+    /// cron runner sets it from the job's declared allowlist; it
+    /// propagates to child gates via `narrowed_child_gate` (clone), so a
+    /// delegated child can never run a tool the job did not declare.
+    /// `None` (the default everywhere else) means "no restriction".
+    tool_allowlist: Option<HashSet<String>>,
 }
 
 impl ApprovalGate {
@@ -147,6 +228,7 @@ impl ApprovalGate {
             deny_rules: HashSet::new(),
             ask_rules: HashSet::new(),
             allow_rules: HashSet::new(),
+            tool_allowlist: None,
         }
     }
 
@@ -162,7 +244,21 @@ impl ApprovalGate {
             deny_rules: HashSet::new(),
             ask_rules: HashSet::new(),
             allow_rules: preset.tools.iter().cloned().collect(),
+            tool_allowlist: None,
         }
+    }
+
+    /// Sets the hard tool allowlist (v0.3 F19 cron): only the named tools
+    /// may run at all. An empty set denies everything. Returns `self`
+    /// for builder-style use.
+    pub fn with_tool_allowlist(mut self, tools: HashSet<String>) -> Self {
+        self.tool_allowlist = Some(tools);
+        self
+    }
+
+    /// The hard tool allowlist, if one was set (`None` = no restriction).
+    pub fn tool_allowlist(&self) -> Option<&HashSet<String>> {
+        self.tool_allowlist.as_ref()
     }
 
     pub fn add_deny_rule(&mut self, rule: impl Into<String>) {
@@ -184,6 +280,15 @@ impl ApprovalGate {
         tier: ApprovalTier,
         is_outside_workspace: bool,
     ) -> ApprovalDecision {
+        // 0. Hard tool allowlist (v0.3 F19 cron): a tool the job did not
+        // declare is denied outright, whatever the mode says. This runs
+        // before every other rule so no mode/tier can widen it.
+        if let Some(allow) = &self.tool_allowlist {
+            if !allow.contains(tool_name) {
+                return ApprovalDecision::Deny;
+            }
+        }
+
         // 1. Explicit deny rules always win (deny > ask > allow)
         if self.deny_rules.contains(tool_name) || self.deny_rules.contains("*") {
             return ApprovalDecision::Deny;
@@ -332,5 +437,198 @@ mod tests {
         let files: Vec<_> = std::fs::read_dir(&temp_dir).unwrap().flatten().collect();
         assert!(files.len() >= 2);
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_tool_allowlist_denies_undeclared_tools() {
+        // A cron job's declared set is the whole law: undeclared tools
+        // are denied even in Yolo mode and even for Read tier.
+        let allow: HashSet<String> = ["read".to_string()].into_iter().collect();
+        let gate = ApprovalGate::new("yolo").with_tool_allowlist(allow);
+        assert_eq!(
+            gate.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Allow
+        );
+        assert_eq!(
+            gate.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            gate.evaluate_tool("write", ApprovalTier::Write, false),
+            ApprovalDecision::Deny
+        );
+        // An empty allowlist denies everything (explicit `--allow ""`).
+        let gate = ApprovalGate::new("yolo").with_tool_allowlist(HashSet::new());
+        assert_eq!(
+            gate.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Deny
+        );
+        // No allowlist (None) keeps the old behavior: mode decides.
+        let gate = ApprovalGate::new("yolo");
+        assert_eq!(
+            gate.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_tool_allowlist_propagates_to_child_gate() {
+        let allow: HashSet<String> = ["read".to_string(), "task".to_string()]
+            .into_iter()
+            .collect();
+        let parent = ApprovalGate::new("tabby").with_tool_allowlist(allow);
+        let child = parent.narrowed_child_gate(ApprovalMode::Yolo);
+        // The child gate is a clone: the allowlist survives narrowing,
+        // and the mode is still capped at the parent's Supervised.
+        assert_eq!(child.mode, ApprovalMode::Supervised);
+        assert_eq!(
+            child.evaluate_tool("bash", ApprovalTier::Exec, false),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            child.evaluate_tool("read", ApprovalTier::Read, false),
+            ApprovalDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_count_tool_calls_since_curator_check() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr_audit_curator_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let logger = AuditLogger::new(&dir);
+        let sid = "purr_count";
+        let other = "purr_other";
+        // 3 calls for this session, 2 for another session (ignored).
+        for i in 0..3 {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: sid.to_string(),
+                    agent: "meowstro".to_string(),
+                    event: "tool_call".to_string(),
+                    tool: Some(format!("tool_{i}")),
+                    decision: "allow".to_string(),
+                    detail: "mock".to_string(),
+                })
+                .unwrap();
+        }
+        for _ in 0..2 {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: other.to_string(),
+                    agent: "meowstro".to_string(),
+                    event: "tool_call".to_string(),
+                    tool: Some("read".to_string()),
+                    decision: "allow".to_string(),
+                    detail: "mock".to_string(),
+                })
+                .unwrap();
+        }
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 3);
+        assert_eq!(logger.count_tool_calls_since_curator_check(other), 2);
+        // The marker resets the count; later calls accumulate again,
+        // and other sessions' markers do not touch this session.
+        logger
+            .log_entry(AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: sid.to_string(),
+                agent: "curator".to_string(),
+                event: "skill_curator_checked".to_string(),
+                tool: None,
+                decision: "ok".to_string(),
+                detail: "tool_calls=3 (threshold 5)".to_string(),
+            })
+            .unwrap();
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 0);
+        logger
+            .log_entry(AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: sid.to_string(),
+                agent: "meowstro".to_string(),
+                event: "tool_call".to_string(),
+                tool: Some("read".to_string()),
+                decision: "allow".to_string(),
+                detail: "mock".to_string(),
+            })
+            .unwrap();
+        assert_eq!(logger.count_tool_calls_since_curator_check(sid), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_shadow_objections_returns_only_unoverridden_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr_audit_shadow_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let logger = AuditLogger::new(&dir);
+        let sid = "purr_shadow";
+        let other = "purr_other";
+        let entry = |session: &str, event: &str, decision: &str, detail: &str| {
+            logger
+                .log_entry(AuditEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: session.to_string(),
+                    agent: "tuxeshadow".to_string(),
+                    event: event.to_string(),
+                    tool: None,
+                    decision: decision.to_string(),
+                    detail: detail.to_string(),
+                })
+                .unwrap();
+        };
+        // Two real blocks for this session (both decisions count).
+        entry(sid, "shadow_audit", "OBJECT", "plan would delete files");
+        entry(
+            sid,
+            "shadow_audit",
+            "OBJECT_BLOCKED",
+            "strict: rm -rf refused",
+        );
+        // Everything else must NOT count as a block.
+        entry(sid, "shadow_audit", "APPROVE", "fine");
+        entry(sid, "shadow_audit", "APPROVE_WITH_NOTES", "careful");
+        entry(
+            sid,
+            "shadow_override",
+            "OVERRIDDEN",
+            "overridden, run proceeded",
+        );
+        entry(
+            sid,
+            "shadow_strict_override",
+            "APPROVED_BY_USER",
+            "user approved",
+        );
+        entry(
+            sid,
+            "shadow_silent_audit",
+            "OBJECT_SILENT",
+            "god mode, never blocks",
+        );
+        entry(sid, "tool_call", "allow", "not a shadow event");
+        // Another session's OBJECT is invisible to this session.
+        entry(other, "shadow_audit", "OBJECT", "other session");
+        let found = logger.shadow_objections(sid);
+        assert_eq!(
+            found,
+            vec![
+                "plan would delete files".to_string(),
+                "strict: rm -rf refused".to_string()
+            ]
+        );
+        assert_eq!(
+            logger.shadow_objections(other),
+            vec!["other session".to_string()]
+        );
+        assert!(logger.shadow_objections("purr_nobody").is_empty());
+        // A missing audit file is an empty list, never an error.
+        let missing =
+            AuditLogger::new(std::env::temp_dir().join("purr_audit_shadow_missing_dir_xyz"));
+        assert!(missing.shadow_objections(sid).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -54,6 +54,15 @@ pub struct StreamChunk {
     pub tool_call_delta: Option<ToolCallDelta>,
     pub is_finished: bool,
     pub usage: Option<TokenUsage>,
+    /// Set when this stream ended without a clean finish (no
+    /// `finish_reason` / `[DONE]`): the bytes arrived, but the
+    /// response was cut short — the partial text/tool calls in this
+    /// step must not be trusted as a complete answer (a truncated
+    /// SSE stream over a flaky transport looks exactly like a model
+    /// that "says nothing"). The loop retries the step once on this
+    /// signal, then fails the turn honestly.
+    #[serde(default)]
+    pub stream_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
