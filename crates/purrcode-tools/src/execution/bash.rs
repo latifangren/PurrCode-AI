@@ -23,8 +23,7 @@ impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "bash".to_string(),
-            description: "Execute a shell command with timeout and smart output truncation to guard context window"
-                .to_string(),
+            description: "Execute a workspace-confined shell command with timeout and smart head/tail output truncation. Use dedicated tools (read, edit, write, grep, glob, find) instead of cat/head/tail/sed/awk/grep/find. Prefer non-destructive git inspection; never commit, push, reset --hard, or run destructive commands without explicit user confirmation.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

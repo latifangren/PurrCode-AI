@@ -51,7 +51,7 @@ impl Tool for TodoTool {
         ToolDefinition {
             name: "todo".to_string(),
             description:
-                "Record and update task plan progress checklist. Keep exactly one item in_progress."
+                "Record and update a structured multi-step task checklist. Use for non-trivial work (3+ steps); keep at most one item 'in_progress' and mark items 'completed' only after verifying them."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

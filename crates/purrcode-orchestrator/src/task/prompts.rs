@@ -92,10 +92,14 @@ pub fn build_role_system_prompt_in(
         }
     };
 
+    let env_block = purrcode_core::format_environment_block(workspace_root);
     format!(
         "You are {role}, a specialized subagent in PurrCode AI.\n\
          Continuation ID: '{subagent_id}'\n\n\
-         {body}"
+         {body}\n\n\
+         {harness}\n\n\
+         {env_block}",
+        harness = purrcode_core::CORE_HARNESS_CONTRACT
     )
 }
 

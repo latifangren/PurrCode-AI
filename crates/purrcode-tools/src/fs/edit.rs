@@ -22,7 +22,7 @@ impl Tool for EditTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit".to_string(),
-            description: "Replace one unique exact text match in a file with hash-anchoring and unified diff preview".to_string(),
+            description: "Apply a surgical replacement to one unique match in an existing file with unified diff preview and optional FNV-1a hash-anchoring. Always read the target file first; copy 'find' verbatim preserving exact indentation WITHOUT the 'LINE|' prefix shown by 'read', and pass 'expected_hash' when available to guard against concurrent edits.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

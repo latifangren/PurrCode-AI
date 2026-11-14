@@ -2,7 +2,7 @@
 
 use super::*;
 use purrcode_api::provider::{StreamChunk, ToolCallDelta};
-use purrcode_api::tool::{Tool, ToolDefinition, ToolResult};
+use purrcode_api::tool::{ApprovalDecision, ApprovalTier, Tool, ToolDefinition, ToolResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -659,4 +659,126 @@ async fn test_max_steps_fallback_is_published_to_listener() {
         seen.as_slice(),
         ["[Max steps (2) reached; summarizing completed tool steps.]"]
     );
+}
+
+#[tokio::test]
+async fn test_parallel_read_tools_execute_concurrently_in_deterministic_order() {
+    use tokio::sync::Barrier;
+
+    struct BarrierReadTool {
+        barrier: Arc<Barrier>,
+    }
+
+    #[async_trait]
+    impl Tool for BarrierReadTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "read".to_string(),
+                description: "Barrier read tool".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                tier: ApprovalTier::Read,
+            }
+        }
+        async fn execute(
+            &self,
+            arguments: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolResult> {
+            // Will deadlock/timeout if executed sequentially instead of concurrently!
+            self.barrier.wait().await;
+            let tag = arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(ToolResult {
+                output: format!("content:{}", tag),
+                diff_preview: None,
+                metadata: None,
+            })
+        }
+    }
+
+    struct TwoReadCallsProvider {
+        step: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ModelProvider for TwoReadCallsProvider {
+        fn provider_name(&self) -> &str {
+            "mock-two-reads"
+        }
+        fn is_healthy(&self) -> bool {
+            true
+        }
+        async fn stream_completion(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            if !self.step.swap(true, Ordering::SeqCst) {
+                let _ = tx.try_send(StreamChunk {
+                    delta: String::new(),
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index: 0,
+                        id: Some("r1".to_string()),
+                        name: Some("read".to_string()),
+                        arguments_delta: Some("{\"path\":\"first.rs\"}".to_string()),
+                    }),
+                    is_finished: false,
+                    usage: None,
+                    stream_error: None,
+                });
+                let _ = tx.try_send(StreamChunk {
+                    delta: String::new(),
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index: 1,
+                        id: Some("r2".to_string()),
+                        name: Some("read".to_string()),
+                        arguments_delta: Some("{\"path\":\"second.rs\"}".to_string()),
+                    }),
+                    is_finished: true,
+                    usage: None,
+                    stream_error: None,
+                });
+            } else {
+                let _ = tx.try_send(StreamChunk {
+                    delta: "Both read!".to_string(),
+                    reasoning_delta: None,
+                    tool_call_delta: None,
+                    is_finished: true,
+                    usage: None,
+                    stream_error: None,
+                });
+            }
+            Ok(rx)
+        }
+    }
+
+    let mut reg = ToolRegistry::new();
+    reg.register(Arc::new(BarrierReadTool {
+        barrier: Arc::new(Barrier::new(2)),
+    }))
+    .unwrap();
+    let provider = Arc::new(TwoReadCallsProvider {
+        step: AtomicBool::new(false),
+    });
+    let engine = AgentLoop::new(provider, "m", Arc::new(reg));
+    let mut history = Vec::new();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        engine.run_turn_with_history(&mut history, "read both", None, &truncating_ctx(), None),
+    )
+    .await
+    .expect("parallel read batch timed out — reads ran sequentially instead of concurrently")
+    .unwrap();
+
+    assert_eq!(res, "Both read!");
+    let tool_msgs: Vec<&str> = history
+        .iter()
+        .filter(|m| m.role == MessageRole::Tool)
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(tool_msgs, vec!["content:first.rs", "content:second.rs"]);
 }

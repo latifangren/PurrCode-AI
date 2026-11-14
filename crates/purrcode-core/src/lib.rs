@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+pub mod harness_prompt;
 pub mod loop_engine;
 pub mod session;
 pub mod steering;
 
+pub use harness_prompt::{
+    build_direct_system_prompt, compute_auto_compact_limit, detect_git_branch_name,
+    format_environment_block, CORE_HARNESS_CONTRACT,
+};
 pub use loop_engine::{AgentEventListener, AgentLoop, ApprovalRequester};
 pub use session::{SessionRecord, SessionStore};
 pub use steering::SteeringQueue;

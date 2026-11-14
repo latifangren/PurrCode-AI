@@ -22,7 +22,7 @@ impl Tool for GlobTool {
         ToolDefinition {
             name: "glob".to_string(),
             description:
-                "Find files matching a glob pattern (e.g. '**/*.rs', 'docs/*.md', 'src/**/lib.rs')"
+                "Find workspace files matching a glob pattern (e.g. '**/*.rs', 'docs/*.md', 'src/**/lib.rs'). Prefer this over find/ls via bash."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

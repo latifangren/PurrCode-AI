@@ -89,6 +89,32 @@ impl MarkdownMemory {
                     context.push('\n');
                 }
             }
+
+            // 5. Repository / Project Instructions (.purrcode/AGENTS.md, AGENTS.md, CLAUDE.md)
+            let instruction_candidates = [
+                (
+                    ".purrcode/AGENTS.md",
+                    proj.join(".purrcode").join("AGENTS.md"),
+                ),
+                ("AGENTS.md", proj.join("AGENTS.md")),
+                ("CLAUDE.md", proj.join("CLAUDE.md")),
+            ];
+            let mut remaining_budget = 3600usize;
+            for (label, path) in instruction_candidates {
+                if remaining_budget < 200 {
+                    break;
+                }
+                if let Ok(instr) = tokio::fs::read_to_string(path).await {
+                    let trimmed = instr.trim();
+                    if !trimmed.is_empty() {
+                        let slice = truncate_chars(trimmed, remaining_budget);
+                        remaining_budget = remaining_budget.saturating_sub(slice.chars().count());
+                        context.push_str(&format!("\n### Repository Instructions ({})\n", label));
+                        context.push_str(slice);
+                        context.push('\n');
+                    }
+                }
+            }
         }
 
         context
@@ -281,12 +307,23 @@ mod tests {
         tokio::fs::write(purr_proj.join("MEMORY.md"), "# Project Memory\n- fact B\n")
             .await
             .unwrap();
+        tokio::fs::write(proj_dir.join("AGENTS.md"), "# Repo Rules\n- run tests\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            proj_dir.join("CLAUDE.md"),
+            "# Claude Rules\n- zero unwrap\n",
+        )
+        .await
+        .unwrap();
 
         let context = mem.load_context(Some(&proj_dir)).await;
         assert!(context.contains("### Persona & Soul (SOUL.md)"));
         assert!(context.contains("### User Information & Preferences (USER.md)"));
         assert!(context.contains("### Curated Memory (MEMORY.md)"));
         assert!(context.contains("### Project Memory (.purrcode/MEMORY.md)"));
+        assert!(context.contains("### Repository Instructions (AGENTS.md)"));
+        assert!(context.contains("### Repository Instructions (CLAUDE.md)"));
 
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }

@@ -25,7 +25,7 @@ impl Tool for GrepTool {
         ToolDefinition {
             name: "grep".to_string(),
             description:
-                "Search text patterns in workspace files with optional surrounding context lines"
+                "Search regex or literal patterns across workspace files with standard diff-style context lines (':' for matches, '-' for context). Prefer this over running grep/rg via bash; combine multiple independent read/grep/glob queries in one step."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

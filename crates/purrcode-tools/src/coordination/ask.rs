@@ -53,7 +53,7 @@ impl Tool for AskTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "ask".to_string(),
-            description: "Ask user for a decision when requirements or options are ambiguous. Pauses for real human input.".to_string(),
+            description: "Pause and ask the user a clarifying decision when genuinely blocked on an ambiguous requirement, architectural trade-off, or destructive choice that cannot be resolved from the codebase. Do not ask trivial questions or seek permission for routine read-only inspection.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

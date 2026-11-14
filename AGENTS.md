@@ -37,7 +37,7 @@ docs contradicts your instinct, the docs win until the user changes them.
 
 | Agent | Role | Tool set (enforced at runtime, not by prompt) |
 |---|---|---|
-| Meowstro | Orchestrator, the user's representative | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill` |
+| Meowstro | Orchestrator, the user's representative | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill`, `webfetch`, `websearch` |
 | Whisker | Explorer (absorbs Librarian) | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) + `webfetch`, `websearch` |
 | Sphinx | Oracle | read-only (`read`, `grep`, `glob`, `find`, `read_skill`) + `ask` |
 | Calico | Designer (UI/TUI) | `read`, `write`, `edit`, `grep`, `glob`, `find`, `read_skill` (no `bash`) |

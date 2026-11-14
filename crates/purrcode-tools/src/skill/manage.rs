@@ -41,7 +41,7 @@ impl Tool for ManageSkillTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "manage_skill".to_string(),
-            description: "Manage procedural skills (create, patch, delete, list). Allows the agent to codify and self-improve repeatable workflows into .purrcode/skills/ (project) or ~/.purrcode/skills/ (global).".to_string(),
+            description: "Create, patch, delete, or list reusable procedural skills in .purrcode/skills/ (project) or ~/.purrcode/skills/ (global). Write skill descriptions as strict routing contracts stating both when to load and when NOT to load.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

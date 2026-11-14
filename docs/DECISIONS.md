@@ -15,7 +15,7 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
 | ADR-004 | Nama Binary CLI: `purrcode-ai` & Repo Publik | 2026-11-11 | ✅ Diterima |
 | ADR-005 | Model Default: Zero Hardcode, Konfigurasi Eksplisit via Custom Endpoint | 2026-11-11 | ✅ Diterima |
 | ADR-006 | Anti-Hilang-Konteks Subagent: Continuation ID + Handoff Files + Registry | 2026-11-11 | ✅ Diterima |
-| ADR-007 | Meowstro: Orchestrator Read-Only Ditegakkan Runtime Tanpa Write/Edit/Bash | 2026-11-11 | ✅ Diterima |
+| ADR-007 | Meowstro: Workflow Orchestrator (OMO-Aligned Hybrid, diamend dari Read-Only v0.1) | 2026-11-15 | ✅ Diamend |
 | ADR-008 | Preset Mode & Guardrail 3 Sumbu: Carrier (Strict), Tabby (Default), Oyen (God) | 2026-11-11 | ✅ Diterima |
 | ADR-009 | Preset Model Terpisah dari Mode: Free, Local, Premium, dan Custom User Files | 2026-11-11 | ✅ Diterima |
 | ADR-010 | Memori Default Markdown Minimal Tanpa Database Wajib | 2026-11-11 | ✅ Diterima |
@@ -49,9 +49,9 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
 - **Konteks:** Pada oh-my-opencode-slim, pencegahan hilang konteks hanya bergantung pada kepatuhan prompt LLM yang rapuh.
 - **Keputusan:** Harness menegakkan ID delegasi stabil (`purr_<id>`), penulisan file handoff (`brief.md` dan `result.md`), serta registry sesi JSON. Panggilan berulang ke ID yang sama akan melanjutkan child yang ada, bukan melakukan respawn.
 
-### ADR-007: Meowstro Orchestrator Read-Only
-- **Konteks:** Meowstro memegang konteks utama percakapan. Jika Meowstro menulis kode, diff dan error output akan memenuhi konteks dan memicu compaction yang merusak rencana kerja.
-- **Keputusan:** Tool set Meowstro dibatasi oleh harness pada saat pendaftaran tool: hanya memiliki akses `read`, `grep`, `glob`, `find`, `todo`, `ask`, dan `task`. Tool `write`, `edit`, dan `bash` tidak didaftarkan dan ditolak runtime jika dipanggil. Implementasi selalu didelegasikan ke Tinker.
+### ADR-007: Meowstro Workflow Orchestrator (OMO-Aligned Hybrid)
+- **Konteks:** Pada desain awal v0.1, Meowstro dibatasi read-only penuh. Dalam praktik penggunaan nyata, spawning subagent untuk perubahan kecil (< 20 baris) atau verifikasi langsung menimbulkan latensi cold-start dan pemborosan token yang tidak perlu.
+- **Keputusan (Amendemen 2026-11-15):** Meowstro memegang toolset penuh (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill`, `webfetch`, `websearch`) agar dapat melakukan verifikasi langsung dan edit bedah kecil saat konteks sudah dipegang, sementara pekerjaan multi-file/refaktor kompleks tetap didelegasikan ke subagent (`tinker`, `whisker`, `sphinx`, `calico`, `tuxeshadow`, `clowder`). Proteksi keamanan tetap ditegakkan melalui `ApprovalGate`, `SessionFileGuard` (read-before-edit), dan `Tuxeshadow`.
 
 ### ADR-008: Preset Mode 3 Sumbu (Carrier, Tabby, Oyen)
 - **Konteks:** Menghindari penggabungan antara level persetujuan (approval), batas konten (guardrail), dan isolasi sistem (sandbox).

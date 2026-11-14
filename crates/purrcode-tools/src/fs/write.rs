@@ -20,7 +20,7 @@ impl Tool for WriteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write".to_string(),
-            description: "Create or overwrite a complete UTF-8 file atomically".to_string(),
+            description: "Create a new UTF-8 file or replace a complete file atomically with diff preview. Prefer 'edit' for modifying existing files; if overwriting an existing file, you must read it first in the current session.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

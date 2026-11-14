@@ -146,7 +146,7 @@ dan kebersihan konteks:
 
 | Agen | Tool set (preset, ditegakkan runtime) |
 |---|---|
-| Meowstro | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill` |
+| Meowstro | Full suite: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill`, `webfetch`, `websearch` |
 | Whisker | `read`, `grep`, `glob`, `find`, `webfetch`, `websearch`, `read_skill` (read-only penuh) |
 | Sphinx | `read`, `grep`, `glob`, `find`, `ask`, `read_skill` |
 | Calico | `read`, `write`, `edit`, `grep`, `glob`, `find`, `read_skill` (tanpa `bash`) |
@@ -276,15 +276,11 @@ Default v0.1 — `MarkdownMemory`:
 sessions/<id>.jsonl     # transkrip sesi (bukan recall — jejak audit + resume)
 ```
 
-- `MEMORY.md` dimuat di setiap turn (dibatasi token, ala Hermes 2200/1375 karakter
-  untuk konteks yang disuntik — angka persisnya di-tuning saat implementasi).
-  Hot-reload via mtime (ala PicoClaw): edit manual langsung berlaku tanpa restart.
+- `MEMORY.md` dimuat di setiap turn (`SOUL.md` 1375 char, `USER.md` 1375 char, `MEMORY.md` 2200 char, `.purrcode/MEMORY.md` 2200 char), ditambah pemuatan otomatis instruksi repositori (`.purrcode/AGENTS.md`, `AGENTS.md`, `CLAUDE.md` hingga 3600 char). Hot-reload via mtime (ala PicoClaw): edit manual langsung berlaku tanpa restart.
 - Recall default = grep sederhana atas file MD (tanpa index). Cukup untuk
   v0.1; bila terbukti kurang, naik kelas lewat plugin, bukan dengan mengganti
   default.
-- `/compact`: model merangkum sesi jadi ringkasan + fakta baru ke `MEMORY.md`,
-  dengan instruksi fokus dari user; compaction **non-destruktif** (JSONL asli
-  dipertahankan, ala pi: reserve/keep token).
+- `/compact` & auto-compact: `compact_messages_with_provider` (dengan fallback deterministik `compact_messages`) menghasilkan ringkasan terstruktur (permintaan user, file tersentuh, perintah bash, error/veto, catatan progres + `<system-reminder>` anti-halusinasi untuk hasil tool yang dibersihkan) sembari menjaga pasangan `Assistant(tool_calls)`–`Tool` tetap utuh dan JSONL asli non-destruktif; `AgentLoop` memicu auto-compaction otomatis saat estimasi token melewati `context_window * auto_compact_threshold`.
 
 Memory sebagai modul (bukan hardcode):
 

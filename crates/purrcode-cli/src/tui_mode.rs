@@ -234,6 +234,7 @@ pub(crate) async fn run_tui(
         None
     };
 
+    let direct_compact_limit = purrcode_core::compute_auto_compact_limit(config, wire_model);
     let direct_loop = AgentLoop::new(provider.clone(), wire_model, Arc::new(tool_registry))
         .with_approval_requester(approval_requester.clone())
         .with_policy_gate(policy_gate)
@@ -242,7 +243,8 @@ pub(crate) async fn run_tui(
         .with_steering_queue(steering_queue.clone())
         .with_cancel_flag(cancel_flag.clone())
         .with_yolo(yolo)
-        .with_live_streaming(config.ui.streaming_mode == "live");
+        .with_live_streaming(config.ui.streaming_mode == "live")
+        .with_auto_compact_limit(direct_compact_limit);
 
     let tool_context = ToolContext {
         session_id: session_id.clone(),
@@ -269,12 +271,7 @@ pub(crate) async fn run_tui(
     let mut system_prompt = if use_orchestrator {
         MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(&workspace_root))
     } else {
-        let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
-        if !skills_index.is_empty() {
-            base.push_str("\n\n");
-            base.push_str(&skills_index);
-        }
-        base
+        purrcode_core::build_direct_system_prompt(&skills_index, Some(&workspace_root))
     };
     if !mem_context.is_empty() {
         system_prompt.push_str("\n\n");
@@ -564,6 +561,10 @@ pub(crate) async fn run_tui(
                                 n == "read_skill" || active_mode_preset.tools.iter().any(|a| a == n)
                             });
                         }
+                        let compact_limit = purrcode_core::compute_auto_compact_limit(
+                            &config_worker,
+                            &active_wire_model,
+                        );
                         direct_loop = AgentLoop::new(
                             active_provider.clone(),
                             &active_wire_model,
@@ -576,7 +577,8 @@ pub(crate) async fn run_tui(
                         .with_steering_queue(steering_worker.clone())
                         .with_cancel_flag(cancel_worker.clone())
                         .with_yolo(yolo)
-                        .with_live_streaming(config_worker.ui.streaming_mode == "live");
+                        .with_live_streaming(config_worker.ui.streaming_mode == "live")
+                        .with_auto_compact_limit(compact_limit);
                     }
                 } else {
                     let _ =
@@ -631,6 +633,10 @@ pub(crate) async fn run_tui(
                                 n == "read_skill" || active_mode_preset.tools.iter().any(|a| a == n)
                             });
                         }
+                        let compact_limit = purrcode_core::compute_auto_compact_limit(
+                            &config_worker,
+                            &active_wire_model,
+                        );
                         direct_loop = AgentLoop::new(
                             active_provider.clone(),
                             &active_wire_model,
@@ -643,7 +649,8 @@ pub(crate) async fn run_tui(
                         .with_steering_queue(steering_worker.clone())
                         .with_cancel_flag(cancel_worker.clone())
                         .with_yolo(yolo)
-                        .with_live_streaming(config_worker.ui.streaming_mode == "live");
+                        .with_live_streaming(config_worker.ui.streaming_mode == "live")
+                        .with_auto_compact_limit(compact_limit);
                     }
                 }
                 continue;

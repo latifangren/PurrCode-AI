@@ -125,6 +125,8 @@ impl MeowstroOrchestrator {
         let _ = tool_reg.register(Arc::new(purrcode_tools::search::GlobTool));
         let _ = tool_reg.register(Arc::new(purrcode_tools::search::FindTool));
         let _ = tool_reg.register(Arc::new(purrcode_tools::coordination::TodoTool::new()));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::web::WebfetchTool::new()));
+        let _ = tool_reg.register(Arc::new(purrcode_tools::web::WebsearchTool::new()));
         let ask_tool = match ask_requester.clone() {
             Some(req) => purrcode_tools::coordination::AskTool::with_requester(req),
             None => purrcode_tools::coordination::AskTool::new(),
@@ -165,6 +167,9 @@ impl MeowstroOrchestrator {
             .as_ref()
             .map(|c| c.ui.streaming_mode == "live")
             .unwrap_or(true);
+        let auto_compact_limit = config
+            .as_ref()
+            .and_then(|c| purrcode_core::compute_auto_compact_limit(c, &model_str));
         if let Some(ref pd) = plugin_dispatcher {
             task_tool = task_tool.with_plugin_dispatcher(pd.clone());
         }
@@ -180,7 +185,8 @@ impl MeowstroOrchestrator {
 
         let mut agent_loop = AgentLoop::new(provider, model_str, Arc::new(tool_reg))
             .with_yolo(yolo)
-            .with_live_streaming(live_streaming);
+            .with_live_streaming(live_streaming)
+            .with_auto_compact_limit(auto_compact_limit);
         if let Some(spec) = meowstro_spec {
             agent_loop = agent_loop
                 .with_temperature(spec.temperature)
@@ -221,26 +227,15 @@ impl MeowstroOrchestrator {
 
 const MEOWSTRO_MD: &str = include_str!("../../../agents/meowstro.md");
 
-fn detect_git_branch_name(workspace_root: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(workspace_root.join(".git").join("HEAD")).ok()?;
-    let trimmed = head.trim();
-    if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
-        Some(branch.to_string())
-    } else if !trimmed.is_empty() {
-        Some(trimmed.chars().take(12).collect())
-    } else {
-        None
-    }
-}
-
 impl MeowstroOrchestrator {
     pub fn system_prompt(skills_index: &str) -> String {
         Self::system_prompt_with_workspace(skills_index, None)
     }
 
     /// Builds Meowstro's system prompt from the embedded `agents/meowstro.md` spec
-    /// (or `.purrcode/agents/meowstro.md` override), plus structured `<environment>`
-    /// context and the discovered skills index.
+    /// (or `.purrcode/agents/meowstro.md` override), combined with the shared core
+    /// engineering harness contract, structured `<environment>` context, and the
+    /// discovered skills index.
     pub fn system_prompt_with_workspace(
         skills_index: &str,
         workspace_root: Option<&Path>,
@@ -265,16 +260,10 @@ impl MeowstroOrchestrator {
                 .to_string()
         });
 
-        if let Some(ws) = workspace_root {
-            let branch = detect_git_branch_name(ws).unwrap_or_else(|| "unknown".to_string());
-            prompt.push_str(&format!(
-                "\n\n<environment>\nworkspace_root: {}\nos: {}\narch: {}\ngit_branch: {}\n</environment>",
-                ws.display(),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                branch,
-            ));
-        }
+        prompt.push_str("\n\n");
+        prompt.push_str(purrcode_core::CORE_HARNESS_CONTRACT);
+        prompt.push_str("\n\n");
+        prompt.push_str(&purrcode_core::format_environment_block(workspace_root));
 
         if !skills_index.is_empty() {
             prompt.push_str("\n\n");

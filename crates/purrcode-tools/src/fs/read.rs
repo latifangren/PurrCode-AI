@@ -20,7 +20,7 @@ impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read".to_string(),
-            description: "Read a UTF-8 text file window with line numbers".to_string(),
+            description: "Read a UTF-8 text file window formatted with 'LINE|CONTENT' line numbers and return its FNV-1a content_hash in metadata. Prefer this over shell commands (cat/head/tail); use offset/limit to inspect targeted slices, and call read before editing or overwriting any existing file.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

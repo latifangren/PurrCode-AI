@@ -30,7 +30,7 @@ impl Tool for ReadSkillTool {
         ToolDefinition {
             name: "read_skill".to_string(),
             description:
-                "Load the full instructions and guidelines for one available skill by name"
+                "Load the full instructions for an available skill by name before executing work covered by its routing description in <available-skills>."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

@@ -147,15 +147,14 @@ Event bus murni, agent loop berulang, dan penyimpanan sesi.
 crates/purrcode-core/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs              # Entry point purrcode-core
-    ├── bus.rs              # EventBus broadcast async (tokio::sync::broadcast)
-    ├── loop_engine.rs      # Agent loop murni (run_turn, max_steps guard, interrupt) (< 600 baris)
-    ├── context_builder.rs  # Penyusun prompt (system + memory + history + tools)
-    ├── session/
-    │   ├── mod.rs          # SessionManager facade
-    │   ├── store.rs        # Dual-store: append-only JSONL + SQLite session index
-    │   ├── model.rs        # Session, Turn, Message types
-    │   └── compaction.rs   # Non-destructive compaction (reserve recent tokens)
+    ├── lib.rs              # Entry point purrcode-core & EventBus
+    ├── harness_prompt.rs   # CORE_HARNESS_CONTRACT, <environment>, & auto-compact limit helper
+    ├── loop_engine/
+    │   ├── mod.rs          # AgentLoop core turn engine, streaming retry, auto-compact trigger
+    │   ├── batch.rs        # Parallel auto-allowed read-only batching & sequential mutating dispatch
+    │   ├── harness.rs      # SessionFileGuard (read-before-edit), FailureLoopTracker, workspace confinement
+    │   └── tests.rs        # Unit & concurrency tests untuk AgentLoop
+    ├── session.rs          # SessionStore JSONL, token estimation, & structured compaction
     └── steering.rs         # Steering queue (pesan susulan user di tengah turn)
 ```
 
@@ -227,11 +226,7 @@ Default minimal tanpa database wajib, recall grep, hot-reload mtime.
 crates/purrcode-memory/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs              # MemoryService facade
-    ├── markdown.rs         # MarkdownMemory (baca/tulis MEMORY.md, USER.md, SOUL.md) (< 500 baris)
-    ├── watcher.rs          # Hot-reload via file mtime tracking
-    ├── recall.rs           # Simple keyword/grep recall engine over markdown
-    └── fts_sqlite.rs       # Plugin opsional: SQLite FTS5 backend (bila diaktifkan)
+    ├── lib.rs              # MarkdownMemory (SOUL.md, USER.md, MEMORY.md, .purrcode/MEMORY.md + auto-load AGENTS.md/CLAUDE.md)
 ```
 
 ### 3.8 `crates/purrcode-orchestrator/` (Meowstro & The Clowder)
@@ -241,13 +236,13 @@ crates/purrcode-orchestrator/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              # Orchestrator facade
-    ├── meowstro.rs         # Meowstro orchestrator loop (read-only + delegation guard) (< 500 baris)
-    ├── clowder.rs          # The Clowder team definitions (Whisker, Sphinx, Calico, Tinker, Tuxeshadow, Clowder)
-    ├── subagent/
-    │   ├── mod.rs          # Subagent runner
-    │   ├── continuation.rs # Continuation ID generator & resolver (purr_<id>)
-    │   ├── handoff.rs      # Handoff files generator: brief.md & result.md
-    │   └── registry.rs     # Subagent state registry (subagents/<id>.json)
+    ├── meowstro.rs         # Meowstro hybrid orchestrator (full suite + task delegation + harness/env prompt)
+    ├── shadow.rs           # Tuxeshadow independent plan/diff auditor
+    ├── task/
+    │   ├── mod.rs          # TaskTool delegator & continuation registry (purr_<id>)
+    │   ├── prompts.rs      # Embedded agents/*.md loader + .purrcode/agents/ overrides + CORE_HARNESS_CONTRACT
+    │   ├── inference.rs    # Role model/reasoning/temperature resolution
+    │   └── result.rs       # Handoff brief.md & result.md writers
     └── workgraph.rs        # DAG task scheduler & serialisasi workgraph.json
 ```
 

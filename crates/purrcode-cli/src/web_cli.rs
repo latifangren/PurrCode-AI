@@ -171,12 +171,7 @@ pub async fn run_web_command(
     let mut system_prompt = if use_orchestrator {
         MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(workspace_root))
     } else {
-        let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
-        if !skills_index.is_empty() {
-            base.push_str("\n\n");
-            base.push_str(&skills_index);
-        }
-        base
+        purrcode_core::build_direct_system_prompt(&skills_index, Some(workspace_root))
     };
     if !mem_context.is_empty() {
         system_prompt.push_str("\n\n");
@@ -712,6 +707,8 @@ impl WebState {
                 tool_registry
                     .retain(|name| name == "read_skill" || mode_tools.iter().any(|a| a == name));
             }
+            let direct_compact_limit =
+                purrcode_core::compute_auto_compact_limit(&turn_config, &turn_wire_model);
             let mut loop_inst =
                 AgentLoop::new(provider, turn_wire_model.clone(), Arc::new(tool_registry))
                     .with_approval_requester(approval.clone())
@@ -720,7 +717,8 @@ impl WebState {
                     .with_plugin_dispatcher(self.plugin_dispatcher.clone())
                     .with_event_bus(session.bus.clone())
                     .with_live_streaming(turn_config.ui.streaming_mode == "live")
-                    .with_yolo(self.yolo);
+                    .with_yolo(self.yolo)
+                    .with_auto_compact_limit(direct_compact_limit);
             if let Some(spec) = meowstro_spec {
                 loop_inst = loop_inst
                     .with_temperature(spec.temperature)

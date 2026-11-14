@@ -227,12 +227,14 @@ pub(crate) async fn run_one_shot(
         None
     };
 
+    let direct_compact_limit = purrcode_core::compute_auto_compact_limit(config, wire_model);
     let agent_loop = AgentLoop::new(provider, wire_model, Arc::new(tool_registry))
         .with_approval_requester(cli_approver)
         .with_policy_gate(policy_gate)
         .with_audit_sink(audit_sink)
         .with_plugin_dispatcher(plugin_dispatcher.clone())
-        .with_yolo(yolo);
+        .with_yolo(yolo)
+        .with_auto_compact_limit(direct_compact_limit);
 
     let mut in_reasoning = false;
     let mut stdout = std::io::stdout();
@@ -247,12 +249,7 @@ pub(crate) async fn run_one_shot(
     let mut system_prompt = if use_orchestrator {
         MeowstroOrchestrator::system_prompt_with_workspace(&skills_index, Some(workspace_root))
     } else {
-        let mut base = String::from("You are PurrCode AI, a modular and highly capable AI assistant. Answer user queries accurately. When you need information about files or want to execute commands, call the appropriate tools.");
-        if !skills_index.is_empty() {
-            base.push_str("\n\n");
-            base.push_str(&skills_index);
-        }
-        base
+        purrcode_core::build_direct_system_prompt(&skills_index, Some(workspace_root))
     };
     if !mem_context.is_empty() {
         system_prompt.push_str("\n\n");

@@ -36,11 +36,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The repository is split into 12 modular crates with a one-way dependency chain:
 1. `purrcode-api`: Base contracts, error types (`PurrError`, `Result`), tool traits (`Tool`, `ToolContext`), and event enums (`AgentEvent`).
 2. `purrcode-config`: Configuration loader, zero-hardcoded dynamic provider/model resolution, mode presets (`presets/*.jsonc`), and model presets (`model-presets/*.jsonc`).
-3. `purrcode-core`: Agent execution engine (`AgentLoop`), steering queue, cancellation flags, and session JSONL logging.
+3. `purrcode-core`: Agent execution engine (`AgentLoop`, parallel read-only batching, `SessionFileGuard` read-before-edit guard, `FailureLoopTracker`), shared `CORE_HARNESS_CONTRACT` (`harness_prompt`), steering queue, cancellation flags, and non-destructive structured session compaction (`SessionStore`).
 4. `purrcode-provider`: Model provider integrations (OpenAI-compatible streaming, Ollama, vLLM, reasoning tokens `reasoning_content`/`thought`, and fallback routing).
 5. Domain Crates:
-   - `purrcode-tools`: Core 13 tools (fs: `read`, `write`, `edit`; exec: `bash`; search: `grep`, `glob`, `find`; coord: `ask`, `todo`; web: `webfetch`, `websearch`; skill: `read_skill`, `manage_skill`).
-   - `purrcode-memory`: Markdown-based persistent memory (`MEMORY.md`, `USER.md`, `SOUL.md`), zero external DB requirement.
+   - `purrcode-tools`: Core 13 tools (fs: `read`, `write`, `edit`; exec: `bash`; search: `grep`, `glob`, `find`; coord: `ask`, `todo`; web: `webfetch`, `websearch`; skill: `read_skill`, `manage_skill`) with contract-rich tool descriptions.
+   - `purrcode-memory`: Markdown-based persistent memory (`MEMORY.md`, `USER.md`, `SOUL.md`, `.purrcode/MEMORY.md`) plus automatic project-instruction loading (`.purrcode/AGENTS.md`, `AGENTS.md`, `CLAUDE.md`), zero external DB requirement.
    - `purrcode-approval`: Fail-closed policy gate (`ApprovalGate`), policy tiers, regex path rules, and approval timeout handlers.
    - `purrcode-plugin`: Plugin manifest loader (`plugin.yaml`), lifecycle hook dispatcher (`pre_tool_use`, `post_tool_use`), and default-deny secret scrubbing. `network`/`filesystem` capabilities are declarations for the v0.3 OS sandbox, not enforced in v0.1 (process plugins run with full user rights).
 6. Upper Layer Crates:
@@ -51,10 +51,11 @@ The repository is split into 12 modular crates with a one-way dependency chain:
    - `purrcode-cli`: CLI argument parsing (Clap), onboard wizard, interactive TUI lifecycle, and one-shot execution.
 
 ### 3. The Clowder Multi-Agent Invariants
-- **Meowstro Never Writes Code:** Meowstro is strictly a read-only orchestrator (`read`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`). Meowstro **never** has `write`, `edit`, `bash`, or `manage_skill` in his toolset. Implementation is always delegated to subagents.
-- **Tinker is the Fixer/Implementer:** Tinker receives the full implementation toolset (including `write`, `edit`, `bash`, and `manage_skill`).
+- **Meowstro is the OMO-Aligned Workflow Orchestrator:** Meowstro holds the full suite (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`, `manage_skill`, `webfetch`, `websearch`) for planning, verification, and small surgical edits (<20 lines) when holding full context, while delegating multi-file refactors, deep exploration, architecture review, and UI work to subagents.
+- **Tinker is the Fixer/Implementer:** Tinker receives the full implementation toolset (including `write`, `edit`, `bash`, and `manage_skill`, without `task`).
 - **Subagents Never Lose Context:** Every delegated subagent receives a persistent continuation ID (`purr_<id>`) and handoff files (`brief.md` + `result.md`). Subagents resume the existing ID rather than respawning. Depth is strictly 1 (no nested subagents in v0.1).
-- **Tuxeshadow Shadow Auditor:** Evaluates plan JSON and diff previews before execution; mandatory for cron jobs and replanning.
+- **Tuxeshadow Shadow Auditor:** Evaluates plan JSON and diff previews before execution (read-only); mandatory for cron jobs and replanning.
+- **Shared Engineering Harness:** Both direct mode and orchestrated Clowder roles inherit `CORE_HARNESS_CONTRACT` (`harness_prompt.rs`) plus `<environment>` context, and `AgentLoop` enforces runtime read-before-edit (`SessionFileGuard`), consecutive failure anti-loop reminders (`FailureLoopTracker`), parallel auto-allowed read batching, and token-threshold auto-compaction.
 
 ### 4. Safety & Operational Constraints
 - **Fail-Closed Supervised Approvals:** Supervised permissions follow `deny > ask > allow`. Deny always wins, and approval timeout defaults to deny.

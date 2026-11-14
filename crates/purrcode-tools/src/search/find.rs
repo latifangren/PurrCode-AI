@@ -20,7 +20,7 @@ impl Tool for FindTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "find".to_string(),
-            description: "Find files and directories by filename or substring".to_string(),
+            description: "Find workspace files and directories by case-insensitive filename or substring. Prefer this over shell find/ls when locating files by name.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

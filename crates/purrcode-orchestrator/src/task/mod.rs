@@ -304,7 +304,7 @@ impl Tool for TaskTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "task".to_string(),
-            description: "Delegate a task to a specialized subagent (tinker, whisker, sphinx, calico, tuxeshadow, clowder). Preserves context via continuation ID.".to_string(),
+            description: "Delegate a self-contained subtask to a specialized subagent (tinker, whisker, sphinx, calico, tuxeshadow, clowder) with persistent context via continuation ID ('purr_<id>'). Do NOT delegate trivial 1-3 tool lookups or edits you can inspect directly; when delegating, state the goal, known files, ruled-out paths, and verification criteria clearly in 'brief', resume existing continuation IDs rather than respawning, and never fabricate or predict results.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

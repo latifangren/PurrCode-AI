@@ -38,7 +38,7 @@ impl Tool for WebsearchTool {
         ToolDefinition {
             name: "websearch".to_string(),
             description:
-                "Search the web for programming questions, library documentation, and error solutions"
+                "Search the public web for external documentation, crate/library references, or error diagnostics when local repository sources are insufficient."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
