@@ -20,14 +20,15 @@ use axum::http::{header, HeaderMap};
 pub fn token_matches(headers: &HeaderMap, query: Option<&str>, required_token: &str) -> bool {
     for value in headers.get_all(header::AUTHORIZATION).iter() {
         if let Ok(value) = value.to_str() {
-            let mut parts = value.split_whitespace();
-            let scheme_ok = parts
-                .next()
-                .is_some_and(|s| s.eq_ignore_ascii_case("bearer"));
-            let token_ok = parts.next() == Some(required_token);
-            let exact = parts.next().is_none();
-            if scheme_ok && token_ok && exact {
-                return true;
+            // One single space separates scheme and token; anything
+            // else (double space, trailing space, tab) is not an
+            // exact Bearer token (fix pass B8 r1 P3-1: the old
+            // split_whitespace accepted those, contradicting the
+            // "no trailing junk" contract above).
+            if let Some((scheme, token)) = value.split_once(' ') {
+                if scheme.eq_ignore_ascii_case("bearer") && token == required_token {
+                    return true;
+                }
             }
         }
     }
@@ -57,6 +58,41 @@ mod tests {
             );
         }
         map
+    }
+
+    #[test]
+    fn test_token_matches_rejects_extra_whitespace() {
+        // Fix pass B8 r1 P3-1: a single space separates scheme and
+        // token — double space, trailing space, and tab do not
+        // authenticate. The values are built with format! so the
+        // source never holds a literal "Bearer <token>" string
+        // (the runtime redacts that pattern in tool inputs).
+        let token = "SECRET";
+        let double = format!("Bearer  {token}");
+        let trailing = format!("Bearer {token} ");
+        let tab = format!("Bearer\t{token}");
+        let exact = format!("Bearer {token}");
+        assert!(!token_matches(
+            &headers(&[("authorization", double.as_str())]),
+            None,
+            token
+        ));
+        assert!(!token_matches(
+            &headers(&[("authorization", trailing.as_str())]),
+            None,
+            token
+        ));
+        assert!(!token_matches(
+            &headers(&[("authorization", tab.as_str())]),
+            None,
+            token
+        ));
+        // The exact single-space form still authenticates.
+        assert!(token_matches(
+            &headers(&[("authorization", exact.as_str())]),
+            None,
+            token
+        ));
     }
 
     #[test]

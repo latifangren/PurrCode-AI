@@ -500,3 +500,51 @@ async fn test_memory_save_nonstring_file_is_400() {
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_memory_save_malformed_body_is_audited() {
+    // Fix pass B8 r1 P2-1: a malformed JSON body audits as deny
+    // with "(unknown)", like the B8 prompt/approval handlers.
+    let dir = test_dir("memory-save-malformed");
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _ch, cancel_tx, handle) =
+        start_server_with_skill_registry(None, dir.clone(), None, None, None, Some(Arc::new(sink)))
+            .await;
+    let resp = post(port, "/api/memory", "{not json");
+    assert!(resp.contains("400 Bad Request"), "resp: {resp}");
+    let got = events.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "events: {got:?}");
+    assert_eq!(got[0].0, "memory_save");
+    assert_eq!(got[0].1, "(unknown)");
+    assert_eq!(got[0].2, "deny");
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_skill_create_malformed_body_is_audited() {
+    // Fix pass B8 r1 P2-1: same rule for skill writes — a
+    // malformed body audits as deny with "(unknown)".
+    let dir = test_dir("skill-create-malformed");
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _ch, cancel_tx, handle) = start_server_with_skill_registry(
+        None,
+        dir.clone(),
+        None,
+        None,
+        Some(seed_registry()),
+        Some(Arc::new(sink)),
+    )
+    .await;
+    let resp = post(port, "/api/skills/create", "{not json");
+    assert!(resp.contains("400 Bad Request"), "resp: {resp}");
+    let got = events.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "events: {got:?}");
+    assert_eq!(got[0].0, "skill_create");
+    assert_eq!(got[0].1, "(unknown)");
+    assert_eq!(got[0].2, "deny");
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}

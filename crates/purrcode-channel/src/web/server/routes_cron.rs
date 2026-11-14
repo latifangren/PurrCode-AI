@@ -42,7 +42,17 @@ fn cron_error_status(e: &CronError) -> StatusCode {
     }
 }
 
-fn no_registry() -> (StatusCode, Json<Value>) {
+/// 503 when no registry is wired. POST handlers audit it (fix
+/// pass B8 r1 P3-2): a miswired server refusing a write must
+/// leave a trace like any other refused POST.
+fn no_registry(state: &Arc<WebState>, event: &str) -> (StatusCode, Json<Value>) {
+    record_admin(
+        state,
+        event,
+        "(unknown)",
+        "deny",
+        "cron registry not configured",
+    );
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(json!({ "error": "cron registry not configured" })),
@@ -101,8 +111,9 @@ fn allow_field(val: &Value) -> Result<Option<Vec<String>>, (StatusCode, Json<Val
 /// as itself (truncated), any other present value as its JSON
 /// rendering, a missing key as the caller-supplied label, an
 /// empty string as "(empty <key>)". A refusal whose body
-/// carries an attributable value belongs in the audit log; only
-/// a malformed body has nothing to attribute.
+/// carries an attributable value belongs in the audit log; a
+/// malformed body audits as "(unknown)" (fix pass B8 r1 P2-1 —
+/// the B5 r1 P3-3 carve-out no longer stands).
 fn audit_name(val: &Value, key: &str, missing: &str) -> String {
     let raw: String = match val.get(key) {
         Some(Value::String(s)) => s.chars().take(80).collect(),
@@ -128,7 +139,10 @@ type NeedleError = (Option<String>, (StatusCode, Json<Value>));
 fn needle_from_body(body: &Bytes) -> Result<String, NeedleError> {
     let err = |msg: &str| (StatusCode::BAD_REQUEST, Json(json!({ "error": msg })));
     let Ok(val) = serde_json::from_slice::<Value>(body) else {
-        return Err((None, err("malformed JSON body")));
+        // Fix pass B8 r1 P2-1: a malformed body audits as deny
+        // with "(unknown)" (the caller audits whenever the name
+        // is Some) — like the B8 prompt/approval handlers.
+        return Err((Some("(unknown)".to_string()), err("malformed JSON body")));
     };
     for key in ["id", "name"] {
         if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
@@ -149,9 +163,9 @@ fn needle_from_body(body: &Bytes) -> Result<String, NeedleError> {
 }
 
 /// Audit a rejected cron request when it names the job (the B5
-/// r1 P3-3 rule): a refusal the client can attribute to a job
-/// belongs in the audit log; only a nameless or malformed body
-/// has nothing to attribute.
+/// r1 P3-3 rule, extended by fix pass B8 r1 P2-1): a refusal
+/// the client can attribute to a job belongs in the audit log;
+/// a malformed body audits as "(unknown)", not silence.
 fn audit_rejected(state: &Arc<WebState>, event: &str, name: &str, err: &(StatusCode, Json<Value>)) {
     let detail = err
         .1
@@ -169,13 +183,17 @@ pub async fn cron_parse(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.cron_registry else {
-        return no_registry();
+        return no_registry(&state, "cron_parse");
     };
     let Ok(val) = serde_json::from_slice::<Value>(&body) else {
-        return (
+        // Fix pass B8 r1 P2-1: a malformed body audits as deny
+        // with "(unknown)", like the B8 prompt/approval handlers.
+        let err = (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "malformed JSON body" })),
         );
+        audit_rejected(&state, "cron_parse", "(unknown)", &err);
+        return err;
     };
     let schedule = match required_str_field(&val, "schedule") {
         Ok(s) => s,
@@ -211,13 +229,16 @@ pub async fn cron_add(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.cron_registry else {
-        return no_registry();
+        return no_registry(&state, "cron_add");
     };
     let Ok(val) = serde_json::from_slice::<Value>(&body) else {
-        return (
+        // Fix pass B8 r1 P2-1: see cron_parse.
+        let err = (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "malformed JSON body" })),
         );
+        audit_rejected(&state, "cron_add", "(unknown)", &err);
+        return err;
     };
     let input = match parse_add_body(&val) {
         Ok(input) => input,
@@ -285,7 +306,7 @@ async fn cron_toggle(
         "cron_disable"
     };
     let Some(reg) = &state.cron_registry else {
-        return no_registry();
+        return no_registry(&state, event);
     };
     let needle = match needle_from_body(&body) {
         Ok(n) => n,
@@ -347,7 +368,7 @@ pub async fn cron_remove(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.cron_registry else {
-        return no_registry();
+        return no_registry(&state, "cron_remove");
     };
     let needle = match needle_from_body(&body) {
         Ok(n) => n,

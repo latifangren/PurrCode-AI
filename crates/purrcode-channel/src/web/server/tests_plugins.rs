@@ -284,3 +284,42 @@ async fn test_plugins_without_registry() {
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_plugins_malformed_bodies_are_audited() {
+    // Fix pass B8 r1 P2-1: a malformed JSON body (or a
+    // non-string `name`) audits as deny with "(unknown)", like
+    // the B8 prompt/approval handlers.
+    let dir = test_dir("plugins-malformed");
+    let registry: Arc<dyn PluginRegistry> =
+        Arc::new(FakeRegistry::new(vec![info("echo-hook", false, true)]));
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _reg, cancel_tx, handle) = start_server_with_registry(
+        None,
+        dir.clone(),
+        None,
+        Some(registry),
+        Some(Arc::new(sink)),
+    )
+    .await;
+    for path in ["/api/plugins/mount", "/api/plugins/unmount"] {
+        let resp = post(port, path, "{not json");
+        assert!(resp.contains("400 Bad Request"), "{path}: {resp}");
+        let resp = post(port, path, r#"{"name": 42}"#);
+        assert!(
+            resp.contains("400 Bad Request"),
+            "{path} non-string: {resp}"
+        );
+    }
+    let got = events.lock().unwrap().clone();
+    assert_eq!(got.len(), 4, "events: {got:?}");
+    assert!(got
+        .iter()
+        .any(|(e, n, d, _)| { e == "plugin_mount" && n == "(unknown)" && d == "deny" }));
+    assert!(got
+        .iter()
+        .any(|(e, n, d, _)| { e == "plugin_unmount" && n == "(unknown)" && d == "deny" }));
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}

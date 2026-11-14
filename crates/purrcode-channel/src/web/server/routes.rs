@@ -306,18 +306,32 @@ fn plugin_mount_status(err: &PluginMountError) -> StatusCode {
 }
 
 /// Read the `{"name": ...}` body of a mount/unmount request, in
-/// the same hand-rolled style as `/api/prompt`.
-fn plugin_name_from_body(body: &Bytes) -> std::result::Result<String, (StatusCode, Json<Value>)> {
+/// the same hand-rolled style as `/api/prompt`. The error carries
+/// an optional audit name: a malformed body or a non-string
+/// `name` audits as deny with "(unknown)" (fix pass B8 r1 P2-1 —
+/// the same rule the B8 prompt/approval handlers apply). A named
+/// `type` alias (not a nested tuple spelled out in the
+/// signature) keeps clippy's `type_complexity` lint quiet — the
+/// same trap as the B6 r3 P1 fix in `routes_cron.rs`.
+type PluginNameError = (Option<String>, (StatusCode, Json<Value>));
+
+fn plugin_name_from_body(body: &Bytes) -> std::result::Result<String, PluginNameError> {
     let Ok(val) = serde_json::from_slice::<Value>(body) else {
         return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "malformed JSON body" })),
+            Some("(unknown)".to_string()),
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "malformed JSON body" })),
+            ),
         ));
     };
     let Some(name) = val.get("name").and_then(|v| v.as_str()) else {
         return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "name must be a string" })),
+            Some("(unknown)".to_string()),
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "name must be a string" })),
+            ),
         ));
     };
     Ok(name.to_string())
@@ -349,6 +363,14 @@ pub async fn plugins_mount(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.plugin_registry else {
+        // Fix pass B8 r1 P3-2: a refused POST leaves a trace.
+        record_admin(
+            &state,
+            "plugin_mount",
+            "(unknown)",
+            "deny",
+            "plugin registry not configured",
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "plugin registry not configured" })),
@@ -356,7 +378,17 @@ pub async fn plugins_mount(
     };
     let name = match plugin_name_from_body(&body) {
         Ok(n) => n,
-        Err(e) => return e,
+        Err((audit, e)) => {
+            if let Some(name) = audit {
+                let detail =
+                    e.1 .0
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("rejected request body");
+                record_admin(&state, "plugin_mount", &name, "deny", detail);
+            }
+            return e;
+        }
     };
     match reg.mount_plugin(&name).await {
         Ok(info) => {
@@ -393,6 +425,14 @@ pub async fn plugins_unmount(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.plugin_registry else {
+        // Fix pass B8 r1 P3-2: a refused POST leaves a trace.
+        record_admin(
+            &state,
+            "plugin_unmount",
+            "(unknown)",
+            "deny",
+            "plugin registry not configured",
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "plugin registry not configured" })),
@@ -400,7 +440,17 @@ pub async fn plugins_unmount(
     };
     let name = match plugin_name_from_body(&body) {
         Ok(n) => n,
-        Err(e) => return e,
+        Err((audit, e)) => {
+            if let Some(name) = audit {
+                let detail =
+                    e.1 .0
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("rejected request body");
+                record_admin(&state, "plugin_unmount", &name, "deny", detail);
+            }
+            return e;
+        }
     };
     match reg.unmount_plugin(&name).await {
         Ok(info) => {

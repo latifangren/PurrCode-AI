@@ -98,6 +98,15 @@ pub async fn memory_save(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Ok(val) = serde_json::from_slice::<Value>(&body) else {
+        // Fix pass B8 r1 P2-1: a malformed body audits as deny
+        // with "(unknown)", like the B8 prompt/approval handlers.
+        record_admin(
+            &state,
+            "memory_save",
+            "(unknown)",
+            "deny",
+            "malformed JSON body",
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "malformed JSON body" })),

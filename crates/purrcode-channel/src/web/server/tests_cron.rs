@@ -197,8 +197,9 @@ async fn test_cron_parse_preview() {
 async fn test_cron_parse_nameless_failures_are_audited() {
     // Fix pass B6 r1 P3-5: a missing or non-string schedule
     // used to escape the audit (only failures carrying a
-    // schedule string were recorded). A malformed body still
-    // has nothing to attribute and stays unaudited.
+    // schedule string were recorded). A malformed body audits
+    // as deny with "(unknown)" since fix pass B8 r1 P2-1 (see
+    // test_cron_malformed_bodies_are_audited).
     let dir = test_dir("cron-parse-audit");
     let reg = seed_registry();
     let (sink, events) = RecordingAuditSink::new();
@@ -367,6 +368,36 @@ async fn test_cron_endpoints_503_without_registry() {
         assert!(
             body.contains("503 Service Unavailable"),
             "{path} should be 503 without a registry: {body}"
+        );
+    }
+    let _ = cancel.send(true);
+    handle.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cron_malformed_bodies_are_audited() {
+    // Fix pass B8 r1 P2-1: a malformed JSON body audits as deny
+    // with "(unknown)" — the B5 r1 P3-3 carve-out ("nothing to
+    // attribute") no longer stands; an authenticated client
+    // probing with garbage leaves a trace. Covers parse, add,
+    // and the needle handlers (enable/remove).
+    let dir = test_dir("cron-malformed-audit");
+    let reg = seed_registry();
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _reg, cancel, handle) =
+        start_server_with_cron_registry(None, dir, Some(reg), Some(Arc::new(sink))).await;
+    for (path, event) in [
+        ("/api/cron/parse", "cron_parse"),
+        ("/api/cron/add", "cron_add"),
+        ("/api/cron/enable", "cron_enable"),
+        ("/api/cron/remove", "cron_remove"),
+    ] {
+        let resp = post(port, path, "{not json");
+        assert!(resp.contains("400 Bad Request"), "{path}: {resp}");
+        assert!(
+            has_event(&events, event, "(unknown)", "deny"),
+            "{event} malformed deny missing: {:?}",
+            events.lock().unwrap()
         );
     }
     let _ = cancel.send(true);

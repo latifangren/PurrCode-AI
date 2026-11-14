@@ -49,6 +49,20 @@ fn no_registry() -> (StatusCode, Json<Value>) {
     )
 }
 
+/// 503 for the POST handlers. A refused write leaves a trace
+/// (fix pass B8 r1 P3-2); the GET handlers keep the plain
+/// `no_registry()` above, because GETs are never audited.
+fn no_registry_audited(state: &Arc<WebState>, event: &str) -> (StatusCode, Json<Value>) {
+    record_admin(
+        state,
+        event,
+        "(unknown)",
+        "deny",
+        "skill registry not configured",
+    );
+    no_registry()
+}
+
 /// `GET /api/skills/all` — the full skill list.
 pub async fn skills_all(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.skill_registry else {
@@ -124,10 +138,13 @@ fn skill_write_from_body(
     })
 }
 
-/// Audit a rejected skill write when the request names the
-/// skill (fix pass B5 r1 P3-3): a refusal the client can
-/// attribute to a name belongs in the audit log; only a
-/// nameless or malformed body has nothing to attribute.
+/// Audit a rejected skill write (fix pass B5 r1 P3-3, extended
+/// by fix pass B8 r1 P2-1): a refusal the client can attribute
+/// to a name belongs in the audit log; a malformed body, or a
+/// body with no string `name`, audits as "(unknown)" — the same
+/// rule the B8 prompt/approval handlers apply. The B5 carve-out
+/// ("a nameless or malformed body has nothing to attribute") no
+/// longer stands.
 fn audit_rejected_parse(
     state: &Arc<WebState>,
     event: &str,
@@ -140,11 +157,11 @@ fn audit_rejected_parse(
         .get("error")
         .and_then(|e| e.as_str())
         .unwrap_or("rejected request body");
-    if let Ok(val) = serde_json::from_slice::<Value>(body) {
-        if let Some(name) = val.get("name").and_then(|n| n.as_str()) {
-            record_admin(state, event, name, "deny", detail);
-        }
-    }
+    let name = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "(unknown)".to_string());
+    record_admin(state, event, &name, "deny", detail);
 }
 /// `POST /api/skills/create {"name", "description", "content",
 /// "scope"?}` — 409 when a skill of that name already exists in
@@ -159,7 +176,7 @@ pub async fn skills_create(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.skill_registry else {
-        return no_registry();
+        return no_registry_audited(&state, "skill_create");
     };
     let fields = match skill_write_from_body(&body, true) {
         Ok(f) => f,
@@ -223,7 +240,7 @@ pub async fn skills_update(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.skill_registry else {
-        return no_registry();
+        return no_registry_audited(&state, "skill_update");
     };
     let fields = match skill_write_from_body(&body, true) {
         Ok(f) => f,
@@ -284,7 +301,7 @@ pub async fn skills_delete(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let Some(reg) = &state.skill_registry else {
-        return no_registry();
+        return no_registry_audited(&state, "skill_delete");
     };
     let fields = match skill_write_from_body(&body, false) {
         Ok(f) => f,
