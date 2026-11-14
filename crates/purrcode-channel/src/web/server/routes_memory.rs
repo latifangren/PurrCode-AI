@@ -116,11 +116,19 @@ pub async fn memory_save(
         Ok(f) => f,
         Err(e) => {
             // An unknown file name is attributable — audit the
-            // refusal (fix pass B5 r1 P3-3). A non-string `file`
-            // has no name to attribute, so it audits nothing.
-            if let Some(name) = val.get("file").and_then(|f| f.as_str()) {
-                record_admin(&state, "memory_save", name, "deny", "unknown memory file");
-            }
+            // refusal with that name (fix pass B5 r1 P3-3). A
+            // non-string `file` audits as "(unknown)" (fix pass
+            // B8 r2 P3-1): the B5 carve-out no longer stands.
+            let detail =
+                e.1 .0
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("rejected request body");
+            let name = val
+                .get("file")
+                .and_then(|f| f.as_str())
+                .unwrap_or("(unknown)");
+            record_admin(&state, "memory_save", name, "deny", detail);
             return e;
         }
     };

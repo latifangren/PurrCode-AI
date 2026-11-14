@@ -199,9 +199,9 @@ pub async fn cron_parse(
         Ok(s) => s,
         Err(e) => {
             // Audit every refusal (fix pass B6 r1 P3-5): the
-            // schedule value is attributed via `audit_name`;
-            // only a malformed body has nothing to attribute
-            // (the B5 r1 P3-3 rule).
+            // schedule value is attributed via `audit_name`.
+            // A malformed body never reaches this branch — it
+            // audits as "(unknown)" above (fix pass B8 r1 P2-1).
             let name = audit_name(&val, "schedule", "(missing schedule)");
             audit_rejected(&state, "cron_parse", &name, &e);
             return e;

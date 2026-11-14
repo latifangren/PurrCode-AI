@@ -490,12 +490,23 @@ async fn test_memory_save_parallel_all_succeed_and_no_tmp_left() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_memory_save_nonstring_file_is_400() {
     // Fix pass B5 r1 P3-4: a non-string `file` used to fall
-    // through to the default and save MEMORY.md.
+    // through to the default and save MEMORY.md. Fix pass B8
+    // r2 P3-1: the refusal also audits as deny "(unknown)"
+    // (the B5 carve-out no longer stands).
     let dir = test_dir("memory-save-nonstring");
-    let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _ch, cancel_tx, handle) =
+        start_server_with_skill_registry(None, dir.clone(), None, None, None, Some(Arc::new(sink)))
+            .await;
     let resp = post(port, "/api/memory", r#"{"file": 123, "content": "x"}"#);
     assert!(resp.contains("400 Bad Request"), "resp: {resp}");
     assert!(!dir.join("MEMORY.md").exists());
+    let got = events.lock().unwrap().clone();
+    assert_eq!(got.len(), 1, "events: {got:?}");
+    assert_eq!(got[0].0, "memory_save");
+    assert_eq!(got[0].1, "(unknown)");
+    assert_eq!(got[0].2, "deny");
+    assert_eq!(got[0].3, "file must be a string");
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
