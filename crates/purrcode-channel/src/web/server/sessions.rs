@@ -30,8 +30,28 @@ pub async fn list(State(state): State<Arc<WebState>>) -> (StatusCode, Json<serde
 }
 
 /// Axum handler for `POST /api/sessions`.
+/// v0.4 B8, D9: minting a session is an audited web action —
+/// `web_session_create` allow with the new id, deny when the
+/// store refuses (the pure `handle_create_session` stays
+/// audit-free for the unit tests).
 pub async fn create(State(state): State<Arc<WebState>>) -> (StatusCode, Json<serde_json::Value>) {
-    handle_create_session(&state.registry)
+    let (status, out) = handle_create_session(&state.registry);
+    let id = out
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    crate::web::server::routes::record_admin(
+        &state,
+        "web_session_create",
+        id,
+        if status == StatusCode::CREATED {
+            "allow"
+        } else {
+            "deny"
+        },
+        &format!("status={status}"),
+    );
+    (status, out)
 }
 
 /// Axum handler for `GET /api/sessions/:id/transcript`. The id is

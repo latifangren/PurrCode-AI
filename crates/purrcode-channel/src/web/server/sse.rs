@@ -13,6 +13,7 @@
 
 use crate::web::server::sessions::query_param;
 use crate::web::server::WebState;
+use crate::web::sessions::WebSession;
 use axum::{
     extract::State,
     http::{header, StatusCode, Uri},
@@ -20,8 +21,26 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use std::{convert::Infallible, sync::Arc};
+use std::{
+    convert::Infallible,
+    sync::{atomic::Ordering, Arc},
+};
 use tokio::sync::broadcast::error::RecvError;
+
+/// Guard that decrements the session's SSE subscriber count when
+/// the stream is dropped (v0.4 B8, D8). Held inside the unfold
+/// state so it lives exactly as long as the stream: client
+/// disconnect, shutdown, or an evicted bus all drop it, and the
+/// reaper only evicts sessions with zero subscribers.
+struct SseSubscriberGuard {
+    session: Arc<WebSession>,
+}
+
+impl Drop for SseSubscriberGuard {
+    fn drop(&mut self) {
+        self.session.sse_subscribers.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 pub async fn events(
     State(state): State<Arc<WebState>>,
@@ -49,6 +68,13 @@ pub async fn events(
     };
 
     let rx = session.channel.subscribe();
+    // v0.4 B8, D8: one live subscriber vetoes the idle reaper.
+    // The guard rides in the unfold state and decrements when
+    // the stream ends for any reason (see SseSubscriberGuard).
+    session.sse_subscribers.fetch_add(1, Ordering::Relaxed);
+    let guard = SseSubscriberGuard {
+        session: session.clone(),
+    };
     // The stream ends when cancel is signaled (re-checker P1):
     // without this, an open browser tab holds an SSE stream open
     // forever and graceful shutdown — hence Ctrl-C — never
@@ -66,14 +92,17 @@ pub async fn events(
             }
         }
     };
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+    let stream = futures_util::stream::unfold((rx, guard), |(mut rx, guard)| async move {
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     let Ok(data) = serde_json::to_string(&event) else {
                         continue;
                     };
-                    break Some((Ok::<_, Infallible>(Event::default().data(data)), rx));
+                    break Some((
+                        Ok::<_, Infallible>(Event::default().data(data)),
+                        (rx, guard),
+                    ));
                 }
                 Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => break None,

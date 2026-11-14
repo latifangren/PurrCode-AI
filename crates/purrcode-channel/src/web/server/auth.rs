@@ -11,12 +11,7 @@
 //! code had to stop its scan at the header/body blank line to get
 //! the same property — the R3 P2-1 fix).
 
-use axum::{
-    extract::{Request, State},
-    http::{header, HeaderMap, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
+use axum::http::{header, HeaderMap};
 
 /// Exact token check: any `Authorization` header carrying
 /// `Bearer <required>` with nothing after it, or a `?token=`
@@ -46,29 +41,6 @@ pub fn token_matches(headers: &HeaderMap, query: Option<&str>, required_token: &
         }
     }
     false
-}
-
-/// Axum middleware: when a token is configured, reject the request
-/// with 401 unless [`token_matches`] holds. With no token
-/// configured (localhost default), every request passes through.
-pub async fn require_token(
-    State(token): State<Option<String>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let Some(required) = token else {
-        return next.run(request).await;
-    };
-    let query = request.uri().query().map(str::to_string);
-    if token_matches(request.headers(), query.as_deref(), &required) {
-        return next.run(request).await;
-    }
-    (
-        StatusCode::UNAUTHORIZED,
-        [(header::CONTENT_TYPE, "text/plain")],
-        "Unauthorized\n",
-    )
-        .into_response()
 }
 
 #[cfg(test)]

@@ -32,8 +32,22 @@ use purrcode_core::{EventBus, SessionStore};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
+
+/// Idle time after which a live web session with no SSE
+/// subscriber and no running turn is evicted by the reaper
+/// (v0.4 B8, D8). The durable JSONL is untouched — an evicted
+/// session re-materializes on demand, exactly like the cap
+/// eviction below.
+pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How often the reaper in `WebServer::run` sweeps idle sessions.
+pub const SESSION_REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// The legacy single-session id from R3. Kept as the default when a
 /// client sends no `session_id`: old pages and old clients subscribe
@@ -73,6 +87,38 @@ pub struct WebSession {
     /// Whether the `session_start` plugin hook already fired for
     /// this session (once per session, not once per daemon).
     pub started: AsyncMutex<bool>,
+    /// Last activity (v0.4 B8, D8): updated by [`WebSession::touch`]
+    /// on every use — ensure/create, prompt dispatch, approval
+    /// resolve, SSE subscribe. The reaper evicts entries idle
+    /// longer than [`SESSION_IDLE_TIMEOUT`].
+    last_used: Mutex<Instant>,
+    /// Live SSE subscribers (v0.4 B8, D8): incremented by the
+    /// `/api/events` handler on connect, decremented when its
+    /// stream ends. The reaper never evicts a session with an open
+    /// browser tab — evicting it would drop the live stream.
+    pub sse_subscribers: AtomicUsize,
+}
+
+impl WebSession {
+    /// Mark this session used now (v0.4 B8, D8). Called by
+    /// [`WebSessionRegistry::ensure_session`] on every ensure, and
+    /// explicitly by the approval handler (its default path reads
+    /// the live entry without ensuring).
+    pub fn touch(&self) {
+        if let Ok(mut last) = self.last_used.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// Whether this entry is idle past `timeout` right now (v0.4
+    /// B8, D8). A poisoned clock lock reads as idle — eviction is
+    /// safe by design (durable JSONL, re-created on demand).
+    fn is_idle(&self, timeout: Duration) -> bool {
+        self.last_used
+            .lock()
+            .map(|last| last.elapsed() > timeout)
+            .unwrap_or(true)
+    }
 }
 
 /// One row of `GET /api/sessions`: enough for the sidebar to list
@@ -145,6 +191,7 @@ impl WebSessionRegistry {
             .lock()
             .map_err(|_| PurrError::Internal("web session registry lock poisoned".to_string()))?;
         if let Some(session) = sessions.get(id) {
+            session.touch();
             return Ok(session.clone());
         }
         let session = Arc::new(WebSession {
@@ -153,6 +200,8 @@ impl WebSessionRegistry {
             channel: Arc::new(WebChannel::new()),
             turn_lock: AsyncMutex::new(()),
             started: AsyncMutex::new(false),
+            last_used: Mutex::new(Instant::now()),
+            sse_subscribers: AtomicUsize::new(0),
         });
         // Forwarder: the bus is the single event source for this
         // session; every event the session's loop publishes is sent
@@ -215,6 +264,37 @@ impl WebSessionRegistry {
             }
         }
         Ok(session)
+    }
+
+    /// Evict live entries idle longer than `timeout` (v0.4 B8, D8)
+    /// and return how many were evicted. An entry is evictable
+    /// only when it has no live SSE subscriber and no running turn
+    /// (same busy guard as the cap eviction — a turn blocked on a
+    /// pending approval holds the lock, so it is never evicted).
+    /// The durable list is untouched: an evicted session
+    /// re-materializes on demand via `ensure_session_if_exists`.
+    pub fn sweep_idle(&self, timeout: Duration) -> usize {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return 0;
+        };
+        let Ok(mut order) = self.order.lock() else {
+            return 0;
+        };
+        let victims: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| {
+                s.sse_subscribers.load(Ordering::Relaxed) == 0
+                    && s.turn_lock.try_lock().is_ok()
+                    && s.is_idle(timeout)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let count = victims.len();
+        for id in &victims {
+            sessions.remove(id);
+            order.retain(|c| c != id);
+        }
+        count
     }
 
     /// Live entry for `id` when it already exists; `None` for an
@@ -628,6 +708,51 @@ mod tests {
             assert!(reg.get_session(id).is_some(), "live: {id}");
         }
         drop(guards);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_sweep_idle_evicts_only_idle_unsubscribed_free() {
+        // v0.4 B8, D8: the reaper evicts entries idle past the
+        // timeout; a busy turn, an open SSE subscriber, or recent
+        // activity each veto eviction.
+        let (reg, dir) = test_registry("sweep-idle");
+        let idle = reg.create_session().unwrap();
+        let busy = reg.create_session().unwrap();
+        let subscribed = reg.create_session().unwrap();
+        let fresh = reg.create_session().unwrap();
+        // Age three of them past the timeout (fresh stays new).
+        let past = Instant::now() - Duration::from_secs(3600);
+        for s in [&idle, &busy, &subscribed] {
+            *s.last_used.lock().unwrap() = past;
+        }
+        // Busy: hold the turn lock. Subscribed: one live SSE tab.
+        let _guard = busy.turn_lock.try_lock().unwrap();
+        subscribed.sse_subscribers.store(1, Ordering::Relaxed);
+        assert_eq!(reg.sweep_idle(Duration::from_secs(1800)), 1);
+        assert!(reg.get_session(&idle.id).is_none());
+        assert!(reg.get_session(&busy.id).is_some());
+        assert!(reg.get_session(&subscribed.id).is_some());
+        assert!(reg.get_session(&fresh.id).is_some());
+        // Disk still lists all four; the evicted one re-materializes.
+        assert_eq!(reg.list_sessions().len(), 4);
+        assert!(reg.ensure_session_if_exists(&idle.id).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_touch_resets_idle_clock() {
+        // v0.4 B8, D8: ensure (and touch) refresh `last_used`, so
+        // a session used recently survives the sweep.
+        let (reg, dir) = test_registry("touch");
+        let session = reg.create_session().unwrap();
+        *session.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(3600);
+        assert_eq!(reg.sweep_idle(Duration::from_secs(1800)), 1);
+        let back = reg.ensure_session_if_exists(&session.id).unwrap();
+        *back.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(3600);
+        back.touch();
+        assert_eq!(reg.sweep_idle(Duration::from_secs(1800)), 0);
+        assert!(reg.get_session(&session.id).is_some());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

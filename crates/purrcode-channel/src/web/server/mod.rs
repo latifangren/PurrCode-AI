@@ -14,7 +14,10 @@
 //!
 //! * Token auth is a middleware: exact `Authorization: Bearer
 //!   <token>` or `?token=<token>`, headers + query only (see
-//!   `auth.rs`); a token in the body never authenticates.
+//!   `auth.rs`); a token in the body never authenticates. The
+//!   middleware also enforces the B8 limits (see `security.rs`):
+//!   failed auth attempts share a global 10/minute window, and
+//!   `POST /api/prompt` is capped per peer IP.
 //! * `POST` bodies are read as raw bytes and parsed as JSON by
 //!   hand — no `Content-Type: application/json` requirement, and a
 //!   malformed body is a 400.
@@ -25,8 +28,14 @@
 //! * `/api/sessions/:id/transcript` matches one path segment; a
 //!   multi-segment id falls through to 404 instead of the old 400
 //!   (the id validation itself is byte-identical).
+//! * Live web sessions idle past 30 minutes (no SSE subscriber,
+//!   no running turn) are evicted by a reaper task (B8, D8); the
+//!   durable JSONL is untouched, so they re-materialize on demand.
 
-use crate::web::sessions::{WebSession, WebSessionRegistry, DEFAULT_WEB_SESSION_ID};
+use crate::web::sessions::{
+    WebSession, WebSessionRegistry, DEFAULT_WEB_SESSION_ID, SESSION_IDLE_TIMEOUT,
+    SESSION_REAPER_INTERVAL,
+};
 use axum::{
     middleware,
     routing::{get, post},
@@ -37,6 +46,7 @@ use purrcode_api::error::{PurrError, Result};
 use purrcode_api::plugin::PluginRegistry;
 use purrcode_api::skill::SkillRegistry;
 use purrcode_api::tool::AuditSink;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -49,6 +59,7 @@ mod routes_cron;
 mod routes_memory;
 mod routes_overview;
 mod routes_skills;
+mod security;
 mod sessions;
 mod sse;
 
@@ -62,6 +73,8 @@ mod tests_cron;
 mod tests_overview;
 #[cfg(test)]
 mod tests_plugins;
+#[cfg(test)]
+mod tests_security;
 #[cfg(test)]
 mod tests_skills;
 
@@ -220,10 +233,44 @@ impl WebServer {
             audit_sink: self.audit_sink.clone(),
             shutdown_rx: cancel_rx.clone(),
         });
+        // B8 security state (D7/D9): the token check plus the
+        // failed-auth and prompt limits, audited to the same sink
+        // the admin endpoints use. The reaper (D8) sweeps idle
+        // live sessions every SESSION_REAPER_INTERVAL; it stops
+        // when cancel is signaled and never holds the server open
+        // past shutdown (the process exits when run() returns).
+        let security = Arc::new(security::SecurityState::new(
+            self.token.clone(),
+            self.audit_sink.clone(),
+        ));
+        {
+            let reaper_registry = self.registry.clone();
+            let mut reaper_cancel = cancel_rx.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(SESSION_REAPER_INTERVAL);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let evicted =
+                                reaper_registry.sweep_idle(SESSION_IDLE_TIMEOUT);
+                            if evicted > 0 {
+                                tracing::debug!(
+                                    "web: reaper evicted {evicted} idle session(s)"
+                                );
+                            }
+                        }
+                        _ = reaper_cancel.changed() => break,
+                    }
+                }
+            });
+        }
         // Layers run outermost-first: the auth middleware (added
         // last) rejects unauthenticated requests before any body is
         // read; the body limit then answers 413 while a handler
-        // reads an oversize body.
+        // reads an oversize body. ConnectInfo feeds the middleware
+        // the peer IP for the prompt bucket; without it (a test
+        // that serves the router directly) the peer reads
+        // "unknown" and the bucket still applies.
         let app = Router::new()
             .route("/", get(routes::index))
             .route("/index.html", get(routes::index))
@@ -261,8 +308,8 @@ impl WebServer {
             .route("/api/approval", post(routes::approval))
             .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
             .layer(middleware::from_fn_with_state(
-                self.token.clone(),
-                auth::require_token,
+                security,
+                security::require_token_and_limit,
             ))
             .with_state(state);
 
@@ -295,7 +342,7 @@ impl WebServer {
             tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
         };
         tokio::select! {
-            res = axum::serve(listener, app).with_graceful_shutdown(shutdown) => {
+            res = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown) => {
                 res.map_err(|e| PurrError::Channel {
                     channel: "web".to_string(),
                     message: format!("WebUI server error: {}", e),

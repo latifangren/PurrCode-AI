@@ -224,13 +224,52 @@ async fn resolve_skill_draft(
 }
 
 /// `POST /api/skills/approve`.
+/// v0.4 B8, D9: resolving a draft card is an audited web action —
+/// `skill_approve` allow when a pending draft approval was
+/// resolved, deny when nothing was waiting.
 pub async fn skills_approve(State(state): State<Arc<WebState>>, body: Bytes) -> Json<Value> {
-    resolve_skill_draft(&state.registry, body, true).await
+    let name = draft_name_from_body(&body);
+    let out = resolve_skill_draft(&state.registry, body, true).await;
+    let resolved = out
+        .get("resolved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    record_admin(
+        &state,
+        "skill_approve",
+        &name,
+        if resolved { "allow" } else { "deny" },
+        &format!("resolved={resolved}"),
+    );
+    out
 }
 
 /// `POST /api/skills/reject`.
+/// v0.4 B8, D9: same audit as approve, event `skill_reject`.
 pub async fn skills_reject(State(state): State<Arc<WebState>>, body: Bytes) -> Json<Value> {
-    resolve_skill_draft(&state.registry, body, false).await
+    let name = draft_name_from_body(&body);
+    let out = resolve_skill_draft(&state.registry, body, false).await;
+    let resolved = out
+        .get("resolved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    record_admin(
+        &state,
+        "skill_reject",
+        &name,
+        if resolved { "allow" } else { "deny" },
+        &format!("resolved={resolved}"),
+    );
+    out
+}
+
+/// Draft name for the audit record: the body's string `name`, or
+/// "(unknown)" when the body is malformed or nameless.
+fn draft_name_from_body(body: &Bytes) -> String {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "(unknown)".to_string())
 }
 
 /// `GET /api/plugins` (v0.4 B4) — every discovered plugin with
@@ -400,13 +439,32 @@ pub async fn prompt(
     State(state): State<Arc<WebState>>,
     body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // v0.4 B8, D9: a dispatched prompt is already audited at the
+    // turn level (`web_turn_start` in web_cli); the handler-level
+    // rejections below were unaudited, so they are recorded here
+    // as `web_prompt` deny. A correct dispatch answers 200 at
+    // once and runs the turn in a spawned task.
     let Ok(val) = serde_json::from_slice::<Value>(&body) else {
+        record_admin(
+            &state,
+            "web_prompt",
+            "(unknown)",
+            "deny",
+            "malformed JSON body",
+        );
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "malformed JSON body" })),
         ));
     };
     let Some(prompt) = val.get("prompt").and_then(|p| p.as_str()) else {
+        record_admin(
+            &state,
+            "web_prompt",
+            "(unknown)",
+            "deny",
+            "prompt must be a string",
+        );
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "prompt must be a string" })),
@@ -415,6 +473,13 @@ pub async fn prompt(
     let session = match val.get("session_id") {
         Some(v) => {
             let Some(id) = v.as_str() else {
+                record_admin(
+                    &state,
+                    "web_prompt",
+                    "(unknown)",
+                    "deny",
+                    "session_id must be a string",
+                );
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": "session_id must be a string" })),
@@ -425,6 +490,13 @@ pub async fn prompt(
         None => state.registry.default_session().ok(),
     };
     let Some(session) = session else {
+        record_admin(
+            &state,
+            "web_prompt",
+            "(unknown)",
+            "deny",
+            "session not found",
+        );
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "session not found" })),
@@ -440,6 +512,13 @@ pub async fn prompt(
         });
         Ok(Json(json!({ "status": "dispatched" })))
     } else {
+        record_admin(
+            &state,
+            "web_prompt",
+            &session.id,
+            "deny",
+            "no prompt dispatcher registered",
+        );
         Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "No prompt dispatcher registered on web server" })),
@@ -477,16 +556,23 @@ pub async fn memory(State(state): State<Arc<WebState>>, uri: Uri) -> impl IntoRe
 }
 
 /// `POST /api/approval`.
-///
-/// v0.4 B1: resolve on the session's channel (the body's optional
-/// `session_id`, default `purr_web`). A session with no live entry
-/// has nothing pending, so it resolves false instead of touching
-/// another session's approvals.
+/// v0.4 B8, D9: resolving (or failing to resolve) a card is an
+/// audited web action — `web_approval` allow when a pending card
+/// was resolved, deny when nothing was pending (or the body was
+/// malformed). The `name` is the call id; the detail records
+/// whether the user approved or rejected.
 pub async fn approval(
     State(state): State<Arc<WebState>>,
     body: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let Ok(val) = serde_json::from_slice::<Value>(&body) else {
+        record_admin(
+            &state,
+            "web_approval",
+            "(unknown)",
+            "deny",
+            "malformed JSON body",
+        );
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "malformed JSON body" })),
@@ -501,9 +587,22 @@ pub async fn approval(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let resolved = match approval_session(&state.registry, &val) {
-        Some(session) => session.channel.resolve_approval(call_id, approved).await,
+        Some(session) => {
+            // v0.4 B8, D8: the default path reads the live entry
+            // without ensuring, so touch explicitly — resolving a
+            // card is activity.
+            session.touch();
+            session.channel.resolve_approval(call_id, approved).await
+        }
         None => false,
     };
+    record_admin(
+        &state,
+        "web_approval",
+        call_id,
+        if resolved { "allow" } else { "deny" },
+        &format!("approved={approved} resolved={resolved}"),
+    );
     Ok(Json(json!({ "resolved": resolved })))
 }
 
