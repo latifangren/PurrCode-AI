@@ -21,25 +21,19 @@
 //!   template instead of a 404.
 
 use crate::web::channel::SKILL_DRAFT_KEY_PREFIX;
-use crate::web::html::web_index_html;
 use crate::web::server::{approval_session, WebState};
 use crate::web::sessions::WebSessionRegistry;
 use axum::{
     body::Bytes,
     extract::State,
     http::{StatusCode, Uri},
-    response::{Html, IntoResponse, Json},
+    response::{IntoResponse, Json},
 };
 use purrcode_api::plugin::PluginMountError;
 use purrcode_config::jsonc::clean_jsonc;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
-
-/// `GET /` and `GET /index.html` — the single-page WebUI.
-pub async fn index() -> Html<String> {
-    Html(web_index_html())
-}
 
 /// `GET /health`, `/api/status`, `/api/health`.
 pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {

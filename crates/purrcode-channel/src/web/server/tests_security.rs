@@ -62,8 +62,12 @@ fn body_of(resp: &str) -> &str {
 /// tool inputs (it once wrote a literal `<redacted>` into a test
 /// file, and hyper rejects the `<`/`>` in the URI with a 400),
 /// so the query is assembled here at runtime.
+/// Probes `/api/status` (an existing route): `/` has no route
+/// without a built `webui/dist` since the legacy Rust UI was
+/// removed (2026-11-15), so it would answer 404 even with a
+/// correct token.
 fn token_url() -> String {
-    format!("/?token={}", "SECRET")
+    format!("/api/status?token={}", "SECRET")
 }
 
 fn count(events: &AuditEvents, event: &str, decision: &str) -> usize {

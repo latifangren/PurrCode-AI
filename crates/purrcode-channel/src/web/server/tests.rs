@@ -1,5 +1,4 @@
 use super::test_support::*;
-use crate::web::html::web_index_html;
 use purrcode_api::channel::Channel;
 use purrcode_api::event::AgentEvent;
 use purrcode_api::provider::{ChatMessage, MessageRole};
@@ -9,38 +8,15 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[test]
-fn test_webui_template_has_no_inline_model_data_handlers() {
-    // P1-3 tripwire: model-controlled values (call_id, skill name/description,
-    // cron prompt) must never be interpolated into an inline onclick or
-    // unescaped into innerHTML. The banner/skills buttons use
-    // addEventListener + dataset, and every interpolated field goes
-    // through escapeHtml (which escapes ' as well).
-    assert!(
-        !web_index_html().contains("onclick=\"resolveApproval("),
-        "approval banner must not use an inline onclick with the call_id"
-    );
-    assert!(
-        !web_index_html().contains("onclick=\"approveSkill("),
-        "skills tab must not use an inline onclick with the skill name"
-    );
-    assert!(
-        web_index_html().contains(".replace(/'/g, '&#39;')"),
-        "escapeHtml must escape single quotes"
-    );
-    assert!(web_index_html().contains("escapeHtml(c.description"));
-    assert!(web_index_html().contains("escapeHtml(j.prompt"));
-    assert!(web_index_html().contains("addEventListener('click'"));
-}
-
+/// The legacy Rust-rendered WebUI was removed (2026-11-15): without a
+/// built `webui/dist`, `/` has no route and answers 404, while the API
+/// stays up (`/api/status` 200, unknown paths 404).
 #[tokio::test(flavor = "multi_thread")]
-async fn test_server_serves_index_and_status() {
+async fn test_server_without_dist_answers_404_for_index_and_status_ok() {
     let dir = test_dir("index");
     let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
     let index = get(port, "/");
-    assert!(index.starts_with("HTTP/1.1 200 OK"));
-    assert!(index.contains("PurrCode AI"));
-    assert!(index.contains("#11111b"));
+    assert!(index.starts_with("HTTP/1.1 404"), "index: {index}");
     let status = get(port, "/api/status");
     assert!(status.starts_with("HTTP/1.1 200 OK"));
     assert!(status.contains("\"status\":\"ok\""));
@@ -120,12 +96,14 @@ async fn test_server_token_auth() {
     let (port, _ch, cancel_tx, handle) =
         start_server(Some("SECRET".to_string()), dir.clone(), None).await;
     assert!(get(port, "/").starts_with("HTTP/1.1 401"));
-    assert!(get(port, "/?token=SECRET").starts_with("HTTP/1.1 200 OK"));
+    // Authenticated, but `/` has no route without a built `webui/dist`
+    // (legacy Rust UI removed 2026-11-15) — 404, not 200.
+    assert!(get(port, "/?token=SECRET").starts_with("HTTP/1.1 404"));
     let with_header = http_raw(
         port,
         "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAuthorization: Bearer SECRET\r\n\r\n",
     );
-    assert!(with_header.starts_with("HTTP/1.1 200 OK"));
+    assert!(with_header.starts_with("HTTP/1.1 404"));
     // Token hidden inside a JSON body does not authenticate.
     let trapped = post(port, "/api/prompt", r#"{"prompt": "SECRET"}"#);
     assert!(trapped.starts_with("HTTP/1.1 401"), "resp: {trapped}");

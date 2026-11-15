@@ -398,8 +398,10 @@ impl WebServer {
                 }
             })
         } else {
-            app.route("/", get(routes::index))
-                .route("/index.html", get(routes::index))
+            // The legacy Rust-rendered WebUI was removed (2026-11-15):
+            // without a built `webui/dist`, `/` has no route and answers
+            // 404. Build the React WebUI with `bun run build` in `webui/`.
+            app
         };
 
         let app = app
