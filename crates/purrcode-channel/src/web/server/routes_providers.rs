@@ -7,6 +7,7 @@
 //! and returns a normalized list of available models.
 
 use super::WebState;
+use crate::web::server::routes::record_admin;
 use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
@@ -321,6 +322,19 @@ pub async fn fetch_models_handler(
     State(state): State<Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
 ) -> (StatusCode, Json<Value>) {
+    let clean_id = id.strip_prefix("prov-").unwrap_or(&id);
+    // D9 (B8): every POST is audited. The detail strings stay short and
+    // never carry secrets, URLs, or upstream bodies.
+    let audit = |decision: &str, detail: &str| {
+        record_admin(
+            &state,
+            "web_provider_fetch_models",
+            clean_id,
+            decision,
+            detail,
+        );
+    };
+
     let candidates = [
         state.workspace_root.join(".purrcode").join("purrcode.yaml"),
         state.workspace_root.join(".purrcode").join("purrcode.yml"),
@@ -354,6 +368,7 @@ pub async fn fetch_models_handler(
         None => match ConfigLoader::load_effective() {
             Ok(cfg) => cfg,
             Err(e) => {
+                audit("deny", "configuration load failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": format!("Failed to load configuration: {e}") })),
@@ -362,7 +377,6 @@ pub async fn fetch_models_handler(
         },
     };
 
-    let clean_id = id.strip_prefix("prov-").unwrap_or(&id);
     let mut base_url_opt = config
         .providers
         .get(clean_id)
@@ -406,6 +420,7 @@ pub async fn fetch_models_handler(
             }
         }
     } else if base_url_opt.is_none() {
+        audit("deny", "provider not found");
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("Provider '{clean_id}' not found in configuration") })),
@@ -415,6 +430,7 @@ pub async fn fetch_models_handler(
     let base_url = match base_url_opt {
         Some(ref u) if !u.is_empty() => {
             if !u.starts_with("http://") && !u.starts_with("https://") {
+                audit("deny", "base_url must use http(s)");
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": "Provider base_url must use http:// or https://" })),
@@ -423,6 +439,7 @@ pub async fn fetch_models_handler(
             u.as_str()
         }
         _ => {
+            audit("deny", "no base_url configured");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(
@@ -440,6 +457,7 @@ pub async fn fetch_models_handler(
     {
         Ok(c) => c,
         Err(e) => {
+            audit("deny", "HTTP client build failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": format!("Failed to create HTTP client: {e}") })),
@@ -468,6 +486,7 @@ pub async fn fetch_models_handler(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
+            audit("deny", "upstream connection failed");
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": format!("Failed to connect to provider endpoint: {e}") })),
@@ -477,6 +496,7 @@ pub async fn fetch_models_handler(
 
     if !resp.status().is_success() {
         let status = resp.status();
+        audit("deny", &format!("upstream HTTP {status}"));
         let err_text = resp.text().await.unwrap_or_default();
         return (
             StatusCode::BAD_GATEWAY,
@@ -489,6 +509,7 @@ pub async fn fetch_models_handler(
     let json_body: Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
+            audit("deny", "upstream JSON parse failed");
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": format!("Failed to parse JSON from provider: {e}") })),
@@ -497,6 +518,7 @@ pub async fn fetch_models_handler(
     };
 
     let models = parse_models_from_json(&json_body);
+    audit("allow", &format!("fetched {} models", models.len()));
     (StatusCode::OK, Json(json!(models)))
 }
 

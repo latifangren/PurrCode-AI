@@ -67,7 +67,7 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
 
 ### ADR-011: Standar File Kode 800–1000 Baris
 - **Konteks:** Memastikan arsitektur modular, rapi, dan mudah dibaca/di-maintain.
-- **Keputusan:** Setiap file source code memiliki batas keras (hard limit) 800–1000 baris. Modul yang mendekati batas ini wajib dipecah menjadi subdirektori dengan tanggung jawab terfokus.
+- **Keputusan:** Setiap file source code memiliki batas keras (hard limit) **1000 baris**. Di atas **800 baris**, modul wajib direncanakan untuk dipecah menjadi subdirektori dengan tanggung jawab terfokus — 800 adalah ambang perencanaan, bukan penolakan. Klarifikasi 2026-11-15: rentang "800–1000" sebelumnya ambigu; cap kerasnya 1000, sehingga empat file yang kini berada di 815–902 baris (`telegram/channel.rs` 902, `web_cli.rs` 894, `tui_mode.rs` 876, `web/sessions.rs` 815) patuh pada cap ini dan menjadi kandidat pecah berikutnya bila terus tumbuh.
 
 ### ADR-012: Tuxeshadow (The Shadow Auditor)
 - **Konteks:** Meowstro adalah *single point of failure*. Jika rencananya salah, Tinker akan mengeksekusi kesalahan tersebut dan memperbaikinya post-facto jauh lebih mahal. Butuh pengawas independen (*Actor-Critic pattern* / *Independent Oracle*).

@@ -213,32 +213,38 @@ prompt ("amend the same child, never respawn") — rapuh. PurrCode menambahkan l
    Bila parent butuh detail, ia membaca `result.md` / melanjutkan child via ID.
 5. **Batas:** tanpa nesting subagent di v0.1 (child tidak spawn child); kedalaman
    maks 1. Background mode didukung; follow-up via ID.
-6. **Meowstro tidak menulis kode (aturan harness, keputusan user 2026-11-11
-   00:38 WIB).** Meowstro adalah petinggi/perwakilan user, bukan tukang:
-   tugasnya memahami codebase, menyusun rencana, mendelegasikan, dan menolak
-   atau menerima hasil — bukan mengimplementasikan. Alasannya konteks: konteks
-   Meowstro adalah konteks utama yang dibawa antar turn; kalau ia ikut menulis
-   kode, diff + isi file + log error membanjirinya, konteks cepat penuh, lalu
-   compaction memotong rencana. Jadi detail tinggal di subagent (di
-   `brief.md`/`result.md` mereka), Meowstro hanya memegang peta + ringkasan +
-   keputusan. Yang ditegakkan:
-   - **Tool set Meowstro read-only + delegasi:** `read`, `grep`, `glob`,
-     `find`, `todo`, `ask`, `task`. `write`, `edit`, dan `bash` **tidak ada**
-     di preset-nya — penegakan di level harness (preset didaftarkan sebagai
-     tool set agen; runtime menolak pemanggilan tool di luar preset), bukan
-     sekadar instruksi di system prompt, karena instruksi prompt bisa dilanggar
-     model.
+6. **Meowstro: workflow orchestrator (OMO-aligned hybrid; amendemen ADR-007
+   2026-11-15 dari read-only v0.1, keputusan user 2026-11-11 00:38 WIB
+   diamend).** Meowstro adalah petinggi/perwakilan user: tugasnya memahami
+   codebase, menyusun rencana, mendelegasikan, memantau, memverifikasi, dan
+   menolak atau menerima hasil. Pekerjaan multi-file/refaktor kompleks tetap
+   didelegasikan ke subagent — alasannya konteks: konteks Meowstro adalah
+   konteks utama yang dibawa antar turn; kalau diff + isi file + log error
+   besar membanjirinya, konteks cepat penuh, lalu compaction memotong rencana.
+   Jadi detail besar tinggal di subagent (di `brief.md`/`result.md` mereka),
+   Meowstro hanya memegang peta + ringkasan + keputusan. Yang ditegakkan:
+   - **Tool set Meowstro: full suite + delegasi:** `read`, `write`, `edit`,
+     `bash`, `grep`, `glob`, `find`, `todo`, `ask`, `task`, `read_skill`,
+     `manage_skill`, `webfetch`, `websearch` — penegakan di level harness
+     (preset didaftarkan sebagai tool set agen; runtime menolak pemanggilan
+     tool di luar preset), bukan sekadar instruksi di system prompt, karena
+     instruksi prompt bisa dilanggar model.
+   - **Bertindak langsung hanya bila terbatas.** Meowstro boleh menulis dan
+     menjalankan sendiri bila konteks sudah dipegang dan perubahannya kecil /
+     jelas (< 20 baris), untuk dokumentasi / ringkasan, atau perintah langsung
+     (`cargo test`, `git status`, verifikasi) — menghindari latensi cold-start
+     subagent untuk pengecekan sederhana. Di luar itu, delegasikan ke Tinker.
+   - **Pengaman tetap ditegakkan harness:** `ApprovalGate` (aksi destruktif
+     butuh persetujuan), `SessionFileGuard` (read-before-edit: file yang sudah
+     ada wajib dibaca dulu sebelum diubah), dan `Tuxeshadow` (audit rencana
+     dan aksi berisiko).
    - **Paham codebase ≠ hafal tiap baris.** Peta codebase dibuat Whisker
      (scouting + ringkasan arsitektur); Meowstro boleh membaca file kunci
-     sendiri secukupnya (`read` terbatas) saat butuh memahami keputusan —
-     tapi tidak pernah menulis.
-   - **Verifikasi tanpa menulis.** Meowstro memverifikasi hasil lewat laporan
-     terstruktur Tinker + membaca diff/file hasil secukupnya, atau meminta
-     Whisker mengaudit hasil Tinker (independent oracle) — bukan dengan
-     memperbaiki sendiri.
-   - **Pengecualian: tidak ada.** Bila ada tugas yang "lebih cepat dikerjakan
-     sendiri", Meowstro tetap mendelegasikannya ke Tinker; kecepatan sesaat
-     tidak boleh mengorbankan konteks utama.
+     sendiri secukupnya saat butuh memahami keputusan.
+   - **Verifikasi langsung.** Meowstro memverifikasi hasil dengan menjalankan
+     pengecekan sendiri (test/build), membaca diff/file hasil secukupnya, lewat
+     laporan terstruktur Tinker, atau meminta Whisker mengaudit hasil Tinker
+     (independent oracle).
    - **`ask` tetap ada** (default; koreksi bila berbeda): sebagai perwakilan
      user, Meowstro harus bisa bertanya langsung saat keputusan butuh user —
      itu bagian dari tugasnya sebagai petinggi, bukan pekerjaan implementasi.

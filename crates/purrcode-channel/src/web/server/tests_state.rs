@@ -5,8 +5,48 @@
 use super::test_support::*;
 use crate::web::server::WebServer;
 use crate::web::sessions::WebSessionRegistry;
-use std::sync::Arc;
+use purrcode_api::tool::AuditSink;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+type AuditEvents = Arc<Mutex<Vec<(String, String, String, String)>>>;
+
+struct RecordingAuditSink {
+    events: AuditEvents,
+}
+
+impl RecordingAuditSink {
+    fn new() -> (Self, AuditEvents) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                events: events.clone(),
+            },
+            events,
+        )
+    }
+}
+
+impl AuditSink for RecordingAuditSink {
+    fn record_event(
+        &self,
+        _session_id: &str,
+        _agent: &str,
+        event: &str,
+        tool: Option<&str>,
+        decision: &str,
+        detail: &str,
+    ) {
+        if let Ok(mut guard) = self.events.lock() {
+            guard.push((
+                event.to_string(),
+                tool.unwrap_or("").to_string(),
+                decision.to_string(),
+                detail.to_string(),
+            ));
+        }
+    }
+}
 
 fn body_of(resp: &str) -> &str {
     resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(resp)
@@ -370,6 +410,98 @@ async fn cockpit_security_and_session_regression_guards() {
     assert_eq!(ap_json["resolved"], true);
     assert!(ap_json.get("sessions").is_none());
     assert!(req_task.await.unwrap());
+
+    let _ = cancel_tx.send(true);
+    handle.abort();
+    let _ = tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fetch_models_handler_audits_allow_and_deny() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Mock upstream: one canned OpenAI-style models list.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let body = r#"{"data":[{"id":"mock-model","name":"Mock Model","context_window":1048576}]}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(resp.as_bytes()).await;
+    });
+
+    let dir = test_dir("fetch-models-audit");
+    let cfg_content = format!(
+        r#"{{
+        "preset": "tabby",
+        "model": "mock:mock-model",
+        "providers": {{
+            "mock": {{
+                "api": "openai-completions",
+                "base_url": "http://{mock_addr}/v1",
+                "api_key": "test-key",
+                "models": {{
+                    "mock-model": {{ "context_window": 1048576, "max_tokens": 4096, "reasoning": false }}
+                }}
+            }}
+        }}
+    }}"#
+    );
+    std::fs::write(dir.join("purrcode.jsonc"), cfg_content).unwrap();
+
+    let (sink, events) = RecordingAuditSink::new();
+    let (port, _reg, cancel_tx, handle) =
+        start_server_with_skill_registry(None, dir.clone(), None, None, None, Some(Arc::new(sink)))
+            .await;
+
+    // Success: the mock provider answers, the models list comes back,
+    // and the audit sink records an allow entry.
+    let resp = req_raw(port, "POST", "/api/providers/mock/fetch-models", "{}");
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "resp: {resp}");
+    let body = body_of(&resp);
+    let models: serde_json::Value = serde_json::from_str(body).expect("json models body");
+    assert_eq!(models.as_array().map(|a| a.len()), Some(1));
+    assert_eq!(models[0]["id"], "mock-model");
+
+    // Unknown provider: 404, and the audit sink records a deny entry.
+    let resp = req_raw(port, "POST", "/api/providers/unknown/fetch-models", "{}");
+    assert!(resp.starts_with("HTTP/1.1 404"), "resp: {resp}");
+
+    let found = |event: &str, name: &str, decision: &str, detail: &str| {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(e, n, d, dt)| e == event && n == name && d == decision && dt == detail)
+    };
+    assert!(
+        found(
+            "web_provider_fetch_models",
+            "mock",
+            "allow",
+            "fetched 1 models"
+        ),
+        "allow entry missing: {:?}",
+        events.lock().unwrap()
+    );
+    assert!(
+        found(
+            "web_provider_fetch_models",
+            "unknown",
+            "deny",
+            "provider not found"
+        ),
+        "deny entry missing: {:?}",
+        events.lock().unwrap()
+    );
 
     let _ = cancel_tx.send(true);
     handle.abort();

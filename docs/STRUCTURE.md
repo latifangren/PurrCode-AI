@@ -22,7 +22,7 @@ Binary: **`purrcode-ai`**.
 - **Tools List:** Didaftarkan secara dinamis di `ToolRegistry`.
 
 ### 1.3 Batas Baris Kode (File Size Limit)
-- **Hard Limit: 800–1000 baris per file.**
+- **Hard Limit: 1000 baris per file (cap keras). Di atas 800 baris, pemecahan wajib direncanakan.**
 - Sebelum menyentuh 1000 baris, file **wajib** di-refactor / di-split menjadi submodul direktori (misal `session.rs` di-split menjadi `session/mod.rs`, `session/store.rs`, `session/compaction.rs`, `session/types.rs`).
 - Pengecualian: Boleh 1000 lebih sedikit hanya bila pemecahan akan merusak kohesi logika yang sangat erat (misal *state machine transition table* murni atau *lexer pattern match table*), dan harus dicatat alasannya.
 
