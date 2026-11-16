@@ -78,7 +78,7 @@ impl TelegramChannel {
     pub fn new(
         api: Arc<TelegramApiClient>,
         config: &TelegramConfig,
-        state_dir: &std::path::Path,
+        purrcode_dir: &std::path::Path,
     ) -> Self {
         Self {
             api,
@@ -88,7 +88,7 @@ impl TelegramChannel {
             pending_approvals: Pending::new(),
             pending_asks: Pending::new(),
             always: AlwaysSet::new(),
-            index: Arc::new(Mutex::new(ChatSessionIndex::load(state_dir))),
+            index: Arc::new(Mutex::new(ChatSessionIndex::load(purrcode_dir))),
             approval_timeout: Duration::from_secs(config.approval_timeout_secs()),
             poll_timeout: config.poll_timeout_secs(),
             ui: TelegramUiConfig::default(),
@@ -633,7 +633,6 @@ impl TelegramChannel {
                 let index = self.index.lock().await;
                 let current = index
                     .current_session(chat_id)
-                    .map(str::to_string)
                     .unwrap_or_else(|| "(none)".to_string());
                 let total_sessions = index.sessions_for_chat(chat_id).len();
                 drop(index);
@@ -661,7 +660,14 @@ impl TelegramChannel {
                 let home = std::env::var("HOME")
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let store = purrcode_core::SessionStore::new(home.join(".purrcode"));
+                let store = match purrcode_core::SessionStore::new(home.join(".purrcode")) {
+                    Ok(store) => store,
+                    Err(e) => {
+                        self.reply_text(chat_id, &format!("Failed to open session store: {e}"))
+                            .await;
+                        return;
+                    }
+                };
                 match store.load_messages(&session_id) {
                     Ok(msgs) if msgs.len() <= 6 => {
                         let text = if self.ui.locale == "id" {
@@ -750,14 +756,6 @@ async fn wait_or_shutdown(dur: Duration, shutdown: &mut watch::Receiver<bool>) -
         _ = tokio::time::sleep(dur) => false,
         _ = shutdown.changed() => true,
     }
-}
-
-/// Where the chat index lives: `~/.purrcode/telegram/`.
-pub fn telegram_state_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    home.join(".purrcode").join("telegram")
 }
 
 /// Per-chat view implementing the shared [`Channel`] trait (F16).

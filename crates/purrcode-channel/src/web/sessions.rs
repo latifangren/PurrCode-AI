@@ -9,17 +9,16 @@
 //! chats without seeing each other's events or approvals.
 //!
 //! The registry owns the *runtime* entries only. The durable list
-//! comes from the [`SessionStore`] on disk: a web session is any
-//! `sessions/*.jsonl` file whose stem is a valid web session id, so
-//! chats survive a daemon restart and are resumed from the same
-//! store the TUI and cron use. New ids are minted as
-//! `purr_web_<12 hex>` (same shape as the cron `cron_<12 hex>` ids).
+//! comes from the [`SessionStore`] (SQLite, ADR-015): a web session is
+//! any `sessions` row whose id is a valid web session id, so chats
+//! survive a daemon restart and are resumed from the same store the
+//! TUI and cron use. New ids are minted as `purr_web_<12 hex>`
+//! (same shape as the cron `cron_<12 hex>` ids).
 //!
-//! Security: a client-supplied session id is used to build a file
-//! path (`sessions/<id>.jsonl`), so it is validated strictly —
-//! `purr_web` or `purr_web_` + exactly 12 lowercase hex chars.
-//! Anything else is rejected before it touches the store or the
-//! filesystem, so `../` traversal and foreign session ids
+//! Security: a client-supplied session id is a database key, so it
+//! is validated strictly — `purr_web` or `purr_web_` + exactly 12
+//! lowercase hex chars. Anything else is rejected before it touches
+//! the store, so `../` traversal and foreign session ids
 //! (`purr_cron_*`, `purr_hb_*`, `purr_<hex>`) can never be reached
 //! through the WebUI.
 
@@ -27,7 +26,7 @@ use crate::web::channel::WebChannel;
 use purrcode_api::channel::Channel;
 use purrcode_api::error::{PurrError, Result};
 use purrcode_api::provider::{ChatMessage, MessageRole};
-use purrcode_core::session::SessionTurnEntry;
+use purrcode_core::session::SessionMeta;
 use purrcode_core::{EventBus, SessionStore};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -159,15 +158,9 @@ pub fn new_web_session_id() -> String {
 }
 
 /// Persisted metadata overrides for a web session (preset, model, title).
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct WebSessionMeta {
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub preset: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-}
+/// Owned by [`purrcode_core::session::SessionMeta`]; this alias keeps
+/// the old name working for existing callers.
+pub type WebSessionMeta = SessionMeta;
 
 /// Runtime registry for web sessions. The map holds live entries
 /// only; the durable list is read from the store on every call so a
@@ -182,12 +175,14 @@ pub struct WebSessionRegistry {
 }
 
 impl WebSessionRegistry {
-    pub fn new(purrcode_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            store: SessionStore::new(purrcode_dir),
+    /// Open the registry over the store at `<purrcode_dir>/purrcode.db`.
+    /// Fails hard when the database cannot be opened or migrated.
+    pub fn new(purrcode_dir: impl Into<PathBuf>) -> Result<Self> {
+        Ok(Self {
+            store: SessionStore::new(purrcode_dir)?,
             sessions: Mutex::new(HashMap::new()),
             order: Mutex::new(VecDeque::new()),
-        }
+        })
     }
 
     /// Get the live entry for `id`, creating it (bus + channel +
@@ -337,7 +332,7 @@ impl WebSessionRegistry {
         if !is_valid_web_session_id(id) {
             return Err(PurrError::Session(format!("invalid web session id '{id}'")));
         }
-        if !self.store.session_exists(id) {
+        if !self.store.session_exists(id)? {
             return Err(PurrError::Session(format!(
                 "web session '{id}' does not exist"
             )));
@@ -350,8 +345,8 @@ impl WebSessionRegistry {
         self.ensure_session(DEFAULT_WEB_SESSION_ID)
     }
 
-    /// Mint a fresh session: a new id, an empty JSONL file on disk
-    /// (so it shows up in the list at once, before its first
+    /// Mint a fresh session: a new id, an empty session row in the
+    /// store (so it shows up in the list at once, before its first
     /// message), and a live runtime entry.
     pub fn create_session(&self) -> Result<Arc<WebSession>> {
         let id = new_web_session_id();
@@ -359,7 +354,7 @@ impl WebSessionRegistry {
         self.ensure_session(&id)
     }
 
-    /// Delete a web session from the in-memory registry and disk.
+    /// Delete a web session from the in-memory registry and the store.
     pub fn delete_session(&self, id: &str) -> Result<()> {
         if !is_valid_web_session_id(id) {
             return Err(PurrError::Session(format!("invalid web session id '{id}'")));
@@ -370,48 +365,31 @@ impl WebSessionRegistry {
         if let Ok(mut order) = self.order.lock() {
             order.retain(|c| c != id);
         }
-        let meta_path = self.session_meta_path(id);
-        if meta_path.exists() {
-            let _ = std::fs::remove_file(&meta_path);
-        }
         self.store.delete_session(id)
     }
 
-    pub fn session_meta_path(&self, id: &str) -> PathBuf {
-        self.store.sessions_dir().join(format!("{id}.meta.json"))
-    }
-
+    /// Metadata overrides for one session, from the `sessions` row.
+    /// An invalid id or a missing row reads as the default.
     pub fn load_session_meta(&self, id: &str) -> WebSessionMeta {
         if !is_valid_web_session_id(id) {
             return WebSessionMeta::default();
         }
-        let path = self.session_meta_path(id);
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+        self.store.load_meta(id).unwrap_or_default()
     }
 
     pub fn save_session_meta(&self, id: &str, meta: &WebSessionMeta) -> Result<()> {
         if !is_valid_web_session_id(id) {
             return Err(PurrError::Session(format!("invalid web session id '{id}'")));
         }
-        let path = self.session_meta_path(id);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(PurrError::Io)?;
-        }
-        let json = serde_json::to_string_pretty(meta)
-            .map_err(|e| PurrError::Internal(format!("serialize session meta: {e}")))?;
-        std::fs::write(&path, json).map_err(PurrError::Io)
+        self.store.save_meta(id, meta)
     }
 
-    /// All web sessions on disk (valid ids only), most recently
-    /// written first. A session written by an older daemon version
+    /// All web sessions in the store (valid ids only), most recently
+    /// updated first. A session written by an older daemon version
     /// (`purr_web`) and sessions minted here both appear.
     pub fn list_sessions(&self) -> Vec<WebSessionInfo> {
-        let mut infos: Vec<WebSessionInfo> = self
-            .store
-            .list_sessions()
+        self.store
+            .list_sessions_by_updated()
             .into_iter()
             .filter(|id| is_valid_web_session_id(id))
             .map(|id| {
@@ -422,29 +400,18 @@ impl WebSessionRegistry {
                     title,
                 }
             })
-            .collect();
-        infos.sort_by(|a, b| {
-            let mtime = |id: &str| {
-                std::fs::metadata(self.store.session_jsonl_path(id))
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            };
-            mtime(&b.id)
-                .cmp(&mtime(&a.id))
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        infos
+            .collect()
     }
 
     /// Full history of one session, for replay when the user opens
-    /// it. Fails on an invalid id and on a session with no file on
-    /// disk (a minted-but-never-written session has an empty file,
-    /// so it returns an empty vec instead).
+    /// it. Fails on an invalid id and on a session with no row in
+    /// the store (a minted-but-never-written session has an empty
+    /// row, so it returns an empty vec instead).
     pub fn transcript(&self, id: &str) -> Result<Vec<ChatMessage>> {
         if !is_valid_web_session_id(id) {
             return Err(PurrError::Session(format!("invalid web session id '{id}'")));
         }
-        if !self.store.session_exists(id) {
+        if !self.store.session_exists(id)? {
             return Err(PurrError::Session(format!(
                 "web session '{id}' does not exist"
             )));
@@ -452,43 +419,27 @@ impl WebSessionRegistry {
         self.store.load_messages(id)
     }
 
-    /// One cheap pass over a session's JSONL: count parseable
-    /// message lines and take the first user message as the title.
-    /// Parses each line as a [`SessionTurnEntry`] — the exact same
-    /// parse [`SessionStore::load_messages`] uses — so the count
-    /// always equals the transcript length, even on a hand-edited or
-    /// corrupt file (re-checker P3-1: counting any line with a
-    /// `"message"` key disagreed with the transcript on unknown
-    /// roles and wire-shaped `tool_calls`).
+    /// Count the transcript and take the first user message as the
+    /// title, straight from [`SessionStore::load_messages`] — so the
+    /// count always equals the transcript length by construction.
     fn scan_session(&self, id: &str) -> (usize, String) {
-        let path = self.store.session_jsonl_path(id);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return (0, String::new()),
+        let Ok(messages) = self.store.load_messages(id) else {
+            return (0, String::new());
         };
-        let mut count = 0;
-        let mut title = String::new();
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(entry) = serde_json::from_str::<SessionTurnEntry>(trimmed) else {
-                continue;
-            };
-            count += 1;
-            if title.is_empty() && entry.message.role == MessageRole::User {
-                title = entry
-                    .message
-                    .content
+        let count = messages.len();
+        let title = messages
+            .iter()
+            .find(|m| m.role == MessageRole::User)
+            .map(|m| {
+                m.content
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")
                     .chars()
                     .take(TITLE_CHARS)
-                    .collect();
-            }
-        }
+                    .collect()
+            })
+            .unwrap_or_default();
         (count, title)
     }
 }
@@ -503,7 +454,7 @@ mod tests {
             std::env::temp_dir().join(format!("purrcode-web-sess-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        (WebSessionRegistry::new(&dir), dir)
+        (WebSessionRegistry::new(&dir).unwrap(), dir)
     }
 
     fn user_msg(content: &str) -> ChatMessage {
@@ -569,7 +520,7 @@ mod tests {
     async fn test_create_list_transcript_round_trip() {
         let (reg, dir) = test_registry("roundtrip");
         // A foreign session on disk must never appear in the web list.
-        let store = SessionStore::new(&dir);
+        let store = SessionStore::new(&dir).unwrap();
         store
             .append_message("purr_cron_0123456789ab", &user_msg("cron"))
             .unwrap();
@@ -582,7 +533,7 @@ mod tests {
 
         let created = reg.create_session().unwrap();
         assert!(is_valid_web_session_id(&created.id));
-        assert!(store.session_exists(&created.id));
+        assert!(store.session_exists(&created.id).unwrap());
 
         // The new (empty) session lists with 0 messages; the legacy
         // one lists with 2 and a title from its first user message.
@@ -606,9 +557,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_sorted_by_mtime_desc() {
+    async fn test_list_sorted_by_updated_desc() {
         let (reg, dir) = test_registry("mtime");
-        let store = SessionStore::new(&dir);
+        let store = SessionStore::new(&dir).unwrap();
         store.append_message("purr_web", &user_msg("old")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         let fresh = reg.create_session().unwrap();
@@ -631,7 +582,7 @@ mod tests {
         assert!(reg.ensure_session_if_exists("purr_web_../x").is_err());
         // Once the file exists (a resumed session after restart),
         // the live entry materializes on demand.
-        let store = SessionStore::new(&dir);
+        let store = SessionStore::new(&dir).unwrap();
         store
             .append_message("purr_web_0123456789ab", &user_msg("hi"))
             .unwrap();
@@ -644,48 +595,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_scan_counts_only_loadable_entries() {
-        // Re-checker P3-1: a hand-edited JSONL with lines that
-        // `load_messages` drops must not inflate `message_count`.
+    async fn test_scan_counts_match_transcript() {
+        // The list count and the transcript both come from the same
+        // `load_messages`, so they always agree — including for turns
+        // with tool calls. (The old JSONL scan-parity test is gone:
+        // there is no hand-editable file left to corrupt.)
+        use purrcode_api::provider::ToolCallRequest;
         let (reg, dir) = test_registry("scan-parity");
-        let store = SessionStore::new(&dir);
+        let store = SessionStore::new(&dir).unwrap();
         let id = "purr_web_0123456789ab";
-        let entry = |role: &str, content: &str| {
-            serde_json::json!({
-                "version": "session/v1",
-                "session_id": id,
-                "timestamp": "2026-11-13T00:00:00Z",
-                "message": {"role": role, "content": content,
-                            "tool_calls": null, "tool_call_id": null}
-            })
-            .to_string()
-        };
-        let wire_tool_calls = serde_json::json!({
-            "version": "session/v1", "session_id": id,
-            "timestamp": "2026-11-13T00:00:00Z",
-            "message": {"role": "assistant", "content": "",
-                        "tool_calls": [{"id": "c1", "type": "function",
-                                        "function": {"name": "bash", "arguments": "{}"}}],
-                        "tool_call_id": null}
-        })
-        .to_string();
-        let raw = [
-            entry("user", "first user message"),
-            entry("assistant", "reply"),
-            entry("weird", "unknown role"),
-            wire_tool_calls,
-            "{not json".to_string(),
-            r#"{"no_message_key": true}"#.to_string(),
-        ]
-        .join("\n");
-        std::fs::create_dir_all(store.sessions_dir()).unwrap();
-        std::fs::write(store.session_jsonl_path(id), raw).unwrap();
+        store
+            .append_message(id, &user_msg("first user message"))
+            .unwrap();
+        store
+            .append_message(
+                id,
+                &ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    tool_calls: Some(vec![ToolCallRequest {
+                        id: "c1".to_string(),
+                        name: "bash".to_string(),
+                        arguments: "{}".to_string(),
+                    }]),
+                    tool_call_id: None,
+                },
+            )
+            .unwrap();
 
         let list = reg.list_sessions();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].message_count, 2);
         assert_eq!(list[0].title, "first user message");
-        // The transcript agrees by construction (same parse).
         assert_eq!(reg.transcript(id).unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(dir);
     }

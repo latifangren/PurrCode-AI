@@ -8,7 +8,7 @@
 //! - Active web sessions from `WebSessionRegistry`
 //! - Real identity/memory files (`MEMORY.md`, `USER.md`, `SOUL.md`)
 //! - Registered skills and MCP servers
-//! - Scheduled cron jobs from `jobs.jsonc`
+//! - Scheduled cron jobs from the `cron_jobs` table
 //! - Sandbox security state
 
 use crate::web::server::WebState;

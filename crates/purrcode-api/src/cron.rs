@@ -7,7 +7,7 @@
 //! `purrcode-cli` and reuses the CLI's `cron add` path — the same
 //! NL schedule parser, the same preset-rail pinning, the same
 //! allowlist validation, the same store — so the WebUI never
-//! re-implements scheduling logic and never writes `jobs.jsonc`
+//! re-implements scheduling logic and never writes the cron store
 //! itself. The HTTP handlers only translate JSON ↔ trait calls.
 //!
 //! A job is identified by id or exact name, like the CLI's

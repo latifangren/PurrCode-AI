@@ -33,81 +33,68 @@ pub(crate) fn save_json(path: &Path, val: &Value) {
 }
 
 pub(crate) fn load_audit_entries(purrcode_dir: &Path, limit: usize) -> Vec<Value> {
-    let audit_file = purrcode_dir.join("audit.jsonl");
-    let mut entries = Vec::new();
-
-    if let Ok(content) = std::fs::read_to_string(&audit_file) {
-        for (idx, line) in content.lines().rev().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("aud-{:04}", idx + 1));
-                let timestamp = v
-                    .get("timestamp")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("Recent")
-                    .to_string();
-                let actor = v
-                    .get("agent")
-                    .or_else(|| v.get("actor"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("System")
-                    .to_string();
-                let operation = v
-                    .get("event")
-                    .or_else(|| v.get("operation"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("tool_call")
-                    .to_string();
-                let target = v
-                    .get("tool")
-                    .or_else(|| v.get("target"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("system")
-                    .to_string();
-                let decision = v
-                    .get("decision")
-                    .or_else(|| v.get("outcome"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("allow");
-
-                let outcome = match decision.to_lowercase().as_str() {
-                    "allow" | "allowed" | "approve" => "Allowed",
-                    "blocked" | "object_blocked" => "Blocked",
-                    "deny" | "denied" | "object" => "Denied",
-                    _ => "Allowed",
-                };
-                let detail = v
-                    .get("detail")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                entries.push(json!({
-                    "id": id, "timestamp": timestamp, "actor": actor,
-                    "operation": operation, "target": target, "outcome": outcome, "detail": detail
-                }));
-
-                if entries.len() >= limit {
-                    break;
-                }
-            }
-        }
-    }
-
+    // Audit rows live in the `audit` table (ADR-015), newest first.
+    // The row id is a stable entry id — the old JSONL reader
+    // fabricated `aud-{:04}` from the line position, which shifted
+    // whenever the file rotated. A missing or unreadable store still
+    // yields the single fallback entry (the cockpit never 500s on
+    // the audit read), exactly as the old missing-file path did.
+    let entries = load_audit_entries_sql(purrcode_dir, limit).unwrap_or_default();
     if entries.is_empty() {
-        entries.push(json!({
+        return vec![json!({
             "id": "aud-init-01", "timestamp": "Session start", "actor": "Meowstro",
             "operation": "orchestrator_init", "target": "cockpit", "outcome": "Allowed",
             "detail": "Workspace root initialized with fail-closed security boundary"
-        }));
+        })];
     }
     entries
+}
+
+fn load_audit_entries_sql(purrcode_dir: &Path, limit: usize) -> Result<Vec<Value>, String> {
+    use purrcode_store::{sql, Store};
+
+    let store = Store::open(purrcode_dir).map_err(|e| e.to_string())?;
+    let guard = store.lock().map_err(|e| e.to_string())?;
+    let mut stmt = sql(guard.prepare(
+        "SELECT id, ts, agent, event, tool, decision, detail FROM audit
+         ORDER BY id DESC LIMIT ?1",
+    ))
+    .map_err(|e| e.to_string())?;
+    let rows = sql(
+        stmt.query_map(purrcode_store::rusqlite::params![limit as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let (id, timestamp, actor, operation, target, decision, detail) =
+            row.map_err(|e| e.to_string())?;
+        let outcome = match decision.to_lowercase().as_str() {
+            "allow" | "allowed" | "approve" => "Allowed",
+            "blocked" | "object_blocked" => "Blocked",
+            "deny" | "denied" | "object" => "Denied",
+            _ => "Allowed",
+        };
+        entries.push(json!({
+            "id": format!("aud-{id:04}"),
+            "timestamp": timestamp,
+            "actor": actor,
+            "operation": operation,
+            "target": target.unwrap_or_else(|| "system".to_string()),
+            "outcome": outcome,
+            "detail": detail,
+        }));
+    }
+    Ok(entries)
 }
 
 pub(crate) fn load_preferences(purrcode_dir: &Path) -> Value {

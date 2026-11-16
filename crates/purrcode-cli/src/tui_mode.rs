@@ -162,7 +162,7 @@ pub(crate) async fn run_tui(
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
     let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
 
-    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir)?);
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
     let mut plugin_mgr = PluginManager::new();
@@ -191,7 +191,7 @@ pub(crate) async fn run_tui(
         &unenforced_caps,
     );
 
-    let session_store = Arc::new(SessionStore::new(&purrcode_dir));
+    let session_store = Arc::new(SessionStore::new(&purrcode_dir)?);
     if let (Ok(p_val), Ok(mp_val)) = (
         serde_json::to_value(&mode_preset),
         serde_json::to_value(&model_preset),

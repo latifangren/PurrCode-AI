@@ -276,7 +276,7 @@ impl ShadowAuditor {
             }
             ShadowVerdict::Object { reason } => match self.guardrail {
                 GuardrailMode::God => {
-                    // Oyen (God mode): silent auditor — logs to audit.jsonl without blocking
+                    // Oyen (God mode): silent auditor — logs to the audit log without blocking
                     if let Some(ref sink) = self.audit_sink {
                         sink.record_event(
                             session_id,

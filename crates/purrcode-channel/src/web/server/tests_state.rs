@@ -188,7 +188,7 @@ async fn test_server_serves_webui_dist_static_and_spa_fallback() {
     std::fs::write(asset_dir.join("app.js"), "console.log('purr');").unwrap();
 
     let port = free_port();
-    let registry = Arc::new(WebSessionRegistry::new(dir.clone()));
+    let registry = Arc::new(WebSessionRegistry::new(dir.clone()).unwrap());
     let server = WebServer::new(
         "127.0.0.1",
         port,
@@ -241,7 +241,7 @@ async fn test_server_serves_webui_dist_static_and_spa_fallback() {
 async fn test_cockpit_sessions_mutations_and_audit_logs() {
     let dir = test_dir("cockpit-mutations");
     let port = free_port();
-    let registry = Arc::new(WebSessionRegistry::new(dir.clone()));
+    let registry = Arc::new(WebSessionRegistry::new(dir.clone()).unwrap());
     let s1 = registry.create_session().unwrap();
 
     let server = WebServer::new(

@@ -8,6 +8,7 @@ description = "PurrCode AI security rule engine, workspace confinement, and audi
 [dependencies]
 purrcode-api.workspace = true
 purrcode-config.workspace = true
+purrcode-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

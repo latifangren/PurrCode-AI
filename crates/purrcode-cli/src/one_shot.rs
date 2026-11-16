@@ -134,7 +134,7 @@ pub(crate) async fn run_one_shot(
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
     let policy_gate: Arc<dyn PolicyGate> = approval_gate.clone();
 
-    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir)?);
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
     let mut plugin_mgr = PluginManager::new();
@@ -162,7 +162,7 @@ pub(crate) async fn run_one_shot(
     let session_id = format!("purr_{}", &uuid::Uuid::new_v4().to_string()[..6]);
     plugin_dispatcher.dispatch_session_start(&session_id).await;
 
-    let session_store = SessionStore::new(&purrcode_dir);
+    let session_store = SessionStore::new(&purrcode_dir)?;
     let session_dir = session_store.session_dir(&session_id);
 
     // Audit labels must say which agent actually ran: the generic single

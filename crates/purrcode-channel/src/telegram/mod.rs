@@ -15,7 +15,7 @@ pub mod sessions;
 pub mod types;
 
 pub use approval::{SkillDraftRequester, TelegramApprovalRequester, TelegramAskRequester};
-pub use channel::{telegram_state_dir, InboundMessage, TelegramChannel, TelegramChatChannel};
+pub use channel::{InboundMessage, TelegramChannel, TelegramChatChannel};
 pub use client::{TelegramApiClient, TelegramError};
 pub use sessions::ChatSessionIndex;
 pub use types::{BotInfo, CallbackQuery, Chat, Message, Update, User};

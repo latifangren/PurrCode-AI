@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Commands::Session { action, id, format } => {
-                let store = SessionStore::new(&purrcode_dir);
+                let store = SessionStore::new(&purrcode_dir)?;
                 match action.as_str() {
                     "export" => {
                         let sid = id.ok_or_else(|| {

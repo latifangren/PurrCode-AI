@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use purrcode_api::error::{PurrError, Result};
+use purrcode_api::error::Result;
 pub use purrcode_api::tool::ApprovalDecision;
 use purrcode_api::tool::{ApprovalTier, AuditSink, PolicyGate};
 use purrcode_config::{ApprovalMode, GuardrailMode, ModePreset, SandboxMode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,61 +21,62 @@ pub struct AuditEntry {
 
 #[derive(Clone)]
 pub struct AuditLogger {
-    audit_file: PathBuf,
-    max_bytes: u64,
+    store: std::sync::Arc<purrcode_store::Store>,
 }
 
 impl AuditLogger {
-    pub fn new(purrcode_dir: impl Into<PathBuf>) -> Self {
-        let dir = purrcode_dir.into();
-        Self {
-            audit_file: dir.join("audit.jsonl"),
-            max_bytes: 5 * 1024 * 1024, // 5 MB rotation threshold
+    /// Open the audit table in `<purrcode_dir>/purrcode.db` (ADR-015;
+    /// the old `audit.jsonl` + 5 MB rotation are gone). Fails closed
+    /// when the store cannot be opened — an audit log that cannot be
+    /// written is a startup error, not a silent gap. Also prunes
+    /// rows older than 90 days on every open (the spec's retention
+    /// rule; `ts` is RFC3339, so the date-prefix comparison drops
+    /// whole days older than the cutoff).
+    pub fn new(purrcode_dir: impl Into<PathBuf>) -> Result<Self> {
+        let store = purrcode_store::Store::open(&purrcode_dir.into())?;
+        {
+            let guard = store.lock()?;
+            purrcode_store::sql(
+                guard.execute("DELETE FROM audit WHERE ts < date('now','-90 days')", []),
+            )?;
         }
-    }
-
-    pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
-        self.max_bytes = max_bytes;
-        self
-    }
-
-    pub fn audit_file_path(&self) -> &Path {
-        &self.audit_file
+        Ok(Self {
+            store: std::sync::Arc::new(store),
+        })
     }
 
     /// Count `tool_call` events for one session since the last curator
     /// marker (`skill_curator_checked`) for that session (v0.3 F20,
-    /// ADR-014 item 7). The audit log is append-only, so "since the
-    /// last marker" is a stable per-turn boundary that survives
-    /// restarts; a rotated-away marker just restarts the count from
-    /// the current file. A missing or unreadable file counts as zero
-    /// (never an error — the curator is a best-effort hook, and a
-    /// broken audit file must not break the turn it follows).
+    /// ADR-014 item 7). The marker is an audit row, so "since the
+    /// last marker" is the rows after the marker's id — one indexed
+    /// `COUNT(*)`, not a full-file scan (the old implementation read
+    /// the whole `audit.jsonl` on every turn). A pruned-away marker
+    /// (90-day retention) restarts the count, like the old rotation
+    /// did. A missing or unreadable store counts as zero (never an
+    /// error — the curator is a best-effort hook, and a broken audit
+    /// store must not break the turn it follows).
     pub fn count_tool_calls_since_curator_check(&self, session_id: &str) -> usize {
-        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+        let Ok(guard) = self.store.lock() else {
             return 0;
         };
-        let mut count = 0usize;
-        for line in raw.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
-                continue;
-            }
-            match v.get("event").and_then(|e| e.as_str()) {
-                Some("skill_curator_checked") => count = 0,
-                Some("tool_call") => count += 1,
-                _ => {}
-            }
-        }
-        count
+        let Ok(count) = purrcode_store::sql(guard.query_row(
+            "SELECT COUNT(*) FROM audit
+             WHERE session_id = ?1 AND event = 'tool_call'
+               AND id > COALESCE(
+                 (SELECT MAX(id) FROM audit
+                  WHERE session_id = ?1 AND event = 'skill_curator_checked'), 0)",
+            purrcode_store::rusqlite::params![session_id],
+            |row| row.get::<_, i64>(0),
+        )) else {
+            return 0;
+        };
+        usize::try_from(count).unwrap_or(0)
     }
 
     /// Un-overridden Tuxeshadow objections recorded for one session:
     /// `shadow_audit` entries with decision `OBJECT` (Default/tabby,
     /// no override) or `OBJECT_BLOCKED` (Strict/carrier, user did not
-    /// approve), in file order, with the objection reason as `detail`.
+    /// approve), in id order, with the objection reason as `detail`.
     /// Everything else is excluded on purpose: `APPROVE` /
     /// `APPROVE_WITH_NOTES` are not objections; `shadow_override`
     /// (`OVERRIDDEN`) and `shadow_strict_override` (`APPROVED_BY_USER`)
@@ -88,65 +87,45 @@ impl AuditLogger {
     /// the ground truth, because a model may summarise a blocked run
     /// without ever mentioning the block. Same best-effort contract as
     /// `count_tool_calls_since_curator_check`: a missing, unreadable,
-    /// or corrupt file yields an empty list, never an error.
+    /// or corrupt store yields an empty list, never an error.
     pub fn shadow_objections(&self, session_id: &str) -> Vec<String> {
-        let Ok(raw) = std::fs::read_to_string(&self.audit_file) else {
+        let Ok(guard) = self.store.lock() else {
             return Vec::new();
         };
-        let mut objections = Vec::new();
-        for line in raw.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            if v.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
-                continue;
-            }
-            if v.get("event").and_then(|e| e.as_str()) != Some("shadow_audit") {
-                continue;
-            }
-            match v.get("decision").and_then(|d| d.as_str()) {
-                Some("OBJECT") | Some("OBJECT_BLOCKED") => {
-                    objections.push(
-                        v.get("detail")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    );
-                }
-                _ => {}
-            }
-        }
-        objections
+        let Ok(mut stmt) = purrcode_store::sql(guard.prepare(
+            "SELECT detail FROM audit
+             WHERE session_id = ?1 AND event = 'shadow_audit'
+               AND decision IN ('OBJECT', 'OBJECT_BLOCKED')
+             ORDER BY id",
+        )) else {
+            return Vec::new();
+        };
+        let Ok(rows) = purrcode_store::sql(
+            stmt.query_map(purrcode_store::rusqlite::params![session_id], |row| {
+                row.get::<_, String>(0)
+            }),
+        ) else {
+            return Vec::new();
+        };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     pub fn log_entry(&self, mut entry: AuditEntry) -> Result<()> {
         entry.detail = scrub_secrets(&entry.detail);
-        if let Some(parent) = self.audit_file.parent() {
-            std::fs::create_dir_all(parent).map_err(PurrError::Io)?;
-        }
-
-        self.rotate_if_needed()?;
-
-        let line = serde_json::to_string(&entry)? + "\n";
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.audit_file)
-            .map_err(PurrError::Io)?;
-        file.write_all(line.as_bytes()).map_err(PurrError::Io)?;
-        Ok(())
-    }
-
-    fn rotate_if_needed(&self) -> Result<()> {
-        if let Ok(meta) = std::fs::metadata(&self.audit_file) {
-            if meta.len() >= self.max_bytes {
-                let date_tag = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                let rotated = self
-                    .audit_file
-                    .with_file_name(format!("audit-{}.jsonl", date_tag));
-                let _ = std::fs::rename(&self.audit_file, rotated);
-            }
-        }
+        let guard = self.store.lock()?;
+        purrcode_store::sql(guard.execute(
+            "INSERT INTO audit (ts, session_id, agent, event, tool, decision, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            purrcode_store::rusqlite::params![
+                entry.timestamp,
+                entry.session_id,
+                entry.agent,
+                entry.event,
+                entry.tool,
+                entry.decision,
+                entry.detail,
+            ],
+        ))?;
         Ok(())
     }
 }
@@ -396,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_secret_scrubbing_and_audit_rotation() {
+    fn test_secret_scrubbing_and_audit_write() {
         let raw_line = format!(
             "Header Authorization: Bearer {} and sk-999999",
             "tok_abc123"
@@ -410,7 +389,7 @@ mod tests {
             "purr_audit_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
         ));
-        let logger = AuditLogger::new(&temp_dir).with_max_bytes(100);
+        let logger = AuditLogger::new(&temp_dir).unwrap();
         logger
             .log_entry(AuditEntry {
                 timestamp: "2026-11-11T00:00:00Z".to_string(),
@@ -422,20 +401,42 @@ mod tests {
                 detail: format!("Bearer {}", "dummy_val"),
             })
             .unwrap();
+        // The store is SQLite now (ADR-015): no `audit.jsonl`, no
+        // rotation files — and the stored detail is scrubbed.
+        assert!(temp_dir.join("purrcode.db").exists());
+        assert!(!temp_dir.join("audit.jsonl").exists());
+        let store = purrcode_store::Store::open(&temp_dir).unwrap();
+        let guard = store.lock().unwrap();
+        let detail: String = guard
+            .query_row(
+                "SELECT detail FROM audit WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(detail.contains("Bearer [FILTERED]"));
+        assert!(!detail.contains("dummy_val"));
+        // 90-day retention: an entry older than the cutoff is pruned
+        // by the next open of the same store.
         logger
             .log_entry(AuditEntry {
-                timestamp: "2026-11-11T00:00:01Z".to_string(),
+                timestamp: "2020-01-01T00:00:00Z".to_string(),
                 session_id: "s1".to_string(),
                 agent: "meowstro".to_string(),
                 event: "tool_call".to_string(),
                 tool: Some("read".to_string()),
                 decision: "allow".to_string(),
-                detail: "second entry triggers rotation".to_string(),
+                detail: "ancient".to_string(),
             })
             .unwrap();
-
-        let files: Vec<_> = std::fs::read_dir(&temp_dir).unwrap().flatten().collect();
-        assert!(files.len() >= 2);
+        assert_eq!(logger.count_tool_calls_since_curator_check("s1"), 2);
+        drop(guard);
+        let _reopened = AuditLogger::new(&temp_dir).unwrap();
+        assert_eq!(
+            logger.count_tool_calls_since_curator_check("s1"),
+            1,
+            "the 2020 row must be pruned on reopen"
+        );
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 
@@ -497,7 +498,7 @@ mod tests {
             "purr_audit_curator_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
         ));
-        let logger = AuditLogger::new(&dir);
+        let logger = AuditLogger::new(&dir).unwrap();
         let sid = "purr_count";
         let other = "purr_other";
         // 3 calls for this session, 2 for another session (ignored).
@@ -564,7 +565,7 @@ mod tests {
             "purr_audit_shadow_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(1)
         ));
-        let logger = AuditLogger::new(&dir);
+        let logger = AuditLogger::new(&dir).unwrap();
         let sid = "purr_shadow";
         let other = "purr_other";
         let entry = |session: &str, event: &str, decision: &str, detail: &str| {
@@ -625,10 +626,11 @@ mod tests {
             vec!["other session".to_string()]
         );
         assert!(logger.shadow_objections("purr_nobody").is_empty());
-        // A missing audit file is an empty list, never an error.
-        let missing =
-            AuditLogger::new(std::env::temp_dir().join("purr_audit_shadow_missing_dir_xyz"));
+        // A fresh (never-written) store is an empty list, never an error.
+        let missing_dir = std::env::temp_dir().join("purr_audit_shadow_missing_dir_xyz");
+        let missing = AuditLogger::new(&missing_dir).unwrap();
         assert!(missing.shadow_objections(sid).is_empty());
+        let _ = std::fs::remove_dir_all(&missing_dir);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

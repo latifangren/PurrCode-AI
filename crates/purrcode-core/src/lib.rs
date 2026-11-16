@@ -10,7 +10,7 @@ pub use harness_prompt::{
     format_environment_block, CORE_HARNESS_CONTRACT,
 };
 pub use loop_engine::{AgentEventListener, AgentLoop, ApprovalRequester};
-pub use session::{SessionRecord, SessionStore};
+pub use session::{SessionMeta, SessionStore};
 pub use steering::SteeringQueue;
 
 use purrcode_api::event::AgentEvent;

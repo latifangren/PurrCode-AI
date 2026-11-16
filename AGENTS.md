@@ -85,13 +85,15 @@ any mode. Cron jobs never run `oyen`/`yolo`.
 
 ## 5. Memory
 
-- Default is **Markdown only**: `MEMORY.md` / `USER.md` / `SOUL.md`
-  (+ `.purrcode/MEMORY.md` per project) + session JSONL. No database required.
+- Default is **Markdown only** for memory: `MEMORY.md` / `USER.md` / `SOUL.md`
+  (+ `.purrcode/MEMORY.md` per project). Machine state (sessions, cron,
+  deliveries, audit, chats) lives in SQLite `<purrcode_dir>/purrcode.db`
+  (ADR-015, `crates/purrcode-store`) — the old session JSONL is gone.
 - Memory backends (FTS5, vector, external) are **plugins** behind the
   versioned `MemoryBackend` trait — never hardcode one into core.
-- **No breaking change:** the MD format and session JSONL format are stable
-  contracts. External backends must dual-write to MD. Trait changes get a new
-  version + adapter; v1 is never changed after release.
+- **No breaking change:** the MD format is a stable contract. External
+  backends must dual-write to MD. Trait changes get a new version + adapter;
+  v1 is never changed after release.
 - When you learn a durable fact, preference, decision, or outcome about the
   user or the project, record it in the right memory file before replying.
   Routine progress and tool output do not belong in memory.

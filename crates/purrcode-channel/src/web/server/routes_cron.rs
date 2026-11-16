@@ -7,7 +7,7 @@
 //! the `CronRegistry` trait — which the CLI implements on top
 //! of the service cron store, reusing the CLI's `cron add` path
 //! (same NL parser, same preset pinning, same allowlist
-//! validation) — so these handlers never touch `jobs.jsonc`
+//! validation) — so these handlers never touch the cron store
 //! themselves:
 //!
 //! * `POST /api/cron/parse {"schedule"}` — parse preview, no

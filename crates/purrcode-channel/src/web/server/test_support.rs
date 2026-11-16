@@ -83,7 +83,8 @@ pub(crate) async fn start_server_with_skill_registry(
     tokio::task::JoinHandle<()>,
 ) {
     let port = free_port();
-    let registry = Arc::new(WebSessionRegistry::new(purrcode_dir.clone()));
+    let registry =
+        Arc::new(WebSessionRegistry::new(purrcode_dir.clone()).expect("test registry opens"));
     let mut server = WebServer::new(
         "127.0.0.1",
         port,
@@ -128,7 +129,8 @@ pub(crate) async fn start_server_with_cron_registry(
     tokio::task::JoinHandle<()>,
 ) {
     let port = free_port();
-    let registry = Arc::new(WebSessionRegistry::new(purrcode_dir.clone()));
+    let registry =
+        Arc::new(WebSessionRegistry::new(purrcode_dir.clone()).expect("test registry opens"));
     let mut server = WebServer::new(
         "127.0.0.1",
         port,

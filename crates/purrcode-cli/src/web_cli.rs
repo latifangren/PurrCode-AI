@@ -141,7 +141,7 @@ pub async fn run_web_command(
     let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, workspace_root)?;
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, yolo));
 
-    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir)?);
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
     // v0.4 B4: one shared manager for the loops' dispatcher and
@@ -180,7 +180,7 @@ pub async fn run_web_command(
 
     // v0.4 B1: one registry for all web chats; each session's bus,
     // channel, and forwarder are created lazily inside it.
-    let session_registry = Arc::new(WebSessionRegistry::new(&purrcode_dir));
+    let session_registry = Arc::new(WebSessionRegistry::new(&purrcode_dir)?);
 
     println!(
         "🐾 PurrCode AI WebUI — http://{}:{} (preset: {}, model: {}:{})",
@@ -611,7 +611,7 @@ impl WebState {
 
         let session_id = session.id.clone();
         let channel = session.channel.clone();
-        let session_store = SessionStore::new(&self.purrcode_dir);
+        let session_store = SessionStore::new(&self.purrcode_dir)?;
         let session_dir = session_store.session_dir(&session_id);
 
         let TurnRuntime {

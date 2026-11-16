@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Cron job store (v0.3 F19, ADR-014).
+//! Cron job store (v0.3 F19, ADR-014; SQLite since ADR-015).
 //!
 //! Job definitions live in a dedicated store, NOT in `purrcode.jsonc`:
-//! `~/.purrcode/cron/jobs.jsonc` — a JSON list of job objects (written by
-//! code as plain JSON, which is valid JSONC). Jobs are stateful (last/next
-//! run, failure count); `purrcode.jsonc` is treated as config. Saves are
-//! atomic (write tmp file, rename), like the Telegram `chats.json` store.
+//! one row per job in the `cron_jobs` table of `<purrcode_dir>/purrcode.db`
+//! (formerly `~/.purrcode/cron/jobs.jsonc`). Jobs are stateful (last/next
+//! run, failure count); `purrcode.jsonc` is treated as config. The store
+//! keeps an in-memory cache (`jobs`) — the same load-once, mutate, explicit
+//! `save()` discipline as the old atomic file — and `save()` upserts the
+//! cache in one transaction, pruning rows that left the cache.
 
 use chrono::{DateTime, Local};
 use purrcode_api::error::{PurrError, Result};
+use purrcode_store::rusqlite::{params, params_from_iter};
+use purrcode_store::{sql, Store};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 /// The agent tool names a cron job may declare in its allowlist.
 /// A job may NEVER manage cron: there is no cron tool in the agent toolset
@@ -129,80 +134,199 @@ pub struct CronJob {
     pub last_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct JobStoreFile {
-    version: u32,
-    jobs: Vec<CronJob>,
+/// Parse an RFC3339 timestamp stored in the database (fail-closed:
+/// a corrupt row fails the whole load, like the old corrupt-file
+/// error — never a silently wrong schedule).
+fn parse_dt(value: &str) -> Result<DateTime<Local>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Local))
+        .map_err(|e| {
+            PurrError::Session(format!(
+                "corrupt cron store: invalid timestamp '{value}': {e}"
+            ))
+        })
 }
 
-/// The job store: all jobs in one atomic JSONC file.
+fn parse_opt_dt(value: Option<String>) -> Result<Option<DateTime<Local>>> {
+    value.map(|v| parse_dt(&v)).transpose()
+}
+
+fn fmt_dt(value: &DateTime<Local>) -> String {
+    value.to_rfc3339()
+}
+
+fn fmt_opt_dt(value: &Option<DateTime<Local>>) -> Option<String> {
+    value.as_ref().map(fmt_dt)
+}
+
+/// The job store: cached jobs, written through to SQLite on `save()`.
 pub struct CronStore {
-    path: PathBuf,
+    store: Arc<Store>,
     jobs: Vec<CronJob>,
-}
-
-pub fn cron_dir(purrcode_dir: &Path) -> PathBuf {
-    purrcode_dir.join("cron")
-}
-
-pub fn jobs_file_path(purrcode_dir: &Path) -> PathBuf {
-    cron_dir(purrcode_dir).join("jobs.jsonc")
 }
 
 impl CronStore {
     pub fn load(purrcode_dir: &Path) -> Result<Self> {
-        let path = jobs_file_path(purrcode_dir);
-        if !path.exists() {
-            return Ok(Self {
-                path,
-                jobs: Vec::new(),
-            });
-        }
-        let raw = std::fs::read_to_string(&path).map_err(|e| {
-            PurrError::Session(format!(
-                "Failed to read cron jobs at {}: {e}",
-                path.display()
-            ))
-        })?;
-        // Jobs are written as plain JSON; tolerate JSONC comments on read.
-        let cleaned = purrcode_config::jsonc::clean_jsonc(&raw);
-        let file: JobStoreFile = serde_json::from_str(&cleaned).map_err(|e| {
-            PurrError::Session(format!("Invalid cron jobs file {}: {e}", path.display()))
-        })?;
+        let store = Store::open(purrcode_dir)?;
+        let jobs = Self::read_all(&store)?;
         Ok(Self {
-            path,
-            jobs: file.jobs,
+            store: Arc::new(store),
+            jobs,
         })
     }
 
-    pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                PurrError::Session(format!(
-                    "Failed to create cron dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
+    /// All jobs in insertion order (`rowid` is the insert order for
+    /// this table — the same order the old JSONC list had).
+    fn read_all(store: &Store) -> Result<Vec<CronJob>> {
+        let guard = store.lock()?;
+        let mut stmt = sql(guard.prepare(
+            "SELECT id, name, enabled, schedule_expr, schedule_display,
+                    schedule_once, schedule_at, prompt, tools_json, preset_json,
+                    delivery_json, created_at, last_run_at, next_run_at,
+                    run_count, failure_count, last_status
+             FROM cron_jobs ORDER BY rowid",
+        ))?;
+        let rows = sql(stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, i64>(15)?,
+                row.get::<_, Option<String>>(16)?,
+            ))
+        }))?;
+        let mut jobs = Vec::new();
+        for row in rows {
+            let (
+                id,
+                name,
+                enabled,
+                schedule_expr,
+                schedule_display,
+                schedule_once,
+                schedule_at,
+                prompt,
+                tools_json,
+                preset_json,
+                delivery_json,
+                created_at,
+                last_run_at,
+                next_run_at,
+                run_count,
+                failure_count,
+                last_status,
+            ) = row.map_err(purrcode_store::StoreError::from)?;
+            jobs.push(CronJob {
+                id,
+                name,
+                enabled: enabled != 0,
+                schedule: JobSchedule {
+                    expr: schedule_expr,
+                    display: schedule_display,
+                    once: schedule_once != 0,
+                    at: parse_opt_dt(schedule_at)?,
+                },
+                prompt,
+                tools: serde_json::from_str(&tools_json).map_err(|e| {
+                    PurrError::Session(format!("corrupt cron store: invalid tools_json: {e}"))
+                })?,
+                preset: serde_json::from_str(&preset_json).map_err(|e| {
+                    PurrError::Session(format!("corrupt cron store: invalid preset_json: {e}"))
+                })?,
+                delivery: serde_json::from_str(&delivery_json).map_err(|e| {
+                    PurrError::Session(format!("corrupt cron store: invalid delivery_json: {e}"))
+                })?,
+                created_at: parse_dt(&created_at)?,
+                last_run: parse_opt_dt(last_run_at)?,
+                next_run: parse_opt_dt(next_run_at)?,
+                run_count: u32::try_from(run_count).unwrap_or(0),
+                failure_count: u32::try_from(failure_count).unwrap_or(0),
+                last_status,
+            });
         }
-        let file = JobStoreFile {
-            version: 1,
-            jobs: self.jobs.clone(),
-        };
-        let text = serde_json::to_string_pretty(&file)
-            .map_err(|e| PurrError::Session(format!("Failed to serialize cron jobs: {e}")))?;
-        let tmp = self.path.with_extension("jsonc.tmp");
-        std::fs::write(&tmp, text).map_err(|e| {
-            PurrError::Session(format!(
-                "Failed to write cron jobs tmp {}: {e}",
-                tmp.display()
-            ))
-        })?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| {
-            PurrError::Session(format!(
-                "Failed to rename cron jobs tmp to {}: {e}",
-                self.path.display()
-            ))
-        })?;
+        Ok(jobs)
+    }
+
+    /// Persist the whole cache in one transaction: upsert every job,
+    /// then prune rows that left the cache. Upsert (not delete-all)
+    /// keeps the `deliveries` rows pointing at their jobs intact.
+    pub fn save(&self) -> Result<()> {
+        let mut guard = self.store.lock()?;
+        let tx = sql(guard.transaction())?;
+        for job in &self.jobs {
+            sql(tx.execute(
+                "INSERT INTO cron_jobs
+                   (id, name, enabled, schedule_expr, schedule_display, schedule_once,
+                    schedule_at, prompt, tools_json, preset_json, delivery_json,
+                    created_at, last_run_at, next_run_at, run_count, failure_count, last_status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name, enabled = excluded.enabled,
+                   schedule_expr = excluded.schedule_expr,
+                   schedule_display = excluded.schedule_display,
+                   schedule_once = excluded.schedule_once,
+                   schedule_at = excluded.schedule_at,
+                   prompt = excluded.prompt, tools_json = excluded.tools_json,
+                   preset_json = excluded.preset_json,
+                   delivery_json = excluded.delivery_json,
+                   created_at = excluded.created_at,
+                   last_run_at = excluded.last_run_at,
+                   next_run_at = excluded.next_run_at,
+                   run_count = excluded.run_count,
+                   failure_count = excluded.failure_count,
+                   last_status = excluded.last_status",
+                params![
+                    job.id,
+                    job.name,
+                    i64::from(job.enabled),
+                    job.schedule.expr,
+                    job.schedule.display,
+                    i64::from(job.schedule.once),
+                    fmt_opt_dt(&job.schedule.at),
+                    job.prompt,
+                    serde_json::to_string(&job.tools).map_err(|e| PurrError::Session(format!(
+                        "Failed to serialize cron job tools: {e}"
+                    )))?,
+                    serde_json::to_string(&job.preset).map_err(|e| PurrError::Session(format!(
+                        "Failed to serialize cron job preset: {e}"
+                    )))?,
+                    serde_json::to_string(&job.delivery).map_err(|e| PurrError::Session(
+                        format!("Failed to serialize cron job delivery: {e}")
+                    ))?,
+                    fmt_dt(&job.created_at),
+                    fmt_opt_dt(&job.last_run),
+                    fmt_opt_dt(&job.next_run),
+                    i64::from(job.run_count),
+                    i64::from(job.failure_count),
+                    job.last_status,
+                ],
+            ))?;
+        }
+        let ids: Vec<&str> = self.jobs.iter().map(|j| j.id.as_str()).collect();
+        if ids.is_empty() {
+            sql(tx.execute("DELETE FROM cron_jobs", []))?;
+        } else {
+            let placeholders = std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql(tx.execute(
+                &format!("DELETE FROM cron_jobs WHERE id NOT IN ({placeholders})"),
+                params_from_iter(ids.iter()),
+            ))?;
+        }
+        sql(tx.commit())?;
         Ok(())
     }
 
@@ -379,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn test_job_roundtrip_atomic_save() {
+    fn test_job_roundtrip_sql_save() {
         let dir = std::env::temp_dir().join(format!(
             "purr-cron-store-test-{}",
             &uuid::Uuid::new_v4().to_string()[..8]
@@ -390,9 +514,9 @@ mod tests {
         let job = sample_job();
         let id = job.id.clone();
         store.add(job).expect("add works");
-        assert!(jobs_file_path(&dir).exists());
-        // No leftover tmp file after an atomic save.
-        assert!(!dir.join("cron").join("jobs.jsonc.tmp").exists());
+        // The old jobs.jsonc file is gone; the database holds the job.
+        assert!(!dir.join("cron").join("jobs.jsonc").exists());
+        assert!(dir.join("purrcode.db").exists());
 
         let store2 = CronStore::load(&dir).expect("reload works");
         assert_eq!(store2.jobs().len(), 1);
@@ -412,10 +536,49 @@ mod tests {
         dup_id.name = "other".to_string();
         assert!(store.add(dup_id).is_err());
 
-        // Remove by name prefix of the id.
+        // Remove by name prefix of the id; the row is pruned on save.
         let removed = store.remove(&id[..8]).expect("remove by id prefix");
         assert_eq!(removed.id, id);
         assert!(store.jobs().is_empty());
+        let store3 = CronStore::load(&dir).expect("reload after remove");
+        assert!(store3.jobs().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_job_one_shot_and_counters_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "purr-cron-store-test-{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = CronStore::load(&dir).expect("empty store loads");
+        let mut job = sample_job();
+        job.schedule = JobSchedule {
+            expr: None,
+            display: "once at 2026-11-13 09:30".to_string(),
+            once: true,
+            at: Some(Local.with_ymd_and_hms(2026, 11, 13, 9, 30, 0).unwrap()),
+        };
+        job.run_count = 3;
+        job.failure_count = 1;
+        job.last_status = Some("failed: timeout".to_string());
+        job.last_run = Some(fixed_now());
+        let id = job.id.clone();
+        store.add(job).expect("add one-shot job");
+
+        let store2 = CronStore::load(&dir).expect("reload works");
+        let found = store2.find(&id).expect("find by id");
+        assert!(found.schedule.once);
+        assert!(found.schedule.expr.is_none());
+        assert_eq!(
+            found.schedule.at,
+            Some(Local.with_ymd_and_hms(2026, 11, 13, 9, 30, 0).unwrap())
+        );
+        assert_eq!(found.run_count, 3);
+        assert_eq!(found.failure_count, 1);
+        assert_eq!(found.last_status.as_deref(), Some("failed: timeout"));
+        assert_eq!(found.last_run, Some(fixed_now()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

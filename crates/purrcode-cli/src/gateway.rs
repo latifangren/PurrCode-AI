@@ -19,7 +19,7 @@ use purrcode_api::plugin::PluginHookDispatcher;
 use purrcode_api::tool::{AuditSink, ToolContext};
 use purrcode_approval::{ApprovalGate, AuditEntry, AuditLogger};
 use purrcode_channel::telegram::{
-    telegram_state_dir, InboundMessage, TelegramApiClient, TelegramChannel, TelegramError,
+    InboundMessage, TelegramApiClient, TelegramChannel, TelegramError,
 };
 use purrcode_config::{Config, ModePresetLoader, ModelPresetLoader};
 use purrcode_core::SessionStore;
@@ -116,7 +116,7 @@ pub async fn run_gateway(
     let mode_preset = ModePresetLoader::load_by_name_or_tabby(&config.preset, workspace_root)?;
     let approval_gate = Arc::new(ApprovalGate::from_preset(&mode_preset, false));
 
-    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir)?);
     let audit_sink: Arc<dyn AuditSink> = audit_logger.clone();
 
     let mut plugin_mgr = PluginManager::new();
@@ -168,8 +168,7 @@ pub async fn run_gateway(
     let _ = provider; // the provider Arc lives in `registry` from here on
 
     let channel = Arc::new(
-        TelegramChannel::new(api, &tg, &telegram_state_dir())
-            .with_ui_config(config.ui.telegram.clone()),
+        TelegramChannel::new(api, &tg, &purrcode_dir).with_ui_config(config.ui.telegram.clone()),
     );
     channel.set_bot_info(&bot_info).await;
 
@@ -385,7 +384,17 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
     let _guard = lock.lock().await;
 
     let session_id = inbound.session_id.clone();
-    let session_store = SessionStore::new(&state.purrcode_dir);
+    let renderer = state.channel.renderer_for(&inbound);
+    let session_store = match SessionStore::new(&state.purrcode_dir) {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!("telegram: session store failed to open: {e}");
+            renderer
+                .send_standalone("Terjadi kesalahan: session store tidak bisa dibuka.")
+                .await;
+            return;
+        }
+    };
     let session_dir = session_store.session_dir(&session_id);
 
     // Plugin session_start fires once per chat session.
@@ -415,7 +424,6 @@ async fn run_turn(state: Arc<GatewayState>, inbound: InboundMessage) {
         detail: format!("chat={}", inbound.chat_id),
     });
 
-    let renderer = state.channel.renderer_for(&inbound);
     let cancel_flag = state.channel.cancel_flag_for(inbound.chat_id).await;
     cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
     let listener = purrcode_channel::telegram::render::TelegramEventListener::new(renderer.clone());

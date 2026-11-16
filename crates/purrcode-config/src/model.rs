@@ -26,7 +26,7 @@ pub struct Config {
 
     /// Cron daemon settings (v0.3, ADR-014). Absent = cron disabled.
     /// Job definitions live in a dedicated store, NOT here:
-    /// `~/.purrcode/cron/jobs.jsonc` (see `purrcode-cli/src/cron/`).
+    /// `<purrcode_dir>/purrcode.db`, table `cron_jobs` (ADR-015).
     /// This section only tunes the daemon (tick interval, on/off).
     #[serde(default)]
     pub cron: Option<CronConfig>,

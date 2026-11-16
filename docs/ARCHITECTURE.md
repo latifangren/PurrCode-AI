@@ -29,7 +29,7 @@ Bab 9 adalah pemetaan ke Rust di `crates/`.
                     │                      │  plugins/skills  │   │
                     │                      └──────────────────┘   │
                     └─────────────────────────────────────────────┘
-                              │ files (SQLite/JSONL/MD)
+                              │ files (SQLite/MD)
                     ~/.purrcode/  +  .purrcode/ (proyek)
 ```
 
@@ -46,7 +46,7 @@ input user → build prompt (system + MEMORY.md + AGENTS.md + ringkasan sesi)
   │                                              ▼                  ▼
   │                                         audit log          event bus → channel
   │                                              │                  │
-  └─────────────── tidak ──► jawab + simpan turn (JSONL + SQLite sesi; ingat ke backend memory)
+  └─────────────── tidak ──► jawab + simpan turn (SQLite sesi; ingat ke backend memory)
 ```
 
 Interrupt: `CancellationToken` per run (ala codex tokio). Steering: pesan susulan
@@ -61,7 +61,7 @@ bila user menekan Esc.
 | Agent loop | `loop()` murni: pendingCalls → stepMessages → nextRequest; max-steps dipaksa jawab teks | opencode `loop.ts`; codex `run_turn` |
 | Tool registry | Snapshot definisi tool (JSON-schema, freeze setelah registrasi); tier approval per tool `read\|write\|exec` | opencode `tool.ts`; oh-my-pi tier |
 | Provider adapter | Grammar `provider:model`; satu chokepoint factory; fallback chain + cooldown/rate-limiter; gate konteks minimal 64K | openhuman grammar + gate; picoclaw fallback |
-| Session store | JSONL append-only berversi + SQLite (`session`, `turn`, `tool_call`); resume/fork/branch via id/parentId; compaction non-destruktif | pi session tree v3; codex rollout JSONL; opencode SQLite+Drizzle |
+| Session store | SQLite (`sessions`, `turns`, `tool_calls`); resume/fork/branch via id/parentId; compaction non-destruktif — JSONL dihapus ADR-015 | pi session tree v3; codex rollout JSONL; opencode SQLite+Drizzle |
 | Memory service | Trait `MemoryBackend` (§4); default `MarkdownMemory`, plugin sqlite-fts/eksternal | hermes/Muse MD; picoclaw FTS5 sebagai plugin |
 | Plugin manager | Discovery, manifest, lifecycle, hook fan-out, mount/unmount | §5 |
 | Approval gate | Rule engine deny > ask > allow; mode supervised default; audit log | §7 |
@@ -273,14 +273,14 @@ Default v0.1 — `MarkdownMemory`:
 ~/.purrcode/USER.md     # siapa user, apa yang penting buat dia
 ~/.purrcode/SOUL.md     # persona & nada PurrCode
 .purrcode/MEMORY.md     # memori per proyek (menang atas global bila bentrok)
-sessions/<id>.jsonl     # transkrip sesi (bukan recall — jejak audit + resume)
+purrcode.db (tabel sessions/turns)  # transkrip sesi (bukan recall — jejak audit + resume, ADR-015)
 ```
 
 - `MEMORY.md` dimuat di setiap turn (`SOUL.md` 1375 char, `USER.md` 1375 char, `MEMORY.md` 2200 char, `.purrcode/MEMORY.md` 2200 char), ditambah pemuatan otomatis instruksi repositori (`.purrcode/AGENTS.md`, `AGENTS.md`, `CLAUDE.md` hingga 3600 char). Hot-reload via mtime (ala PicoClaw): edit manual langsung berlaku tanpa restart.
 - Recall default = grep sederhana atas file MD (tanpa index). Cukup untuk
   v0.1; bila terbukti kurang, naik kelas lewat plugin, bukan dengan mengganti
   default.
-- `/compact` & auto-compact: `compact_messages_with_provider` (dengan fallback deterministik `compact_messages`) menghasilkan ringkasan terstruktur (permintaan user, file tersentuh, perintah bash, error/veto, catatan progres + `<system-reminder>` anti-halusinasi untuk hasil tool yang dibersihkan) sembari menjaga pasangan `Assistant(tool_calls)`–`Tool` tetap utuh dan JSONL asli non-destruktif; `AgentLoop` memicu auto-compaction otomatis saat estimasi token melewati `context_window * auto_compact_threshold`.
+- `/compact` & auto-compact: `compact_messages_with_provider` (dengan fallback deterministik `compact_messages`) menghasilkan ringkasan terstruktur (permintaan user, file tersentuh, perintah bash, error/veto, catatan progres + `<system-reminder>` anti-halusinasi untuk hasil tool yang dibersihkan) sembari menjaga pasangan `Assistant(tool_calls)`–`Tool` tetap utuh dan riwayat sesi di store non-destruktif; `AgentLoop` memicu auto-compaction otomatis saat estimasi token melewati `context_window * auto_compact_threshold`.
 
 Memory sebagai modul (bukan hardcode):
 
@@ -315,7 +315,8 @@ Aturan anti-breaking-change:
 4. **Ganti backend tanpa migrasi paksa.** Data MD tetap sumber kebenaran;
    backend baru mulai dari impor MD; data lama tidak dihapus atau dipindah
    paksa.
-5. **Session JSONL append-only berversi** — formatnya tidak berubah.
+5. **Session store SQLite berversi** (ADR-015) — skema naik via
+   `PRAGMA user_version`; format JSONL lama dihapus, bukan dipertahankan.
 
 - Skill (`SKILL.md` + frontmatter `name`/`description`): hanya deskripsi dimuat
   di awal; isi penuh on-demand (standar agentskills.io, ala Claude Code).
@@ -490,12 +491,10 @@ ditegakkan harness:
 - **Secret:** kredensial tidak pernah dikirim ke LLM tanpa filter `[FILTERED]`
   (ala PicoClaw); token disimpan di `~/.purrcode/credentials` (0600), bukan di
   config yang bisa terbaca.
-- **Audit log:** `~/.purrcode/audit.jsonl` — semua tool call, approval, spawn,
-  penolakan, dan pilihan mode/preset. Tidak bisa dimatikan, di mode apa pun.
-  **Rotasi:** file dirotasi per ukuran (batas di-tuning saat implementasi) +
-  dikompresi (`audit-<tanggal>.jsonl.gz`); retensi minimal 30 hari. Rotasi
-  tidak pernah menghapus file yang sedang ditulis dan tidak pernah diam-diam
-  membuang catatan — `purrcode audit` menampilkan dan memverifikasi arsip.
+- **Audit log:** tabel `audit` di `~/.purrcode/purrcode.db` (ADR-015) —
+  semua tool call, approval, spawn, penolakan, dan pilihan mode/preset.
+  Tidak bisa dimatikan, di mode apa pun. **Retensi:** baris lebih tua
+  dari 90 hari dihapus saat store dibuka; tidak ada rotasi file lagi.
 - **Cron (v0.3):** job cron berjalan sebagai Meowstro di sesi khusus, dengan
   preset yang aktif saat job dibuat — tapi **tidak pernah `oyen` dan tidak
   pernah `yolo`** (eksekusi tanpa pengawasan tidak boleh tanpa guardrail dan
@@ -513,13 +512,10 @@ ditegakkan harness:
   MEMORY.md SOUL.md USER.md
   presets/<nama>.jsonc        # preset mode (preset/v1): carrier/tabby/oyen + custom
   model-presets/<nama>.jsonc  # preset model (model-preset/v1): free/local/premium + custom
-  sessions/<hash-cwd>/<id>.jsonl
   sessions/<id>/subagents/<subid>/{brief.md,result.md}
   sessions/<id>/workgraph.json
-  sessions/<id>/preset.json        # snapshot preset mode efektif sesi itu
-  sessions/<id>/model-preset.json  # snapshot preset model efektif sesi itu
+  purrcode.db           # SQLite: sesi, cron, delivery, audit, chat (ADR-015)
   memory.db             # hanya bila backend sqlite-fts aktif (opsional)
-  audit.jsonl           # rotasi per ukuran, lihat §7
   plugins/<nama>/plugin.yaml
   skills/<nama>/SKILL.md
   agents/<nama>.md
@@ -544,7 +540,7 @@ crates/  (workspace Cargo — rantai crate satu arah, ala OpenHuman, ditegakkan 
   purrcode-memory/    # trait MemoryBackend + MarkdownMemory default (mtime hot-reload)
   purrcode-plugin/    # manager + manifest plugin.yaml + hooks + transport process JSON-RPC
   purrcode-channel/   # registry + TUI (ratatui) + Ask picker + Approval card
-  purrcode-approval/  # rule engine 3 sumbu + secret scrubber + audit.jsonl & rotasi
+  purrcode-approval/  # rule engine 3 sumbu + secret scrubber + audit SQL
   purrcode-service/   # systemd/OpenRC generator & status (ala zeroclaw service install)
   purrcode-cli/       # binary `purrcode-ai`: clap (onboard/doctor/preset/model-preset/session/plugin/service/exec)
 ```
@@ -602,9 +598,10 @@ Catatan: Implementasi crate v0.1 berjalan di `crates/` mengikuti panduan sprint 
    opsi roadmap, bukan bagian dari v0.1 — bila ada, ia dipasang sebagai plugin
    lewat protokol backend yang sama. Aturan anti-breaking-change §4 mengikat
    semua backend. → ARCHITECTURE §4, PRD F7.
-6. **Session store: JSONL + SQLite** (bukan salah satu saja): JSONL append-only
-   = jejak audit + resume; SQLite = tabel `session`/`turn`/`tool_call`.
-   Recall FTS5 bukan bagian session store — hanya lewat plugin `sqlite-fts`.
+6. **Session store: SQLite saja (ADR-015)** — tabel
+   `sessions`/`turns`/`tool_calls`; JSONL append-only dihapus, bukan
+   salah satu dari dua. Recall FTS5 bukan bagian session store — hanya
+   lewat plugin `sqlite-fts`.
 7. **Subagent: continuation ID + handoff file + registry** (bukan prompt-only).
 8. **Bahasa balasan adaptif** — mengikuti bahasa user & model (PRD §2.7).
 9. **WebUI v0.4** sebagai channel tipis di atas event bus yang sama, bukan core kedua.

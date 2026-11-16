@@ -1,25 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use purrcode_api::error::{PurrError, Result};
-use purrcode_api::provider::{ChatMessage, CompletionRequest, MessageRole, ModelProvider};
+use purrcode_api::provider::{
+    ChatMessage, CompletionRequest, MessageRole, ModelProvider, ToolCallRequest,
+};
+use purrcode_store::rusqlite::{params, Connection, OptionalExtension};
+use purrcode_store::{sql, Store, StoreError};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRecord {
-    pub version: String,
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+/// Web-session metadata (title + per-session preset/model overrides).
+/// Formerly `sessions/<id>.meta.json`; stored on the `sessions` row
+/// (`title`, `web_preset`, `web_model`). The file is gone (ADR-015).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMeta {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
-    pub preset: String,
-    pub model_preset: Option<String>,
-    pub turn_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,30 +32,130 @@ pub struct SessionTurnEntry {
     pub message: ChatMessage,
 }
 
+/// Durable session transcripts, backed by the SQLite store (ADR-015).
+/// One row per session in `sessions`, one row per message in `turns`,
+/// one row per provider tool call in `tool_calls`. The old flat files
+/// (`sessions/<id>.jsonl`) are gone; subagent handoff directories
+/// (`sessions/<id>/subagents/<id>/brief.md` + `result.md`) still live
+/// on disk under [`SessionStore::session_dir`].
 pub struct SessionStore {
     root_dir: PathBuf,
+    store: Arc<Store>,
+}
+
+/// One row of the `turns` table as read back for a fork copy:
+/// (id, seq, role, content, tool_call_id, tool_calls_json,
+/// prompt_tokens, completion_tokens, created_at).
+type TurnRow = (
+    i64,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    String,
+);
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn role_str(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn parse_role(s: &str) -> Option<MessageRole> {
+    match s {
+        "system" => Some(MessageRole::System),
+        "user" => Some(MessageRole::User),
+        "assistant" => Some(MessageRole::Assistant),
+        "tool" => Some(MessageRole::Tool),
+        _ => None,
+    }
+}
+
+fn ensure_session(
+    conn: &Connection,
+    session_id: &str,
+    now: &str,
+) -> std::result::Result<(), StoreError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, created_at, updated_at) VALUES (?1, ?2, ?2)",
+        params![session_id, now],
+    )?;
+    Ok(())
+}
+
+fn insert_turn(
+    conn: &Connection,
+    session_id: &str,
+    seq: i64,
+    message: &ChatMessage,
+    now: &str,
+) -> std::result::Result<i64, StoreError> {
+    let tool_calls_json = match &message.tool_calls {
+        Some(calls) => Some(serde_json::to_string(calls)?),
+        None => None,
+    };
+    conn.execute(
+        "INSERT INTO turns (session_id, seq, role, content, tool_call_id, tool_calls_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            session_id,
+            seq,
+            role_str(&message.role),
+            message.content,
+            message.tool_call_id,
+            tool_calls_json,
+            now
+        ],
+    )?;
+    let turn_id = conn.last_insert_rowid();
+    if let Some(calls) = &message.tool_calls {
+        for call in calls {
+            conn.execute(
+                "INSERT INTO tool_calls (id, turn_id, session_id, name, args_json, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'done', ?6)",
+                params![call.id, turn_id, session_id, call.name, call.arguments, now],
+            )?;
+        }
+    }
+    Ok(turn_id)
 }
 
 impl SessionStore {
-    pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-        }
+    /// Open the store at `<root_dir>/purrcode.db`, creating it (and the
+    /// directory) on first use. Fails hard when the database cannot be
+    /// opened or migrated — never a silent fallback to flat files.
+    pub fn new(root_dir: impl Into<PathBuf>) -> Result<Self> {
+        let root_dir = root_dir.into();
+        let store = Store::open(&root_dir)?;
+        Ok(Self {
+            root_dir,
+            store: Arc::new(store),
+        })
     }
 
-    pub fn sessions_dir(&self) -> PathBuf {
-        self.root_dir.join("sessions")
-    }
-
+    /// On-disk home of a session's subagent handoff directories
+    /// (`sessions/<id>/subagents/<id>/`). Kept on the filesystem:
+    /// handoff `brief.md`/`result.md` are Markdown, not machine state.
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(session_id)
+        self.root_dir.join("sessions").join(session_id)
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
-        let jsonl_path = self.session_jsonl_path(session_id);
-        if jsonl_path.exists() {
-            std::fs::remove_file(&jsonl_path).map_err(PurrError::Io)?;
-        }
+        let guard = self.store.lock()?;
+        // CASCADE removes the turns and tool calls; a forked child
+        // keeps existing (its parent_id goes NULL, it is not deleted).
+        sql(guard.execute("DELETE FROM sessions WHERE id = ?1", [session_id]))?;
+        drop(guard);
         let dir_path = self.session_dir(session_id);
         if dir_path.exists() && dir_path.is_dir() {
             std::fs::remove_dir_all(&dir_path).map_err(PurrError::Io)?;
@@ -61,123 +163,302 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn session_jsonl_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(format!("{}.jsonl", session_id))
-    }
-
-    /// Create an empty session file so a fresh session shows up in
+    /// Create an empty session row so a fresh session shows up in
     /// `list_sessions` before its first message is appended (v0.4 B1:
     /// the WebUI "new session" button must list the session at once).
-    /// Idempotent: an existing file is left untouched.
+    /// Idempotent: an existing row is left untouched.
     pub fn create_session(&self, session_id: &str) -> Result<()> {
-        let dir = self.sessions_dir();
-        std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;
-        let path = self.session_jsonl_path(session_id);
-        if !path.exists() {
-            std::fs::write(&path, "").map_err(PurrError::Io)?;
-        }
+        let now = now_rfc3339();
+        let guard = self.store.lock()?;
+        ensure_session(&guard, session_id, &now)?;
         Ok(())
     }
 
-    /// True when the session has a JSONL file on disk.
-    pub fn session_exists(&self, session_id: &str) -> bool {
-        self.session_jsonl_path(session_id).exists()
+    /// True when the session has a row in the store.
+    pub fn session_exists(&self, session_id: &str) -> Result<bool> {
+        let guard = self.store.lock()?;
+        let exists: bool = sql(guard.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+            [session_id],
+            |row| row.get(0),
+        ))?;
+        Ok(exists)
     }
 
     pub fn append_message(&self, session_id: &str, message: &ChatMessage) -> Result<()> {
-        let dir = self.sessions_dir();
-        std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;
-        let path = self.session_jsonl_path(session_id);
-
-        let entry = SessionTurnEntry {
-            version: "session/v1".to_string(),
-            session_id: session_id.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            message: message.clone(),
-        };
-
-        let line = serde_json::to_string(&entry)? + "\n";
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(PurrError::Io)?;
-        file.write_all(line.as_bytes()).map_err(PurrError::Io)?;
+        let now = now_rfc3339();
+        let mut guard = self.store.lock()?;
+        let tx = sql(guard.transaction())?;
+        ensure_session(&tx, session_id, &now)?;
+        let seq: i64 = sql(tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM turns WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        ))?;
+        insert_turn(&tx, session_id, seq, message, &now)?;
+        sql(tx.execute(
+            "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+            params![session_id, now],
+        ))?;
+        sql(tx.commit())?;
         Ok(())
     }
 
+    /// Full history of one session, oldest first, with the stored
+    /// per-turn timestamps (for the raw JSONL export).
+    fn load_entries(&self, session_id: &str) -> Result<Vec<SessionTurnEntry>> {
+        let guard = self.store.lock()?;
+        let mut stmt = sql(guard.prepare(
+            "SELECT role, content, tool_call_id, tool_calls_json, created_at
+             FROM turns WHERE session_id = ?1 ORDER BY seq",
+        ))?;
+        let rows = sql(stmt.query_map([session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (role_s, content, tool_call_id, tool_calls_json, timestamp) =
+                row.map_err(StoreError::from)?;
+            let Some(role) = parse_role(&role_s) else {
+                return Err(PurrError::Session(format!(
+                    "corrupt session '{session_id}': unknown role '{role_s}'"
+                )));
+            };
+            let tool_calls = match tool_calls_json {
+                Some(json) => Some(serde_json::from_str::<Vec<ToolCallRequest>>(&json)?),
+                None => None,
+            };
+            entries.push(SessionTurnEntry {
+                version: "session/v1".to_string(),
+                session_id: session_id.to_string(),
+                timestamp,
+                message: ChatMessage {
+                    role,
+                    content,
+                    tool_calls,
+                    tool_call_id,
+                },
+            });
+        }
+        Ok(entries)
+    }
+
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
-        let path = self.session_jsonl_path(session_id);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let content = std::fs::read_to_string(path).map_err(PurrError::Io)?;
-        let mut messages = Vec::new();
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<SessionTurnEntry>(trimmed) {
-                messages.push(entry.message);
-            }
-        }
-        Ok(messages)
+        Ok(self
+            .load_entries(session_id)?
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect())
     }
 
     pub fn replace_messages(&self, session_id: &str, messages: &[ChatMessage]) -> Result<()> {
-        let dir = self.sessions_dir();
-        std::fs::create_dir_all(&dir).map_err(PurrError::Io)?;
-        let path = self.session_jsonl_path(session_id);
-        let tmp = dir.join(format!("{}.jsonl.tmp", session_id));
-        let mut buf = String::new();
-        let now = chrono::Utc::now().to_rfc3339();
-        for message in messages {
-            let entry = SessionTurnEntry {
-                version: "session/v1".to_string(),
-                session_id: session_id.to_string(),
-                timestamp: now.clone(),
-                message: message.clone(),
-            };
-            buf.push_str(&serde_json::to_string(&entry)?);
-            buf.push('\n');
+        let now = now_rfc3339();
+        let mut guard = self.store.lock()?;
+        let tx = sql(guard.transaction())?;
+        ensure_session(&tx, session_id, &now)?;
+        // CASCADE removes the old tool calls with the turns.
+        sql(tx.execute("DELETE FROM turns WHERE session_id = ?1", [session_id]))?;
+        for (i, message) in messages.iter().enumerate() {
+            insert_turn(&tx, session_id, i as i64 + 1, message, &now)?;
         }
-        std::fs::write(&tmp, buf.as_bytes()).map_err(PurrError::Io)?;
-        std::fs::rename(&tmp, &path).map_err(PurrError::Io)?;
+        sql(tx.execute(
+            "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+            params![session_id, now],
+        ))?;
+        sql(tx.commit())?;
         Ok(())
     }
 
     pub fn fork_session(&self, source_id: &str, new_id: &str) -> Result<()> {
-        let src = self.session_jsonl_path(source_id);
-        if !src.exists() {
+        let now = now_rfc3339();
+        let mut guard = self.store.lock()?;
+        let tx = sql(guard.transaction())?;
+        let source_exists: bool = sql(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+            [source_id],
+            |row| row.get(0),
+        ))?;
+        if !source_exists {
             return Err(PurrError::Session(format!(
-                "Source session '{}' does not exist",
-                source_id
+                "Source session '{source_id}' does not exist"
             )));
         }
-        let dst = self.session_jsonl_path(new_id);
-        std::fs::copy(src, dst).map_err(PurrError::Io)?;
+        let (title, preset_json, web_preset, web_model): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sql(tx.query_row(
+            "SELECT title, preset_json, web_preset, web_model FROM sessions WHERE id = ?1",
+            [source_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ))?;
+        sql(tx.execute(
+            "INSERT INTO sessions (id, title, parent_id, preset_json, web_preset, web_model, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![new_id, title, source_id, preset_json, web_preset, web_model, now],
+        ))?;
+        // Copy turns, remapping the AUTOINCREMENT turn ids by seq so
+        // the tool calls land on the copied turns.
+        let old_turns: Vec<TurnRow> = {
+            let mut stmt = sql(tx.prepare(
+                "SELECT id, seq, role, content, tool_call_id, tool_calls_json,
+                        prompt_tokens, completion_tokens, created_at
+                 FROM turns WHERE session_id = ?1 ORDER BY seq",
+            ))?;
+            let rows = sql(stmt.query_map([source_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            }))?;
+            sql(rows.collect::<purrcode_store::rusqlite::Result<Vec<_>>>())?
+        };
+        let mut id_map: HashMap<i64, i64> = HashMap::new();
+        for (
+            old_id,
+            seq,
+            role,
+            content,
+            tool_call_id,
+            tool_calls_json,
+            prompt_tokens,
+            completion_tokens,
+            created_at,
+        ) in &old_turns
+        {
+            sql(tx.execute(
+                "INSERT INTO turns (session_id, seq, role, content, tool_call_id, tool_calls_json, prompt_tokens, completion_tokens, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    new_id,
+                    seq,
+                    role,
+                    content,
+                    tool_call_id,
+                    tool_calls_json,
+                    prompt_tokens,
+                    completion_tokens,
+                    created_at
+                ],
+            ))?;
+            id_map.insert(*old_id, tx.last_insert_rowid());
+        }
+        // Copy tool calls with remapped turn ids. Provider call ids
+        // are kept verbatim — the composite PK (session_id, id) keeps
+        // the fork legal, and the ids stay linked to their turns.
+        let old_calls: Vec<(String, i64, String, String, String, String)> = {
+            let mut stmt = sql(tx.prepare(
+                "SELECT id, turn_id, name, args_json, status, created_at
+                 FROM tool_calls WHERE session_id = ?1",
+            ))?;
+            let rows = sql(stmt.query_map([source_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            }))?;
+            sql(rows.collect::<purrcode_store::rusqlite::Result<Vec<_>>>())?
+        };
+        for (call_id, old_turn_id, name, args_json, status, created_at) in &old_calls {
+            let Some(new_turn_id) = id_map.get(old_turn_id).copied() else {
+                return Err(PurrError::Internal(format!(
+                    "session store: fork of '{source_id}': tool call '{call_id}' references unknown turn {old_turn_id}"
+                )));
+            };
+            sql(tx.execute(
+                "INSERT INTO tool_calls (id, turn_id, session_id, name, args_json, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![call_id, new_turn_id, new_id, name, args_json, status, created_at],
+            ))?;
+        }
+        sql(tx.commit())?;
         Ok(())
     }
 
+    /// Snapshot the active mode + model presets for a session (TUI
+    /// session start). Stored as one JSON object in
+    /// `sessions.preset_json`; nothing reads it back yet — it is the
+    /// resume payload the spec reserves. Upsert: never bumps
+    /// `updated_at`, so a snapshot does not reorder the session list.
     pub fn save_preset_snapshots(
         &self,
         session_id: &str,
         preset_json: &serde_json::Value,
         model_preset_json: &serde_json::Value,
     ) -> Result<()> {
-        let sdir = self.session_dir(session_id);
-        std::fs::create_dir_all(&sdir).map_err(PurrError::Io)?;
-        std::fs::write(
-            sdir.join("preset.json"),
-            serde_json::to_string_pretty(preset_json)?.as_bytes(),
-        )
-        .map_err(PurrError::Io)?;
-        std::fs::write(
-            sdir.join("model-preset.json"),
-            serde_json::to_string_pretty(model_preset_json)?.as_bytes(),
-        )
-        .map_err(PurrError::Io)?;
+        let now = now_rfc3339();
+        let combined =
+            serde_json::json!({"preset": preset_json, "model_preset": model_preset_json});
+        let guard = self.store.lock()?;
+        sql(guard.execute(
+            "INSERT INTO sessions (id, preset_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(id) DO UPDATE SET preset_json = excluded.preset_json",
+            params![session_id, combined.to_string(), now],
+        ))?;
+        Ok(())
+    }
+
+    /// Web-session metadata for one session. A missing row (or an
+    /// empty title) reads as the default — metadata is best-effort.
+    pub fn load_meta(&self, session_id: &str) -> Result<SessionMeta> {
+        let guard = self.store.lock()?;
+        let row: Option<(String, Option<String>, Option<String>)> = sql(guard
+            .query_row(
+                "SELECT title, web_preset, web_model FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional())?;
+        Ok(match row {
+            Some((title, preset, model)) => SessionMeta {
+                title: if title.is_empty() { None } else { Some(title) },
+                preset,
+                model,
+            },
+            None => SessionMeta::default(),
+        })
+    }
+
+    /// Persist web-session metadata. Upsert: never bumps `updated_at`
+    /// on an existing row, so renaming a session does not reorder
+    /// the session list.
+    pub fn save_meta(&self, session_id: &str, meta: &SessionMeta) -> Result<()> {
+        let now = now_rfc3339();
+        let guard = self.store.lock()?;
+        sql(guard.execute(
+            "INSERT INTO sessions (id, title, web_preset, web_model, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+               title = excluded.title,
+               web_preset = excluded.web_preset,
+               web_model = excluded.web_model",
+            params![
+                session_id,
+                meta.title.clone().unwrap_or_default(),
+                meta.preset,
+                meta.model,
+                now
+            ],
+        ))?;
         Ok(())
     }
 
@@ -373,7 +654,7 @@ impl SessionStore {
         compacted.push(ChatMessage {
             role: MessageRole::System,
             content: format!(
-                "### Compacted Session Summary ({} earlier messages preserved in session JSONL)\n{}",
+                "### Compacted Session Summary ({} earlier messages preserved in the session store)\n{}",
                 summarized_slice.len(),
                 sections.join("\n\n")
             ),
@@ -492,7 +773,7 @@ impl SessionStore {
                 out.push(ChatMessage {
                     role: MessageRole::System,
                     content: format!(
-                        "### Compacted Session Summary ({} earlier messages preserved in session JSONL)\n{}\n\n<system-reminder>\n[Old tool outputs cleared during compaction] Never invent omitted file contents or command outputs; re-read files or re-run checks if exact details are needed.\n</system-reminder>",
+                        "### Compacted Session Summary ({} earlier messages preserved in the session store)\n{}\n\n<system-reminder>\n[Old tool outputs cleared during compaction] Never invent omitted file contents or command outputs; re-read files or re-run checks if exact details are needed.\n</system-reminder>",
                         slice.len(),
                         summary
                     ),
@@ -507,41 +788,70 @@ impl SessionStore {
         Self::compact_messages(messages, focus_note, keep_last)
     }
 
+    /// All session ids, sorted by id (CLI `session list`).
     pub fn list_sessions(&self) -> Vec<String> {
-        let mut ids = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(self.sessions_dir()) {
-            for entry in entries.flatten() {
-                let path: PathBuf = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        ids.push(stem.to_string());
-                    }
-                }
-            }
-        }
-        ids.sort();
-        ids
+        let Ok(guard) = self.store.lock() else {
+            return Vec::new();
+        };
+        let Ok(mut stmt) = guard.prepare("SELECT id FROM sessions ORDER BY id") else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+            return Vec::new();
+        };
+        rows.filter_map(|row| row.ok()).collect()
+    }
+
+    /// All session ids, most recently updated first (WebUI list).
+    pub fn list_sessions_by_updated(&self) -> Vec<String> {
+        let Ok(guard) = self.store.lock() else {
+            return Vec::new();
+        };
+        let Ok(mut stmt) =
+            guard.prepare("SELECT id FROM sessions ORDER BY updated_at DESC, id ASC")
+        else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+            return Vec::new();
+        };
+        rows.filter_map(|row| row.ok()).collect()
     }
 
     pub fn export_session(&self, session_id: &str, format: &str) -> Result<String> {
-        let msgs = self.load_messages(session_id)?;
+        if !self.session_exists(session_id)? {
+            return Err(PurrError::Session(format!(
+                "Session '{session_id}' does not exist"
+            )));
+        }
+        let entries = self.load_entries(session_id)?;
         if format.eq_ignore_ascii_case("html") {
             let mut html = String::from(
                 "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>PurrCode Session</title></head><body>\n",
             );
             html.push_str(&format!("<h1>Session: {}</h1>\n", session_id));
-            for m in msgs {
+            for entry in entries {
                 html.push_str(&format!(
                     "<div class=\"msg\"><strong>{:?}:</strong><pre>{}</pre></div>\n",
-                    m.role,
-                    m.content.replace('<', "&lt;").replace('>', "&gt;")
+                    entry.message.role,
+                    entry
+                        .message
+                        .content
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;")
                 ));
             }
             html.push_str("</body></html>");
             Ok(html)
         } else {
-            let path: &Path = &self.session_jsonl_path(session_id);
-            std::fs::read_to_string(path).map_err(PurrError::Io)
+            // Raw JSONL, line-for-line the old `sessions/<id>.jsonl`
+            // format, reconstructed from the stored turns.
+            let mut out = String::new();
+            for entry in entries {
+                out.push_str(&serde_json::to_string(&entry)?);
+                out.push('\n');
+            }
+            Ok(out)
         }
     }
 }
@@ -553,7 +863,7 @@ mod tests {
     #[test]
     fn test_session_append_fork_and_compact() {
         let temp_dir = std::env::temp_dir().join(format!("purr_sess_{}", uuid::Uuid::new_v4()));
-        let store = SessionStore::new(&temp_dir);
+        let store = SessionStore::new(&temp_dir).unwrap();
 
         let m1 = ChatMessage {
             role: MessageRole::User,
@@ -581,9 +891,9 @@ mod tests {
         assert_eq!(compacted.len(), 2);
         assert!(compacted[0].content.contains("Compacted Session Summary"));
 
-        assert!(store.session_exists("purr_test1"));
+        assert!(store.session_exists("purr_test1").unwrap());
         store.delete_session("purr_test1").unwrap();
-        assert!(!store.session_exists("purr_test1"));
+        assert!(!store.session_exists("purr_test1").unwrap());
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }
@@ -652,5 +962,133 @@ mod tests {
         assert!(compacted[1].content.contains("<system-reminder>"));
         assert_eq!(compacted[2].role, MessageRole::Assistant);
         assert_eq!(compacted[3].role, MessageRole::Tool);
+    }
+
+    fn test_store() -> (SessionStore, PathBuf) {
+        let temp_dir = std::env::temp_dir().join(format!("purr_sess_{}", uuid::Uuid::new_v4()));
+        (SessionStore::new(&temp_dir).unwrap(), temp_dir)
+    }
+
+    fn user_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[test]
+    fn test_fork_keeps_tool_call_ids() {
+        use purrcode_api::provider::ToolCallRequest;
+        let (store, dir) = test_store();
+        let assistant = ChatMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call-9".to_string(),
+                name: "read".to_string(),
+                arguments: "{\"path\":\"x\"}".to_string(),
+            }]),
+            tool_call_id: None,
+        };
+        let tool = ChatMessage {
+            role: MessageRole::Tool,
+            content: "contents".to_string(),
+            tool_calls: None,
+            tool_call_id: Some("call-9".to_string()),
+        };
+        store.append_message("purr_src", &user_msg("hi")).unwrap();
+        store.append_message("purr_src", &assistant).unwrap();
+        store.append_message("purr_src", &tool).unwrap();
+        // Same provider call id in both sessions: legal only because
+        // the tool_calls PK is (session_id, id).
+        store.fork_session("purr_src", "purr_dst").unwrap();
+        let src = store.load_messages("purr_src").unwrap();
+        let dst = store.load_messages("purr_dst").unwrap();
+        assert_eq!(src.len(), 3);
+        assert_eq!(dst.len(), 3);
+        assert_eq!(dst[1].tool_calls.as_ref().unwrap()[0].id, "call-9");
+        assert_eq!(dst[2].tool_call_id.as_deref(), Some("call-9"));
+        assert!(store.fork_session("purr_nope", "purr_x").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_export_raw_round_trips_jsonl() {
+        let (store, dir) = test_store();
+        store.append_message("purr_exp", &user_msg("one")).unwrap();
+        store.append_message("purr_exp", &user_msg("two")).unwrap();
+        let raw = store.export_session("purr_exp", "jsonl").unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            let entry: SessionTurnEntry = serde_json::from_str(line).unwrap();
+            assert_eq!(entry.session_id, "purr_exp");
+            assert_eq!(entry.version, "session/v1");
+        }
+        assert!(store.export_session("purr_nope", "jsonl").is_err());
+        let html = store.export_session("purr_exp", "html").unwrap();
+        assert!(html.contains("Session: purr_exp"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_meta_save_load_round_trip() {
+        let (store, dir) = test_store();
+        assert_eq!(
+            store.load_meta("purr_nope").unwrap(),
+            SessionMeta::default()
+        );
+        let meta = SessionMeta {
+            title: Some("My chat".to_string()),
+            preset: Some("tabby".to_string()),
+            model: Some("magpie:foo/bar".to_string()),
+        };
+        store.save_meta("purr_meta", &meta).unwrap();
+        assert_eq!(store.load_meta("purr_meta").unwrap(), meta);
+        // Saving meta creates the row: the session lists.
+        assert!(store.list_sessions().contains(&"purr_meta".to_string()));
+        // Empty title reads back as no title.
+        store
+            .save_meta(
+                "purr_meta",
+                &SessionMeta {
+                    title: Some(String::new()),
+                    preset: None,
+                    model: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.load_meta("purr_meta").unwrap().title, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_list_sorted_by_updated() {
+        let (store, dir) = test_store();
+        store.append_message("purr_old", &user_msg("old")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.append_message("purr_new", &user_msg("new")).unwrap();
+        assert_eq!(store.list_sessions_by_updated()[0], "purr_new");
+        assert_eq!(store.list_sessions(), vec!["purr_new", "purr_old"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_replace_and_delete_cascade() {
+        let (store, dir) = test_store();
+        store.append_message("purr_rep", &user_msg("a")).unwrap();
+        store.append_message("purr_rep", &user_msg("b")).unwrap();
+        store
+            .replace_messages("purr_rep", &[user_msg("only")])
+            .unwrap();
+        let loaded = store.load_messages("purr_rep").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].content, "only");
+        store.delete_session("purr_rep").unwrap();
+        assert!(!store.session_exists("purr_rep").unwrap());
+        assert!(store.load_messages("purr_rep").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

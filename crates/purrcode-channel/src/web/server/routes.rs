@@ -30,7 +30,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use purrcode_api::plugin::PluginMountError;
-use purrcode_config::jsonc::clean_jsonc;
+use purrcode_store::{sql, Store};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -47,55 +47,70 @@ pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {
 
 /// Shared reader for the cron store: the plain job table (`GET
 /// /api/cron`, v0.4 B6) and the overview's next-job pick (v0.4 B7)
-/// project the same file, so they share one parse — the store
+/// project the same store, so they share one query — the store
 /// stays the single source of truth and the two handlers cannot
-/// drift apart. A missing file means no jobs yet (`Ok([])`); a
-/// present-but-unparsable file is `Err` carrying the exact message
-/// the cron table reports as a 500 (B6 r1 P3-4: never hide a
-/// corrupt store behind an empty list). The overview degrades
+/// drift apart. A missing database means no jobs yet (`Ok([])`);
+/// a present-but-unreadable store is `Err` carrying the exact
+/// message the cron table reports as a 500 (B6 r1 P3-4: never hide
+/// a corrupt store behind an empty list). The overview degrades
 /// that `Err` to a warning instead of failing the whole response.
+/// The query runs on a blocking thread: SQLite calls must not stall
+/// the async runtime.
 pub(crate) async fn read_cron_jobs(purrcode_dir: &Path) -> Result<Vec<Value>, String> {
-    let jobs_path = purrcode_dir.join("cron").join("jobs.jsonc");
-    let Ok(raw) = tokio::fs::read_to_string(&jobs_path).await else {
-        return Ok(Vec::new());
-    };
-    let cleaned = clean_jsonc(&raw);
-    let Ok(val) = serde_json::from_str::<Value>(&cleaned) else {
-        return Err("cron jobs file is invalid JSON".to_string());
-    };
-    let Some(list) = val.get("jobs").and_then(|j| j.as_array()) else {
-        return Err("cron jobs file has no jobs array".to_string());
-    };
-    Ok(list
-        .iter()
-        .map(|j| {
-            let schedule = j
-                .get("schedule")
-                .and_then(|s| s.get("display"))
-                .and_then(|d| d.as_str())
-                .unwrap_or("")
-                .to_string();
-            let tools = j.get("tools").cloned().unwrap_or_else(|| json!([]));
-            json!({
-                "id": j.get("id").cloned().unwrap_or(Value::Null),
-                "name": j.get("name").cloned().unwrap_or(Value::Null),
-                "schedule": schedule,
-                "prompt": j.get("prompt").cloned().unwrap_or(Value::Null),
-                "allowed_tools": tools,
-                "next_run": j.get("next_run").cloned().unwrap_or(Value::Null),
-                "enabled": j.get("enabled").cloned().unwrap_or(Value::Null),
-            })
-        })
-        .collect())
+    let dir = purrcode_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || read_cron_jobs_sync(&dir))
+        .await
+        .map_err(|e| format!("cron jobs read task failed: {e}"))?
 }
 
-/// `GET /api/cron` — dev-muse stores jobs in `cron/jobs.jsonc` as
-/// `{"jobs": [...]}` (JSONC — comments allowed); the WebUI table
-/// wants a plain array with display fields. A missing file means
-/// no jobs yet (200 `[]`); a present-but-unparsable file is a
-/// server-side state problem (500, not a silent `[]` — fix pass
-/// B6 r1 P3-4: the old code hid a corrupt store behind an empty
-/// list while the POSTs 400'd on the same file).
+fn read_cron_jobs_sync(purrcode_dir: &Path) -> Result<Vec<Value>, String> {
+    let store = Store::open(purrcode_dir).map_err(|e| format!("cannot open cron store: {e}"))?;
+    let guard = store
+        .lock()
+        .map_err(|e| format!("cannot lock cron store: {e}"))?;
+    let mut stmt = sql(guard.prepare(
+        "SELECT id, name, schedule_display, prompt, tools_json, next_run_at, enabled
+         FROM cron_jobs ORDER BY rowid",
+    ))
+    .map_err(|e| format!("cannot read cron jobs: {e}"))?;
+    let rows = sql(stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    }))
+    .map_err(|e| format!("cannot read cron jobs: {e}"))?;
+    let mut jobs = Vec::new();
+    for row in rows {
+        let (id, name, schedule, prompt, tools_json, next_run, enabled) =
+            row.map_err(|e| format!("cannot read cron jobs: {e}"))?;
+        let tools: Value = serde_json::from_str(&tools_json)
+            .map_err(|e| format!("corrupt cron store: invalid tools_json: {e}"))?;
+        jobs.push(json!({
+            "id": id,
+            "name": name,
+            "schedule": schedule,
+            "prompt": prompt,
+            "allowed_tools": tools,
+            "next_run": next_run,
+            "enabled": enabled != 0,
+        }));
+    }
+    Ok(jobs)
+}
+
+/// `GET /api/cron` — jobs live in the `cron_jobs` table (ADR-015);
+/// the WebUI table wants a plain array with display fields. A
+/// missing database means no jobs yet (200 `[]`); a
+/// present-but-unreadable store is a server-side state problem
+/// (500, not a silent `[]` — fix pass B6 r1 P3-4: the old code hid
+/// a corrupt store behind an empty list while the POSTs 400'd on
+/// the same file).
 pub async fn cron(State(state): State<Arc<WebState>>) -> (StatusCode, Json<Value>) {
     match read_cron_jobs(&state.purrcode_dir).await {
         Ok(jobs) => (StatusCode::OK, Json(Value::Array(jobs))),

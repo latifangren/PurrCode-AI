@@ -343,7 +343,7 @@ impl Tool for TaskTool {
                     },
                     "shadow_override_reason": {
                         "type": "string",
-                        "description": "Optional reason to override an advisory Tuxeshadow objection in Tabby (default) mode (recorded in audit.jsonl)"
+                        "description": "Optional reason to override an advisory Tuxeshadow objection in Tabby (default) mode (recorded in the audit log)"
                     }
                 },
                 "required": ["role", "brief"]

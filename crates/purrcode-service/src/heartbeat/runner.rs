@@ -549,7 +549,8 @@ impl HeartbeatRunner {
             session_id.clone(),
         ));
         let ask_req = Arc::new(CronAskRequester);
-        let session_dir = SessionStore::new(&self.deps.purrcode_dir).session_dir(&session_id);
+        let session_store = SessionStore::new(&self.deps.purrcode_dir)?;
+        let session_dir = session_store.session_dir(&session_id);
 
         let meowstro = MeowstroOrchestrator::with_complete_options(
             provider,
@@ -597,7 +598,6 @@ impl HeartbeatRunner {
             &self.deps.unenforced_caps,
         );
 
-        let session_store = SessionStore::new(&self.deps.purrcode_dir);
         let mut messages = Vec::new();
         let turn = meowstro
             .agent_loop()

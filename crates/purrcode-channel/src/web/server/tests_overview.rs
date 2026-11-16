@@ -2,31 +2,110 @@
 
 //! Overview endpoint tests (v0.4 B7): the aggregate shape, the
 //! earliest-enabled next-cron pick, delivery statuses from the
-//! JSONL tail, and graceful degradation (a corrupt store warns
+//! `deliveries` table, and graceful degradation (a corrupt store warns
 //! here while the cron table still 500s — by design).
 
 use super::test_support::*;
+use purrcode_store::rusqlite::params;
 use serde_json::Value;
 
 fn body_of(resp: &str) -> &str {
     resp.split("\r\n\r\n").nth(1).unwrap_or("")
 }
 
-fn seed_jobs(dir: &std::path::Path, jobs_json: &str) {
-    std::fs::create_dir_all(dir.join("cron")).unwrap();
-    std::fs::write(dir.join("cron").join("jobs.jsonc"), jobs_json).unwrap();
+/// One cron job row to seed (ADR-015: the channel reads `cron_jobs`,
+/// it never parses a jobs file anymore).
+struct JobSeed {
+    id: &'static str,
+    name: &'static str,
+    display: &'static str,
+    next_run: &'static str,
+    enabled: bool,
 }
 
-fn seed_deliveries(dir: &std::path::Path, lines: &str) {
-    std::fs::create_dir_all(dir.join("cron")).unwrap();
-    std::fs::write(dir.join("cron").join("deliveries.jsonl"), lines).unwrap();
+fn seed_jobs(dir: &std::path::Path, jobs: &[JobSeed]) {
+    let store = purrcode_store::Store::open(dir).unwrap();
+    let guard = store.lock().unwrap();
+    guard.execute("DELETE FROM cron_jobs", []).unwrap();
+    for job in jobs {
+        guard
+            .execute(
+                "INSERT INTO cron_jobs
+                   (id, name, schedule_display, prompt, tools_json, preset_json,
+                    delivery_json, enabled, created_at, next_run_at)
+                 VALUES (?1, ?2, ?3, 'x', '[\"read\"]', 'null', 'null', ?4,
+                         '2026-11-14T00:00:00+07:00', ?5)",
+                params![
+                    job.id,
+                    job.name,
+                    job.display,
+                    i64::from(job.enabled),
+                    job.next_run
+                ],
+            )
+            .unwrap();
+    }
 }
 
-const JOBS: &str = r#"{"jobs": [
-  {"id": "cron_disabled", "name": "mati", "schedule": {"display": "every morning at 06:00"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-14T06:00:00+07:00", "enabled": false},
-  {"id": "cron_late", "name": "siang", "schedule": {"display": "every day at 12:00"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-14T12:00:00+07:00", "enabled": true},
-  {"id": "cron_early", "name": "pagi", "schedule": {"display": "every morning at 08:00"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-14T08:00:00+07:00", "enabled": true}
-]}"#;
+/// One delivery row to seed. Seeding replaces the whole table, like
+/// the old file-based seed replaced the whole JSONL file.
+struct DeliverySeed {
+    id: &'static str,
+    job_id: &'static str,
+    job_name: &'static str,
+    created_at: &'static str,
+    kind: &'static str,
+    summary: &'static str,
+    status: &'static str,
+}
+
+fn seed_deliveries(dir: &std::path::Path, deliveries: &[DeliverySeed]) {
+    let store = purrcode_store::Store::open(dir).unwrap();
+    let guard = store.lock().unwrap();
+    guard.execute("DELETE FROM deliveries", []).unwrap();
+    for d in deliveries {
+        guard
+            .execute(
+                "INSERT INTO deliveries
+                   (id, job_id, job_name, kind, status, summary, detail, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7)",
+                params![
+                    d.id,
+                    d.job_id,
+                    d.job_name,
+                    d.kind,
+                    d.status,
+                    d.summary,
+                    d.created_at
+                ],
+            )
+            .unwrap();
+    }
+}
+
+const JOBS: &[JobSeed] = &[
+    JobSeed {
+        id: "cron_disabled",
+        name: "mati",
+        display: "every morning at 06:00",
+        next_run: "2026-11-14T06:00:00+07:00",
+        enabled: false,
+    },
+    JobSeed {
+        id: "cron_late",
+        name: "siang",
+        display: "every day at 12:00",
+        next_run: "2026-11-14T12:00:00+07:00",
+        enabled: true,
+    },
+    JobSeed {
+        id: "cron_early",
+        name: "pagi",
+        display: "every morning at 08:00",
+        next_run: "2026-11-14T08:00:00+07:00",
+        enabled: true,
+    },
+];
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_overview_empty_state() {
@@ -93,10 +172,22 @@ async fn test_overview_next_cron_mixed_offsets() {
     let dir = test_dir("overview-mixed-offsets");
     seed_jobs(
         &dir,
-        r#"{"jobs": [
-  {"id": "cron_x", "name": "x-wib", "schedule": {"display": "07:00 WIB"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T07:00:00+07:00", "enabled": true},
-  {"id": "cron_y", "name": "y-utc", "schedule": {"display": "01:00 UTC"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T01:00:00+00:00", "enabled": true}
-]}"#,
+        &[
+            JobSeed {
+                id: "cron_x",
+                name: "x-wib",
+                display: "07:00 WIB",
+                next_run: "2026-11-15T07:00:00+07:00",
+                enabled: true,
+            },
+            JobSeed {
+                id: "cron_y",
+                name: "y-utc",
+                display: "01:00 UTC",
+                next_run: "2026-11-15T01:00:00+00:00",
+                enabled: true,
+            },
+        ],
     );
     let (port, _reg, cancel, handle) = start_server(None, dir.clone(), None).await;
     let body = get(port, "/api/overview");
@@ -111,10 +202,22 @@ async fn test_overview_next_cron_mixed_offsets() {
     // the +02:00 one (06:00Z) is earlier than the +01:00 one (07:00Z).
     seed_jobs(
         &dir,
-        r#"{"jobs": [
-  {"id": "cron_winter", "name": "winter", "schedule": {"display": "08:00 +01"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T08:00:00+01:00", "enabled": true},
-  {"id": "cron_summer", "name": "summer", "schedule": {"display": "08:00 +02"}, "prompt": "x", "tools": ["read"], "next_run": "2026-11-15T08:00:00+02:00", "enabled": true}
-]}"#,
+        &[
+            JobSeed {
+                id: "cron_winter",
+                name: "winter",
+                display: "08:00 +01",
+                next_run: "2026-11-15T08:00:00+01:00",
+                enabled: true,
+            },
+            JobSeed {
+                id: "cron_summer",
+                name: "summer",
+                display: "08:00 +02",
+                next_run: "2026-11-15T08:00:00+02:00",
+                enabled: true,
+            },
+        ],
     );
     let body = get(port, "/api/overview");
     let val: Value = serde_json::from_str(body_of(&body)).unwrap();
@@ -132,10 +235,26 @@ async fn test_overview_last_delivery_statuses() {
     let dir = test_dir("overview-delivery");
     seed_deliveries(
         &dir,
-        "{\"type\":\"created\",\"id\":\"dlv_0000000001\",\"job_id\":\"cron_early\",\"job_name\":\"pagi\",\"created_at\":\"2026-11-14T07:00:00+07:00\",\"kind\":\"result\",\"summary\":\"ringkasan pagi\",\"detail\":\"...\"}\n\
-         {\"type\":\"claimed\",\"delivery_id\":\"dlv_0000000001\"}\n\
-         {\"type\":\"delivered\",\"delivery_id\":\"dlv_0000000001\"}\n\
-         {\"type\":\"created\",\"id\":\"dlv_0000000002\",\"job_id\":\"cron_late\",\"job_name\":\"siang\",\"created_at\":\"2026-11-14T11:00:00+07:00\",\"kind\":\"failure\",\"summary\":\"gagal siang\",\"detail\":\"...\"}\n",
+        &[
+            DeliverySeed {
+                id: "dlv_0000000001",
+                job_id: "cron_early",
+                job_name: "pagi",
+                created_at: "2026-11-14T07:00:00+07:00",
+                kind: "result",
+                summary: "ringkasan pagi",
+                status: "delivered",
+            },
+            DeliverySeed {
+                id: "dlv_0000000002",
+                job_id: "cron_late",
+                job_name: "siang",
+                created_at: "2026-11-14T11:00:00+07:00",
+                kind: "failure",
+                summary: "gagal siang",
+                status: "pending",
+            },
+        ],
     );
     let (port, _reg, cancel, handle) = start_server(None, dir.clone(), None).await;
     let body = get(port, "/api/overview");
@@ -153,8 +272,15 @@ async fn test_overview_last_delivery_statuses() {
     // (queue.rs: losing a delivery is safer than duplicating one).
     seed_deliveries(
         &dir,
-        "{\"type\":\"created\",\"id\":\"dlv_0000000003\",\"job_id\":\"cron_early\",\"job_name\":\"pagi\",\"created_at\":\"2026-11-14T07:05:00+07:00\",\"kind\":\"heartbeat\",\"summary\":\"denyut\",\"detail\":\"...\"}\n\
-         {\"type\":\"claimed\",\"delivery_id\":\"dlv_0000000003\"}\n",
+        &[DeliverySeed {
+            id: "dlv_0000000003",
+            job_id: "cron_early",
+            job_name: "pagi",
+            created_at: "2026-11-14T07:05:00+07:00",
+            kind: "heartbeat",
+            summary: "denyut",
+            status: "claimed",
+        }],
     );
     let body = get(port, "/api/overview");
     let val: Value = serde_json::from_str(body_of(&body)).unwrap();
@@ -173,8 +299,26 @@ async fn test_overview_last_delivery_statuses() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_overview_degrades_on_corrupt_store() {
     let dir = test_dir("overview-corrupt");
-    seed_jobs(&dir, "{ this is not json");
-    let (port, _reg, cancel, handle) = start_server(None, dir, None).await;
+    let (port, _reg, cancel, handle) = start_server(None, dir.clone(), None).await;
+    // Corruption introduced AFTER startup (a row with unparseable
+    // `tools_json`): the registry opens the store at startup and
+    // fails closed, so a garbage `purrcode.db` would keep the server
+    // from starting at all — the overview's degrade path is what
+    // this test covers.
+    {
+        let store = purrcode_store::Store::open(&dir).unwrap();
+        let guard = store.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO cron_jobs
+                   (id, name, schedule_display, prompt, tools_json, preset_json,
+                    delivery_json, enabled, created_at)
+                 VALUES ('cron_bad', 'bad', 'hourly', 'hi', '{not json', 'null',
+                         'null', 1, '2026-11-14T00:00:00+07:00')",
+                [],
+            )
+            .unwrap();
+    }
     // The overview stays 200: the corrupt store is a warning,
     // not a failed response — the dashboard must still show the
     // sections that did load.
@@ -186,10 +330,10 @@ async fn test_overview_degrades_on_corrupt_store() {
     let warnings = val["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1);
     assert!(
-        warnings[0].as_str().unwrap().contains("invalid JSON"),
+        warnings[0].as_str().unwrap().contains("corrupt cron store"),
         "warnings: {warnings:?}"
     );
-    // ...while the cron table itself still 500s on the same file
+    // ...while the cron table itself still 500s on the same store
     // (B6 r1 P3-4: its job is to report store state, not to hide it).
     let cron = get(port, "/api/cron");
     assert!(cron.contains("500 Internal Server Error"), "resp: {cron}");
@@ -198,13 +342,34 @@ async fn test_overview_degrades_on_corrupt_store() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_overview_skips_corrupt_delivery_lines() {
+async fn test_overview_skips_corrupt_delivery_rows() {
+    // The SQL equivalent of the old corrupt-JSONL-line test: a row
+    // with an unparseable kind (direct DB tampering) is skipped and
+    // the latest *valid* delivery still shows; the overview stays
+    // warning-free.
     let dir = test_dir("overview-delivery-corrupt");
     seed_deliveries(
         &dir,
-        "this line is not json\n\
-         {\"type\":\"created\",\"id\":\"dlv_0000000009\",\"job_id\":\"cron_early\",\"job_name\":\"pagi\",\"created_at\":\"2026-11-14T07:00:00+07:00\",\"kind\":\"result\",\"summary\":\"tetap kebaca\",\"detail\":\"...\"}\n\
-         {\"type\":\"bogus\",\"delivery_id\":\"dlv_0000000009\"}\n",
+        &[
+            DeliverySeed {
+                id: "dlv_0000000009",
+                job_id: "cron_early",
+                job_name: "pagi",
+                created_at: "2026-11-14T07:00:00+07:00",
+                kind: "result",
+                summary: "tetap kebaca",
+                status: "pending",
+            },
+            DeliverySeed {
+                id: "dlv_bad0000001",
+                job_id: "cron_early",
+                job_name: "pagi",
+                created_at: "2026-11-14T08:00:00+07:00",
+                kind: "bogus",
+                summary: "baris rusak",
+                status: "pending",
+            },
+        ],
     );
     let (port, _reg, cancel, handle) = start_server(None, dir, None).await;
     let body = get(port, "/api/overview");
@@ -216,7 +381,7 @@ async fn test_overview_skips_corrupt_delivery_lines() {
     assert_eq!(
         val["last_delivery"]["status"].as_str().unwrap(),
         "pending",
-        "unknown event types must not flip the status"
+        "a row with an unknown kind must not become the last delivery"
     );
     assert!(val["warnings"].as_array().unwrap().is_empty());
     let _ = cancel.send(true);

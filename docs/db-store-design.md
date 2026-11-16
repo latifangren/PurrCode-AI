@@ -88,18 +88,24 @@ fresh saat pertama jalan.
 
 ## 3. Skema
 
-Satu file, tujuh tabel. `TEXT` untuk id (format id yang sudah ada
+Satu file, tujuh tabel + satu tabel meta (`schema_meta`, §2.5).
+`TEXT` untuk id (format id yang sudah ada
 dipertahankan: `purr_web`, `purr_cron_<id>_<run>`, `purr_hb_<hex>`,
 `purr_<id>`, `cron_<12 hex>`). Waktu = RFC3339 `TEXT` (sama seperti yang
-sudah dipakai di JSONL/JSONC — jangan campur epoch). JSON kolom = `TEXT`
+sudah dipakai di JSONL/JSONC — jangan campur epoch), dengan satu
+pengecualian: `chats.last_active_at` adalah `INTEGER` Unix seconds
+(format yang sudah dipakai `ChatSessions`, dan nilainya dibandingkan
+secara numerik untuk "last active chat"). JSON kolom = `TEXT`
 berisi JSON valid, nama kolom berakhiran `_json`.
 
 ```sql
 CREATE TABLE sessions (
   id          TEXT PRIMARY KEY,          -- purr_web, purr_web_<12 hex>, purr_cron_..., purr_hb_..., purr_<id>
   title       TEXT NOT NULL DEFAULT '',  -- judul = pesan user pertama (seperti list_sessions hari ini)
-  parent_id   TEXT REFERENCES sessions(id), -- fork/branch: sesi anak menunjuk sesi sumber
+  parent_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL, -- fork/branch: sesi anak menunjuk sesi sumber; hapus induk tidak gagal bila fork ada
   preset_json TEXT,                      -- snapshot preset sesi (opsional; NULL = default)
+  web_preset  TEXT,                      -- meta preset WebUI (string polos, bukan bagian preset_json)
+  web_model   TEXT,                      -- meta model WebUI (string polos)
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -121,13 +127,14 @@ CREATE TABLE turns (
 CREATE INDEX idx_turns_session_seq ON turns(session_id, seq);
 
 CREATE TABLE tool_calls (
-  id          TEXT PRIMARY KEY,          -- call_id dari provider (model-controlled)
+  id          TEXT NOT NULL,             -- call_id dari provider (model-controlled)
   turn_id     INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,             -- nama tool (read, bash, task, ...)
   args_json   TEXT NOT NULL DEFAULT '{}',
   status      TEXT NOT NULL DEFAULT 'done', -- done | error | denied
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (session_id, id)          -- komposit: fork menyalin call id provider yang sama ke sesi kedua
 );
 CREATE INDEX idx_tool_calls_session ON tool_calls(session_id, created_at);
 
@@ -135,25 +142,33 @@ CREATE TABLE cron_jobs (
   id               TEXT PRIMARY KEY,     -- cron_<12 hex>
   name             TEXT NOT NULL,
   enabled          INTEGER NOT NULL DEFAULT 1,
-  schedule_expr    TEXT NOT NULL,        -- "0 * * * *"
+  schedule_expr    TEXT,                 -- "0 * * * *"; NULL = one-shot (schedule_at yang berlaku)
   schedule_display TEXT NOT NULL,        -- "hourly" (echo NL parser, ADR-014 item 3)
+  schedule_once    INTEGER NOT NULL DEFAULT 0, -- 1 = one-shot
+  schedule_at      TEXT,                 -- RFC3339 target one-shot
   prompt           TEXT NOT NULL,
   tools_json       TEXT NOT NULL DEFAULT '[]',
   preset_json      TEXT NOT NULL,        -- snapshot preset saat job dibuat (ADR-014 item 4)
   delivery_json    TEXT NOT NULL,        -- {kind: queue_only|...}
   created_at       TEXT NOT NULL,
   last_run_at      TEXT,
-  next_run_at      TEXT
+  next_run_at      TEXT,
+  run_count        INTEGER NOT NULL DEFAULT 0,
+  failure_count    INTEGER NOT NULL DEFAULT 0,
+  last_status      TEXT                  -- ok | failed | blocked | ...
 );
 
 CREATE TABLE deliveries (
   id           TEXT PRIMARY KEY,        -- dlv_<hex> (format yang sudah ada)
-  job_id       TEXT REFERENCES cron_jobs(id) ON DELETE SET NULL, -- NULL = heartbeat / manual
-  run_id       TEXT NOT NULL,           -- purr_cron_<id>_<run> / purr_hb_<hex>
-  kind         TEXT NOT NULL,           -- cron | heartbeat
-  status       TEXT NOT NULL,           -- claimed | delivered | failed
-  detail_json  TEXT NOT NULL DEFAULT '{}',
+  job_id       TEXT NOT NULL,           -- TANPA foreign key: delivery hidup lebih lama dari job-nya
+  job_name     TEXT NOT NULL,
+  kind         TEXT NOT NULL,           -- result | failure | heartbeat
+  status       TEXT NOT NULL DEFAULT 'pending', -- pending | claimed | delivered
+  summary      TEXT NOT NULL DEFAULT '',
+  detail       TEXT NOT NULL DEFAULT '',
+  chat_id      INTEGER,                 -- chat Telegram tujuan (NULL = queue-only)
   created_at   TEXT NOT NULL,
+  claimed_at   TEXT,
   delivered_at TEXT
 );
 CREATE INDEX idx_deliveries_job ON deliveries(job_id, created_at DESC);
@@ -173,10 +188,17 @@ CREATE INDEX idx_audit_session_event ON audit(session_id, event, id);
 CREATE INDEX idx_audit_ts ON audit(ts);
 
 CREATE TABLE chats (
-  chat_id        INTEGER PRIMARY KEY,    -- Telegram chat id
-  kind           TEXT NOT NULL,          -- private | group | supergroup | channel
-  last_active_at TEXT NOT NULL,          -- Unix seconds sebagai TEXT (format yang sudah ada)
-  title          TEXT
+  chat_id         INTEGER PRIMARY KEY,   -- Telegram chat id
+  kind            TEXT,                  -- private | group | supergroup | channel (NULL = belum tercatat, tidak eligible delivery)
+  last_active_at  INTEGER,               -- Unix seconds pesan/perintah terakhir (NULL = belum pernah)
+  title           TEXT,                  -- dicadangkan v1 (judul chat dari Bot API; belum diisi)
+  current_session TEXT,                  -- sesi yang sedang dipakai chat ini (NULL = tidak ada)
+  history_json    TEXT NOT NULL DEFAULT '[]' -- sesi yang diarsipkan, tertua dulu
+);
+
+CREATE TABLE schema_meta (  -- versi skema, §2.5 (bukan tabel domain)
+  key   TEXT PRIMARY KEY,  -- 'version'
+  value TEXT NOT NULL      -- '1'
 );
 ```
 
@@ -189,9 +211,11 @@ Catatan skema:
   yang jalan di sesi ini" tanpa parse JSON — dan ini bentuk yang sama
   dengan tabel `session`/`turn`/`tool_call` di `ARCHITECTURE.md:64`.
 - **`deliveries.status` menggantikan klaim file:** at-most-once ala Hermes
-  (ADR-014 item 2) menjadi transaksi — `INSERT ... status='claimed'`,
-  kirim, lalu `UPDATE ... status='delivered'` dalam satu transaksi.
-  `claimed` tanpa `delivered` = dianggap terkirim, seperti sekarang.
+  (ADR-014 item 2) menjadi baris status — `INSERT ... status='pending'`,
+  klaim `UPDATE ... status='claimed' WHERE status='pending'` SEBELUM
+  kirim dicoba, lalu `UPDATE ... status='delivered'` sesudah kirim
+  berhasil. `claimed` tanpa `delivered` = dianggap terkirim, seperti
+  sekarang.
 - **`audit.id` monotonik** adalah pengganti "sejak marker terakhir":
   kurator cukup `SELECT COUNT(*) ... WHERE id > (marker)` — tanpa baca
   file utuh. Marker `skill_curator_checked` tetap dicatat sebagai event
@@ -203,6 +227,23 @@ Catatan skema:
 - **Tidak ada FTS di v1.** Pencarian teks sesi/memory adalah follow-up
   (`sqlite-fts` sebagai plugin, `ARCHITECTURE.md:293`) — bukan bagian
   spek ini.
+
+**Amendemen saat implementasi (P2–P5, 2026-11-16 — skema v1 belum
+pernah dirilis, jadi DDL di atas sudah memuat hasil akhirnya):**
+skema awal spek ini melewatkan field yang sudah ada di struct Rust —
+`cron_jobs` tanpa `schedule_once`/`schedule_at`/`run_count`/
+`failure_count`/`last_status` dan `schedule_expr` yang ternyata
+nullable (one-shot); `deliveries` spek (FK + `run_id` + `detail_json`)
+tidak cocok dengan struct `Delivery` yang sebenarnya (tanpa `run_id`,
+detail = dua kolom `summary`/`detail`, tanpa FK karena delivery
+hidup lebih lama dari job); `chats` spek tanpa `current_session`/
+`history_json` (padahal itu inti index `/resume`) dan `kind`/
+`last_active_at` yang ternyata nullable (`Option`, fail-closed untuk
+delivery); `tool_calls.id` yang ternyata tidak bisa PK global (fork
+menyalin call id yang sama ke sesi kedua → PK komposit
+`(session_id, id)`); `sessions.parent_id` butuh `ON DELETE SET NULL`
+(hapus induk tidak boleh gagal bila fork ada) plus kolom meta WebUI
+`web_preset`/`web_model`.
 
 ## 4. Aturan akses & konkurensi
 
@@ -251,7 +292,9 @@ Catatan skema:
   - `ChatSessions` (`telegram/sessions.rs`) — `load`/`touch` jadi SQL
     atas tabel `chats`. `FILE_NAME` dihapus.
   - `read_last_delivery` (`routes_overview.rs:121`) jadi
-    `SELECT ... FROM deliveries ORDER BY created_at DESC LIMIT 1`.
+    `SELECT ... FROM deliveries ORDER BY created_at DESC, rowid DESC`
+    dan mengambil baris valid terbaru (baris dengan `kind`/`status`
+    tak dikenal dilewati, seperti `list_all` di queue).
 - **Tidak ada trait backend ganda.** Karena greenfield tanpa data penting,
   tidak ada `FileSessionBackend` vs `SqliteSessionBackend`, tidak ada
   feature flag. Satu implementasi, satu jalan. (Ini disengaja — dual
@@ -281,7 +324,7 @@ dibiarkan di disk (tidak dihapus otomatis, tidak diimpor):
   file impl — `session.rs` ditulis ulang ke SQL)
 - `cron/jobs.jsonc` + `cron/deliveries.jsonl` (seluruh `CronStore` file
   impl + `cron/queue.rs` JSONL)
-- `audit.jsonl` + rotasi `audit-<tanggal>.jsonl.gz` (seluruh
+- `audit.jsonl` + rotasi `audit-<tanggal>.jsonl` (seluruh
   `AuditLogger` file impl; rotasi diganti retensi SQL — lihat §10)
 - `chats.json` (`ChatSessions` file impl)
 - Jalur baca file di WebUI: `read_last_delivery`
@@ -323,17 +366,26 @@ WHERE session_id = ? AND event = 'tool_call'
 SELECT COUNT(*) FROM sessions;
 SELECT * FROM cron_jobs WHERE enabled = 1 AND next_run_at IS NOT NULL
   ORDER BY next_run_at LIMIT 1;
-SELECT * FROM deliveries ORDER BY created_at DESC LIMIT 1;
+SELECT * FROM deliveries ORDER BY created_at DESC, rowid DESC;
+-- (pembaca overview mengambil baris valid terbaru; baris dengan
+-- kind/status tak dikenal dilewati)
 
 -- Cron due scan (runner): job enabled yang jatuh tempo
 SELECT * FROM cron_jobs WHERE enabled = 1 AND next_run_at <= ?;
+-- (query di atas adalah bentuk setara: implementasinya memindai cache
+-- job yang sudah dimuat CronStore (disiplin load/save §5), dan
+-- classify_due + grace-window/lease berjalan di Rust, bukan per-tick
+-- scan SQL — perilaku sama seperti sebelum SQLite)
 
 -- Delivery claim at-most-once (transaksi)
-INSERT INTO deliveries (id, job_id, run_id, kind, status, created_at)
-VALUES (?, ?, ?, ?, 'claimed', ?);
--- ... kirim ...
-UPDATE deliveries SET status = 'delivered', delivered_at = ?
-WHERE id = ? AND status = 'claimed';
+INSERT INTO deliveries (id, job_id, job_name, kind, status, summary, detail, chat_id, created_at)
+VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET status = 'pending';
+-- ... kirim (claim dulu, sebelum kirim dicoba) ...
+UPDATE deliveries SET status = 'claimed', claimed_at = ?
+WHERE id = ? AND status = 'pending';
+-- ... kirim berhasil ...
+UPDATE deliveries SET status = 'delivered', delivered_at = ? WHERE id = ?;
 ```
 
 ## 9. Fase implementasi (urutan)
@@ -354,8 +406,11 @@ WHERE id = ? AND status = 'claimed';
 6. **P6 — Hapus jejak file:** hapus semua kode baca/tulis JSONL/JSONC
    §7 + test yang mengassert isi file (ganti assert SQL); `cargo fmt` +
    `cargo clippy --workspace --all-targets -- -D warnings`; suite
-   GNU+musl; E2E 108/108 (driver tidak berubah — mock + temp workspace
-   tetap jalan, DB-nya file temp); laporan akhir milestone.
+   GNU+musl; E2E 108/108 (driver E2E ikut pindah ke SQL: pembaca
+   audit membaca tabel `audit` lewat `sqlite3` stdlib dan seeding
+   delivery/corrupt cron lewat INSERT — bukan lagi
+   `audit.jsonl`/`deliveries.jsonl`/`jobs.jsonc`); laporan akhir
+   milestone.
 
 Estimasi: **satu milestone** (diusulkan v0.5 — penomoran diputuskan
 saat mulai, bukan di spek ini). Bukan batch kecil: menyentuh 5 store

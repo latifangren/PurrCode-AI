@@ -7,10 +7,10 @@
 //! same NL schedule parser (`parse_natural`), the same preset
 //! pinning (God/yolo refused), the same allowlist validation —
 //! and saves through the store, so the WebUI never re-implements
-//! scheduling logic and never writes `jobs.jsonc` itself. Disk
-//! is the source of truth; a fresh load per call can never act
-//! on a stale in-memory index (the gateway tick reads the same
-//! file). There is no runtime-only cron state to share, unlike
+//! scheduling logic and never writes the cron store itself. The
+//! database is the source of truth; a fresh load per call can never
+//! act on a stale in-memory index (the gateway tick reads the same
+//! store). There is no runtime-only cron state to share, unlike
 //! the B4 plugin manager's mounted set, so no shared instance
 //! is needed — but mutations are serialized with a lock, because
 //! load → mutate → save is a read-modify-write on one file and
@@ -57,10 +57,10 @@ impl WebCronRegistry {
     }
 
     /// Load the store. Any load failure is a server-side state
-    /// problem (the file is missing → empty store, never an
-    /// error; a present-but-unreadable file is corrupt or
+    /// problem (the database is missing → empty store, never an
+    /// error; a present-but-unreadable database is corrupt or
     /// permission-denied), so it maps to `Internal` (500), never
-    /// to `InvalidInput` (400): a corrupt `jobs.jsonc` is not
+    /// to `InvalidInput` (400): a corrupt store is not
     /// the client's fault (fix pass B6 r1 P3-4). The message
     /// keeps the service's path detail — the path is the local
     /// user's own `purrcode_dir`, already exposed by
@@ -514,13 +514,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_corrupt_store_is_internal_not_invalid_input() {
-        // Fix pass B6 r1 P3-4: a present-but-unparsable
-        // `jobs.jsonc` used to map to 400; a load failure is a
-        // server-side state problem (500).
+        // Fix pass B6 r1 P3-4: a present-but-unparsable store used to
+        // map to 400; a load failure is a server-side state problem
+        // (500). The store is now SQLite: garbage in `purrcode.db`
+        // fails the open the same way the old corrupt `jobs.jsonc` did.
         let root = tmp_root("corrupt");
-        let cron_dir = root.join(".purrcode").join("cron");
-        fs::create_dir_all(&cron_dir).unwrap();
-        fs::write(cron_dir.join("jobs.jsonc"), "{not valid json!!!").unwrap();
+        let purrcode_dir = root.join(".purrcode");
+        fs::create_dir_all(&purrcode_dir).unwrap();
+        fs::write(
+            purrcode_dir.join("purrcode.db"),
+            b"{not a sqlite database!!!",
+        )
+        .unwrap();
         let reg = registry(&root);
         assert!(matches!(
             reg.add_job(add_input("x")).await,

@@ -259,7 +259,8 @@ impl CronRunner {
             session_id.clone(),
         ));
         let ask_req: Arc<dyn AskRequester> = Arc::new(CronAskRequester);
-        let session_dir = SessionStore::new(&self.deps.purrcode_dir).session_dir(&session_id);
+        let session_store = SessionStore::new(&self.deps.purrcode_dir)?;
+        let session_dir = session_store.session_dir(&session_id);
 
         let meowstro = MeowstroOrchestrator::with_complete_options(
             provider,
@@ -305,7 +306,6 @@ impl CronRunner {
             &self.deps.unenforced_caps,
         );
 
-        let session_store = SessionStore::new(&self.deps.purrcode_dir);
         let mut messages = Vec::new();
         let turn = meowstro
             .agent_loop()
@@ -652,7 +652,7 @@ pub async fn build_runner_deps(
             ))
         })?;
 
-    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir));
+    let audit_logger = Arc::new(AuditLogger::new(&purrcode_dir)?);
     let mut plugin_mgr = PluginManager::new();
     plugin_mgr.discover_all(workspace_root);
     let unenforced_caps = plugin_mgr.unenforced_capabilities();

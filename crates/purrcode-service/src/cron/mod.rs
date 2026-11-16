@@ -15,4 +15,4 @@ pub mod store;
 pub use queue::DeliveryQueue;
 pub use runner::{build_runner_deps, resolve_target_model, CronRunner, CronRunnerDeps};
 pub use schedule::parse_natural;
-pub use store::{cron_dir, CronJob, CronStore, DeliveryTarget, JobSchedule};
+pub use store::{CronJob, CronStore, DeliveryTarget, JobSchedule};

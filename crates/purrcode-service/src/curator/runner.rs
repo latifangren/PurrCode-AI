@@ -303,7 +303,7 @@ mod tests {
     }
 
     fn seed_audit(home: &Path, session_id: &str, tool_calls: usize) {
-        let logger = AuditLogger::new(home);
+        let logger = AuditLogger::new(home).expect("test audit logger opens");
         for i in 0..tool_calls {
             let _ = logger.log_entry(AuditEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -334,7 +334,7 @@ mod tests {
             provider,
             model: "mock:mock-model".to_string(),
             purrcode_dir: home.to_path_buf(),
-            audit_logger: Arc::new(AuditLogger::new(home)),
+            audit_logger: Arc::new(AuditLogger::new(home).expect("test audit logger opens")),
         })
     }
 
@@ -437,7 +437,7 @@ mod tests {
             provider: failing_provider,
             model: "mock:mock-model".to_string(),
             purrcode_dir: home2.clone(),
-            audit_logger: Arc::new(AuditLogger::new(&home2)),
+            audit_logger: Arc::new(AuditLogger::new(&home2).expect("test audit logger opens")),
         });
         let out3 = r3
             .run_after_turn(sid2, &[user_msg("fix the tests")], 0, &mgr)

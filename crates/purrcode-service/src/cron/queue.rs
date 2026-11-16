@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Delivery queue (v0.3 F19, ADR-014 item 2).
+//! Delivery queue (v0.3 F19, ADR-014 item 2; SQLite since ADR-015).
 //!
-//! Append-only JSONL at `~/.purrcode/cron/deliveries.jsonl` — one line per
-//! event, mirroring the `audit.jsonl` pattern. At-most-once claiming, ala
-//! Hermes: a delivery is `created`, then `claimed` (appended BEFORE the
-//! send is attempted), then `delivered` (appended after a successful send).
-//! A `claimed` record without a later `delivered` is treated as delivered:
-//! losing a delivery is safer than duplicating a possibly-completed send.
+//! One row per delivery in the `deliveries` table of
+//! `<purrcode_dir>/purrcode.db` (formerly append-only JSONL at
+//! `~/.purrcode/cron/deliveries.jsonl`). At-most-once claiming, ala
+//! Hermes: a delivery is `pending`, then `claimed` (updated BEFORE
+//! the send is attempted), then `delivered` (updated after a
+//! successful send). A `claimed` record without a later `delivered`
+//! is treated as delivered: losing a delivery is safer than
+//! duplicating a possibly-completed send.
+//!
+//! The queue opens the database on every operation (like the old
+//! file code opened the file per append/read), so `new()` never
+//! fails — open errors surface per operation, as before.
 
 use chrono::{DateTime, Local};
 use purrcode_api::error::{PurrError, Result};
+use purrcode_store::rusqlite::params;
+use purrcode_store::{sql, Store};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -39,14 +47,6 @@ pub struct Delivery {
     pub chat_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum DeliveryEvent {
-    Created(Delivery),
-    Claimed { delivery_id: String },
-    Delivered { delivery_id: String },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryStatus {
     Pending,
@@ -54,13 +54,46 @@ pub enum DeliveryStatus {
     Delivered,
 }
 
-pub fn deliveries_file_path(purrcode_dir: &Path) -> PathBuf {
-    crate::cron::cron_dir(purrcode_dir).join("deliveries.jsonl")
+fn kind_str(kind: &DeliveryKind) -> &'static str {
+    match kind {
+        DeliveryKind::Result => "result",
+        DeliveryKind::Failure => "failure",
+        DeliveryKind::Heartbeat => "heartbeat",
+    }
 }
 
-/// The append-only delivery queue.
+fn parse_kind(value: &str) -> Option<DeliveryKind> {
+    match value {
+        "result" => Some(DeliveryKind::Result),
+        "failure" => Some(DeliveryKind::Failure),
+        "heartbeat" => Some(DeliveryKind::Heartbeat),
+        _ => None,
+    }
+}
+
+fn parse_status(value: &str) -> Option<DeliveryStatus> {
+    match value {
+        "pending" => Some(DeliveryStatus::Pending),
+        "claimed" => Some(DeliveryStatus::Claimed),
+        "delivered" => Some(DeliveryStatus::Delivered),
+        _ => None,
+    }
+}
+
+fn parse_dt(value: &str) -> Result<DateTime<Local>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Local))
+        .map_err(|e| {
+            PurrError::Session(format!(
+                "corrupt delivery queue: invalid timestamp '{value}': {e}"
+            ))
+        })
+}
+
+/// The delivery queue. Opens the database on every operation; see
+/// the module docs.
 pub struct DeliveryQueue {
-    path: PathBuf,
+    dir: PathBuf,
 }
 
 // Runner API (batch 3b); exercised only by the unit tests until then.
@@ -79,143 +112,124 @@ pub fn new_delivery_id() -> String {
 impl DeliveryQueue {
     pub fn new(purrcode_dir: &Path) -> Self {
         Self {
-            path: deliveries_file_path(purrcode_dir),
+            dir: purrcode_dir.to_path_buf(),
         }
     }
 
-    fn append_line(&self, line: &str) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                PurrError::Session(format!(
-                    "Failed to create cron dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|e| {
-                PurrError::Session(format!(
-                    "Failed to open delivery queue {}: {e}",
-                    self.path.display()
-                ))
-            })?;
-        writeln!(file, "{line}").map_err(|e| {
-            PurrError::Session(format!(
-                "Failed to append to delivery queue {}: {e}",
-                self.path.display()
-            ))
-        })?;
-        Ok(())
+    fn open(&self) -> Result<Store> {
+        Ok(Store::open(&self.dir)?)
     }
 
-    /// Record a new delivery (status pending).
+    /// Record a new delivery (status pending). A duplicate id replaces
+    /// the row and resets it to pending — the old event fold did the
+    /// same for a duplicate `Created` event.
     pub fn create(&self, delivery: &Delivery) -> Result<()> {
-        let event = DeliveryEvent::Created(delivery.clone());
-        let line = serde_json::to_string(&event)
-            .map_err(|e| PurrError::Session(format!("Failed to serialize delivery: {e}")))?;
-        self.append_line(&line)
+        let store = self.open()?;
+        let guard = store.lock()?;
+        sql(guard.execute(
+            "INSERT INTO deliveries
+               (id, job_id, job_name, kind, status, summary, detail, chat_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               job_id = excluded.job_id, job_name = excluded.job_name,
+               kind = excluded.kind, status = 'pending',
+               summary = excluded.summary, detail = excluded.detail,
+               chat_id = excluded.chat_id, created_at = excluded.created_at",
+            params![
+                delivery.id,
+                delivery.job_id,
+                delivery.job_name,
+                kind_str(&delivery.kind),
+                delivery.summary,
+                delivery.detail,
+                delivery.chat_id,
+                delivery.created_at.to_rfc3339(),
+            ],
+        ))?;
+        Ok(())
     }
 
     /// Claim a delivery BEFORE attempting the send (Hermes rule: a crash
     /// between claim and send loses the delivery rather than duplicating
-    /// a possibly-completed one).
+    /// a possibly-completed one). Only a pending delivery moves to
+    /// claimed; claiming an already-claimed or delivered one is a no-op.
     pub fn claim(&self, delivery_id: &str) -> Result<()> {
-        let event = DeliveryEvent::Claimed {
-            delivery_id: delivery_id.to_string(),
-        };
-        let line = serde_json::to_string(&event)
-            .map_err(|e| PurrError::Session(format!("Failed to serialize delivery claim: {e}")))?;
-        self.append_line(&line)
+        let store = self.open()?;
+        let guard = store.lock()?;
+        sql(guard.execute(
+            "UPDATE deliveries SET status = 'claimed', claimed_at = ?2
+             WHERE id = ?1 AND status = 'pending'",
+            params![delivery_id, Local::now().to_rfc3339()],
+        ))?;
+        Ok(())
     }
 
-    /// Record a successful send.
+    /// Record a successful send, from any status (the old event fold
+    /// let a `Delivered` event overwrite `Claimed` or `Pending`).
     pub fn mark_delivered(&self, delivery_id: &str) -> Result<()> {
-        let event = DeliveryEvent::Delivered {
-            delivery_id: delivery_id.to_string(),
-        };
-        let line = serde_json::to_string(&event)
-            .map_err(|e| PurrError::Session(format!("Failed to serialize delivery status: {e}")))?;
-        self.append_line(&line)
+        let store = self.open()?;
+        let guard = store.lock()?;
+        sql(guard.execute(
+            "UPDATE deliveries SET status = 'delivered', delivered_at = ?2 WHERE id = ?1",
+            params![delivery_id, Local::now().to_rfc3339()],
+        ))?;
+        Ok(())
     }
 
-    fn read_events(&self) -> Result<Vec<DeliveryEvent>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-        let raw = std::fs::read_to_string(&self.path).map_err(|e| {
-            PurrError::Session(format!(
-                "Failed to read delivery queue {}: {e}",
-                self.path.display()
-            ))
-        })?;
-        let mut events = Vec::new();
-        for (i, line) in raw.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // A corrupt line must not kill the whole queue: the file is
-            // append-only and a single bad write (crash mid-append, a
-            // hand edit) would otherwise make every valid delivery —
-            // before and after the bad line — unreadable forever, and
-            // both the TUI seed and the gateway drain would silently
-            // return nothing (v0.3 F22 fix, re-checker F4). The
-            // delivery on the bad line itself is lost; the rest still
-            // loads. The warning goes to tracing (visible with
-            // RUST_LOG); the queue has no audit sink at this level.
-            let event: DeliveryEvent = match serde_json::from_str(line) {
-                Ok(event) => event,
-                Err(e) => {
-                    tracing::warn!(
-                        "delivery queue {}: skipping corrupt line {} ({}); the delivery on that line is lost",
-                        self.path.display(),
-                        i + 1,
-                        e
-                    );
-                    continue;
-                }
-            };
-            events.push(event);
-        }
-        Ok(events)
-    }
-
-    /// Fold the log into (delivery, latest status) pairs, newest first.
+    /// All (delivery, latest status) pairs, newest first. A row with
+    /// an unparseable kind, status, or timestamp is skipped (with a
+    /// warning) instead of killing the whole queue — the old JSONL
+    /// reader skipped corrupt lines the same way (v0.3 F22 fix,
+    /// re-checker F4). The delivery on the bad row itself is lost;
+    /// the rest still loads.
     pub fn list_all(&self) -> Result<Vec<(Delivery, DeliveryStatus)>> {
-        let mut order: Vec<String> = Vec::new();
-        let mut by_id: std::collections::HashMap<String, (Delivery, DeliveryStatus)> =
-            std::collections::HashMap::new();
-        for event in self.read_events()? {
-            match event {
-                DeliveryEvent::Created(d) => {
-                    if !by_id.contains_key(&d.id) {
-                        order.push(d.id.clone());
-                    }
-                    by_id.insert(d.id.clone(), (d, DeliveryStatus::Pending));
-                }
-                DeliveryEvent::Claimed { delivery_id } => {
-                    if let Some((_, status)) = by_id.get_mut(&delivery_id) {
-                        if *status == DeliveryStatus::Pending {
-                            *status = DeliveryStatus::Claimed;
-                        }
-                    }
-                }
-                DeliveryEvent::Delivered { delivery_id } => {
-                    if let Some((_, status)) = by_id.get_mut(&delivery_id) {
-                        *status = DeliveryStatus::Delivered;
-                    }
-                }
-            }
+        let store = self.open()?;
+        let guard = store.lock()?;
+        let mut stmt = sql(guard.prepare(
+            "SELECT id, job_id, job_name, kind, status, summary, detail, chat_id, created_at
+             FROM deliveries ORDER BY created_at DESC, rowid DESC",
+        ))?;
+        let rows = sql(stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        }))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, job_id, job_name, kind_s, status_s, summary, detail, chat_id, created_at) =
+                row.map_err(purrcode_store::StoreError::from)?;
+            let (Some(kind), Some(status)) = (parse_kind(&kind_s), parse_status(&status_s)) else {
+                tracing::warn!(
+                    "delivery queue: skipping delivery {id} with unknown kind '{kind_s}' or status '{status_s}'"
+                );
+                continue;
+            };
+            let Ok(created_at) = parse_dt(&created_at) else {
+                tracing::warn!("delivery queue: skipping delivery {id} with invalid created_at");
+                continue;
+            };
+            out.push((
+                Delivery {
+                    id,
+                    job_id,
+                    job_name,
+                    created_at,
+                    kind,
+                    summary,
+                    detail,
+                    chat_id,
+                },
+                status,
+            ));
         }
-        let mut out: Vec<(Delivery, DeliveryStatus)> = order
-            .into_iter()
-            .filter_map(|id| by_id.remove(&id))
-            .collect();
-        out.reverse();
         Ok(out)
     }
 
@@ -299,19 +313,31 @@ mod tests {
     }
 
     #[test]
-    fn test_corrupt_line_does_not_kill_the_queue() {
-        // A corrupt line between two valid events (crash mid-append, a
-        // hand edit): the queue skips it and still loads the valid
-        // deliveries on both sides (v0.3 F22 fix, re-checker F4).
+    fn test_corrupt_row_does_not_kill_the_queue() {
+        // A row with an unparseable kind (direct DB tampering, the SQL
+        // equivalent of a corrupt JSONL line): list_all skips it and
+        // still returns the valid deliveries (v0.3 F22 fix, re-checker F4).
         let (queue, dir) = queue_in_tmp();
         let d1 = sample_delivery();
         let d2 = sample_delivery();
-        let line1 = serde_json::to_string(&DeliveryEvent::Created(d1)).unwrap();
-        let line2 = serde_json::to_string(&DeliveryEvent::Created(d2)).unwrap();
-        std::fs::create_dir_all(queue.path.parent().unwrap()).unwrap();
-        std::fs::write(&queue.path, format!("{line1}\n{{not json\n{line2}\n")).unwrap();
-        let pending = queue.pending().expect("pending with a corrupt line");
+        queue.create(&d1).expect("create d1");
+        queue.create(&d2).expect("create d2");
+        {
+            let store = Store::open(&dir).unwrap();
+            let guard = store.lock().unwrap();
+            guard
+                .execute(
+                    "INSERT INTO deliveries
+                       (id, job_id, job_name, kind, status, summary, detail, created_at)
+                     VALUES ('dlv_bad0000001', 'cron_abcdef123456', 'bad', 'bogus', 'pending', '', '', '2026-11-16T00:00:00+07:00')",
+                    [],
+                )
+                .unwrap();
+        }
+        let pending = queue.pending().expect("pending with a corrupt row");
         assert_eq!(pending.len(), 2);
+        let all = queue.list_all().expect("list all with a corrupt row");
+        assert_eq!(all.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

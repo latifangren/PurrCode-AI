@@ -13,6 +13,7 @@ members = [
     "crates/purrcode-channel",
     "crates/purrcode-service",
     "crates/purrcode-cli",
+    "crates/purrcode-store",
 ]
 
 [workspace.package]
@@ -37,6 +38,7 @@ purrcode-orchestrator = { path = "crates/purrcode-orchestrator" }
 purrcode-plugin = { path = "crates/purrcode-plugin" }
 purrcode-channel = { path = "crates/purrcode-channel" }
 purrcode-service = { path = "crates/purrcode-service" }
+purrcode-store = { path = "crates/purrcode-store" }
 
 # Shared external dependencies (GPL-compatible)
 tokio = { version = "1.40", features = ["full"] }
@@ -63,6 +65,10 @@ ratatui = "0.28"
 crossterm = { version = "0.28", features = ["event-stream"] }
 # WebUI HTTP server (v0.4 B2: Axum routing over the tokio runtime we
 # already run; `tower-http` only for the 1 MiB request-body limit).
+# SQLite store (ADR-015): embedded single-file DB for machine state
+# (sessions, cron, deliveries, audit, chats). `bundled` links SQLite
+# statically so the musl static binary keeps working; no server, no ORM.
+rusqlite = { version = "0.43", features = ["bundled"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["limit", "fs"] }
 

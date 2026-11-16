@@ -113,14 +113,24 @@ async fn test_server_token_auth() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_server_cron_lists_jobs_jsonc() {
+async fn test_server_cron_lists_jobs() {
     let dir = test_dir("cron");
-    std::fs::create_dir_all(dir.join("cron")).unwrap();
-    std::fs::write(
-            dir.join("cron").join("jobs.jsonc"),
-            "// a comment line\n{\"jobs\": [{\"id\": \"cron_abc\", \"name\": \"t\", \"enabled\": true, \"schedule\": {\"expr\": \"0 * * * *\", \"display\": \"hourly\", \"once\": false}, \"prompt\": \"hi\", \"tools\": [\"read\"], \"preset\": {\"name\": \"tabby\", \"approval\": \"default\", \"guardrail\": \"default\", \"sandbox\": \"workspace-write\"}, \"delivery\": {\"kind\": \"queue_only\"}, \"created_at\": \"2026-11-12T00:00:00+07:00\"}]}\n",
-        )
-        .unwrap();
+    {
+        // Seed one job straight into the store (the channel reads
+        // `cron_jobs`, it never parses a jobs file anymore — ADR-015).
+        let store = purrcode_store::Store::open(&dir).unwrap();
+        let guard = store.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO cron_jobs
+                   (id, name, schedule_display, prompt, tools_json, preset_json,
+                    delivery_json, enabled, created_at, next_run_at)
+                 VALUES ('cron_abc', 't', 'hourly', 'hi', '[\"read\"]', 'null',
+                         'null', 1, '2026-11-12T00:00:00+07:00', NULL)",
+                [],
+            )
+            .unwrap();
+    }
     let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
     let resp = get(port, "/api/cron");
     let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -137,21 +147,37 @@ async fn test_server_cron_lists_jobs_jsonc() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_server_cron_corrupt_file_is_500_not_empty_list() {
-    // Fix pass B6 r1 P3-4: a present-but-unparsable jobs file
-    // used to list as an empty array, hiding every job; the
-    // POSTs 400'd on the same file. A missing file still lists
-    // as 200 [] (no jobs yet).
+async fn test_server_cron_corrupt_store_is_500_not_empty_list() {
+    // Fix pass B6 r1 P3-4: a present-but-unreadable store used to
+    // list as an empty array, hiding every job; the POSTs 400'd on
+    // the same store. A missing database still lists as 200 [] (no
+    // jobs yet). The corruption is introduced AFTER startup (a row
+    // with unparseable `tools_json`): the registry opens the store
+    // at startup and fails closed, so a garbage `purrcode.db` would
+    // keep the server from starting at all — the per-request
+    // reader's corrupt-store path is what this test covers.
     let dir = test_dir("cron-corrupt");
-    std::fs::create_dir_all(dir.join("cron")).unwrap();
-    std::fs::write(dir.join("cron").join("jobs.jsonc"), "{not valid json!!!").unwrap();
     let (port, _ch, cancel_tx, handle) = start_server(None, dir.clone(), None).await;
+    {
+        let store = purrcode_store::Store::open(&dir).unwrap();
+        let guard = store.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO cron_jobs
+                   (id, name, schedule_display, prompt, tools_json, preset_json,
+                    delivery_json, enabled, created_at)
+                 VALUES ('cron_bad', 'bad', 'hourly', 'hi', '{not json', 'null',
+                         'null', 1, '2026-11-12T00:00:00+07:00')",
+                [],
+            )
+            .unwrap();
+    }
     let resp = get(port, "/api/cron");
     assert!(
         resp.contains("500 Internal Server Error"),
-        "corrupt file must be a 500, resp: {resp}"
+        "corrupt store must be a 500, resp: {resp}"
     );
-    assert!(resp.contains("invalid JSON"));
+    assert!(resp.contains("corrupt cron store"));
     let _ = cancel_tx.send(true);
     handle.abort();
     let _ = std::fs::remove_dir_all(dir);
@@ -247,7 +273,7 @@ fn assistant_msg(content: &str) -> ChatMessage {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_sessions_create_list_transcript() {
     let dir = test_dir("sessions-crud");
-    let store = SessionStore::new(&dir);
+    let store = SessionStore::new(&dir).unwrap();
     store
         .append_message("purr_web", &user_msg("hello from legacy"))
         .unwrap();
@@ -481,7 +507,7 @@ async fn test_server_approval_isolated_per_session() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_server_resumed_session_accepts_prompt_and_sse() {
     let dir = test_dir("sessions-resume");
-    let store = SessionStore::new(&dir);
+    let store = SessionStore::new(&dir).unwrap();
     store
         .append_message("purr_web_0123456789ab", &user_msg("hello before restart"))
         .unwrap();
