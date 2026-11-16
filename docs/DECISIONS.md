@@ -131,3 +131,38 @@ Lisensi: **GPL-3.0** | Bahasa: **Rust** | Binary: **`purrcode-ai`**
   - **Paritas heartbeat (item 2):** `heartbeat/runner.rs` memakai read-back `shadow_objections` yang sama dengan F-1 (cron): item diblokir → audit `heartbeat_run_blocked` + Err sebelum cek sunyi. Audit tick-level `heartbeat_run_failed` dilewati untuk item yang diblokir (marker string "blocked by Tuxeshadow" dari `run_item` yang sama) — cron F-1 tidak mengaudit event kedua seperti itu. Gagal asli tetap mengaudit tick-level.
   - **Hardening model preset (item 3):** `load_by_name_or_none` — Ok(None) hanya bila file tidak ada di mana pun; file ada tapi gagal parse → hard error dengan error parse asli; nama mismatch → error menyebut nama yang dideklarasikan. Lima titik entry point diperbarui.
   - **Split runner (item 4):** `cron/runner/mod.rs` 837 → 694 (baru `runner/due.rs` + `runner/requesters.rs`, re-export jaga path lama). `openai.rs` 809 → 683 (test stream pindah ke `openai/stream_tests.rs`). Watch item: `loop_engine/mod.rs` kini 791 baris, `cron/schedule/mod.rs` 790 — 9–10 baris dari batas ADR-011.
+
+### ADR-015: Store Mesin SQLite (sesi, cron, delivery, audit, chat)
+- **Konteks:** PurrCode 0 database — sesi `sessions/<id>.jsonl`
+  (`SessionStore`, `crates/purrcode-core/src/session.rs:38`), cron
+  `cron/jobs.jsonc` (`CronStore`, `crates/purrcode-service/src/cron/store.rs:153`),
+  delivery `cron/deliveries.jsonl` (`cron/queue.rs:57`), audit `audit.jsonl`
+  (`AuditLogger`, `crates/purrcode-approval/src/lib.rs:34`), chat Telegram
+  `chats.json` (`telegram/sessions.rs:53`). Sakitnya: query = full scan
+  (kurator F20 membaca seluruh `audit.jsonl`, `lib.rs:56`), penulis
+  bersamaan tanpa kunci (gateway/Web/TUI/CLI proses terpisah), audit
+  tumbuh tanpa batas tanpa indeks. `ARCHITECTURE.md:64` sudah menulis
+  session store sebagai "JSONL + SQLite (`session`, `turn`, `tool_call`)".
+- **Keputusan:**
+  1. **SQLite embedded, satu file** `<purrcode_dir>/purrcode.db` (0600),
+     crate `rusqlite` fitur `bundled`, tanpa ORM (SQL mentah).
+  2. **WAL + `busy_timeout=5000` + `synchronous=NORMAL` +
+     `foreign_keys=ON`.** Satu koneksi per handle di balik `Mutex`,
+     call blocking lewat `spawn_blocking`.
+  3. **Skema (§3 `docs/db-store-design.md`):** `sessions`, `turns`,
+     `tool_calls`, `cron_jobs`, `deliveries` (status claimed/delivered
+     gantikan klaim file at-most-once), `audit` (id monotonik gantikan
+     marker kurator), `chats`. Skema berversi via `PRAGMA user_version`.
+  4. **Crate baru `purrcode-store`** (hanya dependensi `purrcode-api`);
+     store lama jadi facade tipis, call site tidak berubah bentuk.
+     Tanpa dual backend, tanpa feature flag, tanpa fallback ke file.
+  5. **Memori tetap Markdown** (ADR-010); kredensial tidak pernah masuk
+     DB; config/skills/presets tetap file (§6 spek).
+  6. **Tanpa migrasi** (keputusan user 2026-11-16): masih dari 0, belum
+     ada data penting. File lama dibiarkan di disk, tidak dibaca lagi,
+     tidak diimpor. `ARCHITECTURE.md` §2 diperbarui saat implementasi
+     mendarat, bukan di spek ini.
+- **Status:** DRAFT 2026-11-16 — detail di `docs/db-store-design.md`
+  (skema, query acceptance, fase P1–P6). Estimasi satu milestone
+  (diusulkan v0.5). FTS5 tetap follow-up sebagai plugin
+  (`ARCHITECTURE.md:293`).
